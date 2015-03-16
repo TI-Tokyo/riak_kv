@@ -72,13 +72,9 @@ ms_to_timestamp(Time) ->
 quanta(Time, QuantaSize, Unit) ->
     case lists:member(Unit, [d, h, m, s]) of
         true ->
-            case unit_to_ms(Unit) of
-                {error, _}=E ->
-                    E;
-                Ms ->
-                    Diff = Time rem (QuantaSize*Ms),
-                    Time - Diff
-            end;
+            Ms = unit_to_ms(Unit),
+            Diff = Time rem (QuantaSize*Ms),
+            Time - Diff;
         false ->
             large_quanta(Time, QuantaSize, Unit)
     end.
