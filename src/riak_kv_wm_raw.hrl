@@ -23,6 +23,7 @@
 -define(MD_LASTMOD,  <<"X-Riak-Last-Modified">>).
 -define(MD_USERMETA, <<"X-Riak-Meta">>).
 -define(MD_INDEX,    <<"index">>).
+-define(MD_LI_IDX,   <<"composite-indices">>).
 -define(MD_DELETED,  <<"X-Riak-Deleted">>).
 -define(MD_VAL_ENCODING, <<"X-Riak-Val-Encoding">>).
 
