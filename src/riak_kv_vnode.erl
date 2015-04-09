@@ -2744,20 +2744,26 @@ prepare_put(State=#state{vnodeid=VId,
                              starttime=StartTime,
                              bprops = BProps,
                              starttime = StartTime}) ->
+
+    %% if this is a composite index write we need to change the key to be
+    %% the key we will actually write into leveldb
+    NewK = maybe_rewrite_li_key(RObj, Key),
+    PutArgs1 = PutArgs#putargs{bkey = {Bucket, NewK}},
+
     %% Can we avoid reading the existing object? If this is not an
     %% index backend, and the bucket is set to last-write-wins or write_once,
     %% then no need to incur additional get. Otherwise, we need to read the
     %% old object to know how the indexes have changed.
     IndexBackend = is_indexed_backend(Mod, Bucket, ModState),
     IsSearchable = maybe_requires_existing_object(UpdateHook, BProps),
-    IsWriteOnce = is_write_once(PutArgs),
+    IsWriteOnce = is_write_once(PutArgs1),
     SkipReadBeforeWrite = IsWriteOnce
         orelse (LWW andalso (not IndexBackend) andalso (not IsSearchable)),
     case SkipReadBeforeWrite of
         true ->
-            prepare_blind_put(Coord, RObj, VId, StartTime, PutArgs, State);
+            prepare_blind_put(Coord, RObj, VId, StartTime, PutArgs1, State);
         false ->
-            prepare_read_before_write_put(State, PutArgs, IndexBackend, IsSearchable)
+            prepare_read_before_write_put(State, PutArgs1, IndexBackend, IsSearchable)
     end.
 
 %%
@@ -3094,6 +3100,13 @@ do_reformat({Bucket, Key}=BKey, State=#state{mod=Mod, modstate=ModState}) ->
             end
     end,
     {Reply, UpdState}.
+
+%% @private
+maybe_rewrite_li_key(RObj, Key) ->
+    case riak_object:is_li(RObj) of
+	true  -> riak_object:get_li_key(RObj);
+	false -> Key
+    end.
 
 %% @private
 %% enforce allow_mult bucket property so that no backend ever stores

@@ -35,6 +35,8 @@
 -type bucket() :: binary() | {binary(), binary()}.
 %% -type bkey() :: {bucket(), key()}.
 -type value() :: term().
+-type li_index() :: {key(), [{binary(), index_value()}]}.
+
 -type riak_object_dict() :: dict:dict().
 
 -record(r_content, {
@@ -106,6 +108,7 @@
 -export([find_bestobject/1]).
 -export([spoof_getdeletedobject/1]).
 -export([delete_hash/1]).
+-export([get_li_index/1, is_li/1, get_li_key/1]).
 
 -ifdef(TEST).
 -export([convert_object_to_headonly/3]). % Used in unit testing of get_core
@@ -230,6 +233,28 @@ reconcile(Objects, AllowMultiple) ->
         true ->
             RObj
     end.
+
+%% @doc get the composite index from a riak_object
+-spec get_li_index(riak_object()) -> li_index().
+get_li_index(RObj) when is_record(RObj, r_object) ->
+    MetaData = get_metadata(RObj),
+    case dict:find(?MD_LI_IDX, MetaData) of
+	{ok, LI} -> LI;
+	error    -> exit("attempting to read non-existent key")
+    end.
+
+%% @doc checks if the object has a composite index in it
+-spec is_li(riak_object()) -> boolean().
+is_li(RObj) when is_record(RObj, r_object) ->
+    MetaData = get_metadata(RObj),
+    dict:is_key(?MD_LI_IDX, MetaData).
+
+%% @doc gets the Local Index key
+%% TODO return error or crash?
+-spec get_li_key(riak_object()) -> key().
+get_li_key(RObj) when is_record(RObj, r_object) ->
+    MetaData = get_metadata(RObj),
+    _Key = dict:fetch(?MD_LI_IDX, MetaData).
 
 %% @doc remove all Objects from the list that are causally
 %% dominated by any other object in the list. Only concurrent /
