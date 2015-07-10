@@ -173,7 +173,7 @@ fetch(QueueName, {?MODULE, [Node, _ClientId]}) ->
             {error, timeout} |
             {error, {n_val_violation, N::integer()}}.
 push(RObjMaybeBin, IsDeleted, _Opts, {?MODULE, [Node, _ClientId]}) ->
-    RObj = 
+    RObj =
         case riak_object:is_robject(RObjMaybeBin) of
             % May get pushed a riak object, or a riak object as a binary, but
             % only want to deal with a riak object
@@ -214,7 +214,7 @@ push(RObjMaybeBin, IsDeleted, _Opts, {?MODULE, [Node, _ClientId]}) ->
     R = wait_for_reqid(ReqId, Timeout),
     LMD =
         lists:max(
-            lists:map(fun riak_object:get_last_modified/1, 
+            lists:map(fun riak_object:get_last_modified/1,
                         riak_object:get_metadatas(RObj))),
     Reply = {R, LMD},
 
@@ -227,7 +227,7 @@ push(RObjMaybeBin, IsDeleted, _Opts, {?MODULE, [Node, _ClientId]}) ->
                     riak_kv_get_fsm:start({raw, ReapReqId, Me},
                                             Bucket, Key, ReapOptions);
                 _ ->
-                    % Still using the deprecated `start_link' alias for 
+                    % Still using the deprecated `start_link' alias for
                     %`start' here, in case the remote node is pre-2.2:
                     proc_lib:spawn_link(Node, riak_kv_get_fsm, start_link,
                                         [{raw, ReapReqId, Me},
@@ -306,25 +306,26 @@ put(RObj, {?MODULE, [_Node, _ClientId]}=THIS) -> put(RObj, [], THIS).
 normal_put(RObj, Options, {?MODULE, [Node, ClientId]}) ->
     Me = self(),
     ReqId = mk_reqid(),
+    From = {raw, ReqId, Me},
     case ClientId of
         undefined ->
             case node() of
                 Node ->
-                    riak_kv_put_fsm:start({raw, ReqId, Me}, RObj, Options);
+                    riak_kv_put_fsm:start(From, RObj, Options);
                 _ ->
                     %% Still using the deprecated `start_link' alias for `start'
                     %% here, in case the remote node is pre-2.2:
                     proc_lib:spawn_link(Node, riak_kv_put_fsm, start_link,
-                                        [{raw, ReqId, Me}, RObj, Options])
+                                        [From, RObj, Options])
             end;
         _ ->
             UpdObj = riak_object:increment_vclock(RObj, ClientId),
             case node() of
                 Node ->
-                    riak_kv_put_fsm:start_link({raw, ReqId, Me}, UpdObj, [asis|Options]);
+                    riak_kv_put_fsm:start_link(From, UpdObj, [asis|Options]);
                 _ ->
                     proc_lib:spawn_link(Node, riak_kv_put_fsm, start_link,
-                                        [{raw, ReqId, Me}, RObj, [asis|Options]])
+                                        [From, RObj, [asis|Options]])
             end
     end,
     %% TODO: Investigate adding a monitor here and eliminating the timeout.
@@ -448,9 +449,9 @@ maybe_normal_put(RObj, Options, {?MODULE, [Node, _ClientId]}=THIS) when is_list(
             RObj2 = riak_object:set_vclock(RObj, vclock:fresh(<<0:8>>, 1)),
             RObj3 = riak_object:update_last_modified(RObj2),
             RObj4 = riak_object:apply_updates(RObj3),
-            
+
             % write once options to avoid doing a coordinated read before write
-            % since we don't care about vclocks or merging existing values 
+            % since we don't care about vclocks or merging existing values
             Options2 = [{is_write_once, true} | Options],
             normal_put(RObj4, Options2, THIS);
         false ->
@@ -526,7 +527,7 @@ consistent_delete(Bucket, Key, Options, _Timeout, {?MODULE, [Node, _ClientId]}) 
     end.
 
 
--spec reap(riak_object:bucket(), riak_object:key(), riak_client()) 
+-spec reap(riak_object:bucket(), riak_object:key(), riak_client())
                                                                 -> boolean().
 reap(Bucket, Key, Client) ->
     case normal_get(Bucket, Key, [deletedvclock], Client) of
@@ -900,7 +901,7 @@ ttaaefs_fullsync(WorkItem, SecsTimeout, Now) ->
 participate_in_coverage(Participate) ->
     F =
         fun(Ring, _) ->
-            {new_ring, 
+            {new_ring,
                 riak_core_ring:update_member_meta(node(),
                                                     Ring,
                                                     node(),

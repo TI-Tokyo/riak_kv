@@ -31,14 +31,14 @@
 -include("riak_kv_types.hrl").
 -include("stacktrace.hrl").
 
--compile({nowarn_deprecated_function, 
+-compile({nowarn_deprecated_function,
             [{gen_fsm, start_link, 3},
                 {gen_fsm, send_event, 2}]}).
 
 -behaviour(gen_fsm).
 -define(DEFAULT_OPTS, [{returnbody, false}, {update_last_modified, true}]).
--export([start/3,start/6,start/7]).
--export([start_link/3,start_link/6,start_link/7]).
+-export([start/3, start/6, start/7]).
+-export([start_link/3, start_link/6, start_link/7]).
 -export([set_put_coordinator_failure_timeout/1,
          get_put_coordinator_failure_timeout/0]).
 -ifdef(TEST).
@@ -46,7 +46,7 @@
 -endif.
 -export([init/1, handle_event/3, handle_sync_event/4,
          handle_info/3, terminate/3, code_change/4]).
--export([prepare/2, validate/2, precommit/2,
+-export([awaiting_request/2, prepare/2, validate/2, precommit/2,
          waiting_local_vnode/2,
          waiting_remote_vnode/2,
          postcommit/2, finish/2]).
@@ -130,7 +130,7 @@
                 timing = [] :: [{atom(), {non_neg_integer(), non_neg_integer(),
                                           non_neg_integer()}}],
                 reply, % reply sent to client,
-                trace = false :: boolean(), 
+                trace = false :: boolean(),
                 tracked_bucket=false :: boolean(), %% track per bucket stats
                 bad_coordinators = [] :: [atom()],
                 coordinator_timeout :: integer()
@@ -307,6 +307,31 @@ init({test, Args, StateProps}) ->
     %% Enter into the validate state, skipping any code that relies on the
     %% state of the rest of the system
     {ok, validate, TestStateData}.
+
+%%
+to_state(From, RObj, Options0) ->
+    BKey = {riak_object:bucket(RObj), riak_object:key(RObj)},
+    CoordTimeout = get_put_coordinator_failure_timeout(),
+    Trace = app_helper:get_env(riak_kv, fsm_trace_enabled),
+    Options = proplists:unfold(Options0),
+    #state{
+        from = From,
+        robj = RObj,
+        bkey = BKey,
+        trace = Trace,
+        options = Options,
+        timing = riak_kv_fsm_timing:add_timing(prepare, []),
+        coordinator_timeout=CoordTimeout
+    }.
+        
+%% 
+awaiting_request({put_req, From, RObj, Options}, _) ->
+    {next_state, prepare, to_state(From, RObj, Options), 0};
+awaiting_request({Write_ack,_,_}, State) when Write_ack == dw orelse
+                                              Write_ack == w ->
+    {next_state, awaiting_request, State};
+awaiting_request(request_timeout, State) ->
+    {next_state, awaiting_request, State}.
 
 %% @private
 prepare(timeout, State = #state{robj = RObj, options=Options}) ->
@@ -629,7 +654,7 @@ postcommit(Reply, StateData = #state{putcore = PutCore,
     UpdPutCore = riak_kv_put_core:add_result(Reply, PutCore),
     new_state_timeout(postcommit, StateData#state{putcore = UpdPutCore}).
 
-finish(timeout, StateData = #state{timing = Timing, reply = Reply,
+finish(timeout, #state{timing = Timing, reply = Reply,
                                    bkey = {Bucket, _Key},
                                    trace = Trace,
                                    tracked_bucket = StatTracked,
@@ -650,7 +675,7 @@ finish(timeout, StateData = #state{timing = Timing, reply = Reply,
                                       Stages, StatTracked, CRDTMod}),
             ?DTRACE(Trace, ?C_PUT_FSM_FINISH, [0, Duration], [])
     end,
-    {stop, normal, StateData};
+    {next_state, awaiting_request, no_state_yet};
 finish(Reply, StateData = #state{putcore = PutCore,
                                  trace = Trace}) ->
     case Trace of
