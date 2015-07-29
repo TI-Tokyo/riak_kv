@@ -252,7 +252,7 @@
                   is_index=false :: boolean(), %% set if the b/end supports indexes
                   crdt_op = undefined :: undefined | term(), %% if set this is a crdt operation
                   hash_ops = no_hash_ops,
-                  write_once :: not_write_once | {is_write_once, Encoded_robj::binary()}
+                  is_write_once = false :: boolean()
                  }).
 -type putargs() :: #putargs{}.
 
@@ -2733,15 +2733,16 @@ do_backend_delete(BKey, RObj, State = #state{idx = Idx,
                             {boolean(),
                                 {riak_object:riak_object(), old_object()}},
                         putargs(), state()}.
-prepare_put(State=#state{vnodeid=VId,
-                         mod=Mod,
-                         modstate=ModState,
-                         update_hook=UpdateHook},
-            PutArgs=#putargs{bkey={Bucket, _Key},
-                             lww=LWW,
-                             coord=Coord,
-                             robj=RObj,
-                             starttime=StartTime,
+prepare_put(State=#state{vnodeid = VId,
+                         mod = Mod,
+                         modstate = ModState,
+                         update_hook = UpdateHook},
+            PutArgs=#putargs{bkey = {Bucket, _Key},
+                             lww = LWW,
+                             coord = Coord,
+                             robj = RObj,
+                             starttime = StartTime,
+                             is_write_once = IsWriteOnce,
                              bprops = BProps,
                              starttime = StartTime}) ->
 
@@ -2756,22 +2757,14 @@ prepare_put(State=#state{vnodeid=VId,
     %% old object to know how the indexes have changed.
     IndexBackend = is_indexed_backend(Mod, Bucket, ModState),
     IsSearchable = maybe_requires_existing_object(UpdateHook, BProps),
-    IsWriteOnce = is_write_once(PutArgs1),
     SkipReadBeforeWrite = IsWriteOnce
         orelse (LWW andalso (not IndexBackend) andalso (not IsSearchable)),
     case SkipReadBeforeWrite of
         true ->
-            prepare_blind_put(Coord, RObj, VId, StartTime, PutArgs1, State);
+            prepare_blind_put(Coord, RObj, VId, StartTime, PutArgs, State);
         false ->
-            prepare_read_before_write_put(State, PutArgs1, IndexBackend, IsSearchable)
+            prepare_read_before_write_put(State, PutArgs, IndexBackend, IsSearchable)
     end.
-
-%%
-is_write_once(#putargs{write_once = {is_write_once, Encoded_robj}})
-  when is_binary(Encoded_robj) ->
-    true;
-is_write_once(_) ->
-    false.
 
 is_indexed_backend(Mod, Bucket, ModState) ->
     {ok, Capabilities} = Mod:capabilities(Bucket, ModState),
@@ -2800,23 +2793,23 @@ prepare_read_before_write_put(#state{mod = Mod,
                                        coord=Coord}=PutArgs,
                               IndexBackend, IsSearchable) ->
     {CacheClock, CacheData} = maybefetch_clock_and_indexdata(MDCache,
-                                                                BKey,
-                                                                Mod,
-                                                                ModState,
-                                                                Coord,
-                                                                IsSearchable),
+                                                             BKey,
+                                                             Mod,
+                                                             ModState,
+                                                             Coord,
+                                                             IsSearchable),
     {GetReply, RequiresGet} =
         case CacheClock of
             not_found ->
                 {not_found, false};
             _ ->
                 ReqGet = determine_requires_get(CacheClock,
-                                                    RObj,
-                                                    IsSearchable),
+                                                RObj,
+                                                IsSearchable),
                 {get_old_object_or_fake(ReqGet,
-                                            Bucket, Key,
-                                            Mod, ModState,
-                                            CacheClock),
+                                        Bucket, Key,
+                                        Mod, ModState,
+                                        CacheClock),
                     ReqGet}
         end,
     case GetReply of
@@ -2981,11 +2974,6 @@ perform_put({false, {_Obj, _OldObj}},
     {{dw, Idx, ReqId}, State};
 perform_put({true, {_Obj, _OldObj}=Objects},
             State,
-            #putargs{write_once = {is_write_once, Encoded_robj}} = PutArgs)
-  when is_binary(Encoded_robj) ->
-    perform_write_once_put(State, PutArgs);
-perform_put({true, {_Obj, _OldObj}=Objects},
-            State,
             #putargs{returnbody=RB,
                      bkey=BKey,
                      reqid=ReqID,
@@ -3017,21 +3005,6 @@ perform_put({true, {_Obj, _OldObj}=Objects},
         actual_put(BKey, Objects, IndexSpecs, RB, ReqID, MaxCheckFlag,
                     {Coord, Sync}, State),
     {Reply, State2}.
-
-%%
-perform_write_once_put(#state{idx = Idx, mod = Mod, modstate = ModState1} = State,
-                       #putargs{bkey = {Bucket, Key},
-                                reqid = ReqID,
-                                index_specs = IndexSpecs,
-                                write_once = {is_write_once, Encoded_robj}}) ->
-    PutResult = Mod:put(Bucket, Key, IndexSpecs, Encoded_robj, ModState1),
-    case PutResult of
-        {ok, ModState2} ->
-            Reply = {dw, Idx, ReqID};
-        {error, Reason, ModState2} ->
-            Reply = {fail, Idx, Reason}
-    end,
-    {Reply, State#state{modstate = ModState2}}.
 
 actual_put(BKey, {Obj, OldObj}, IndexSpecs, RB, ReqID, State) ->
     actual_put(BKey, {Obj, OldObj}, IndexSpecs, RB, ReqID, do_max_check,
