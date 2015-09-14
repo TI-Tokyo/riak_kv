@@ -55,7 +55,7 @@
                   ]}).
 
 -include("riak_kv_index.hrl").
--include_lib("riak_ql/include/riak_ql_sql.hrl").
+-include_lib("riak_ql/include/riak_ql_ddl.hrl").
 
 -ifdef(EQC).
 -include_lib("eqc/include/eqc.hrl").
