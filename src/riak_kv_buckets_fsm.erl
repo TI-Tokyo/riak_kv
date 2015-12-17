@@ -70,7 +70,7 @@ init(From={_, _, ClientPid}, [ItemFilter, Timeout, Stream, BucketType]) ->
     %% Construct the bucket listing request
     Req = riak_kv_requests:new_listbuckets_request(ItemFilter),
     {Req, allup, 1, 1, riak_kv, riak_kv_vnode_master, Timeout,
-     #state{from=From, stream=Stream, type=BucketType}}.
+     riak_core_coverage_plan, #state{from=From, stream=Stream, type=BucketType}}.
 
 process_results(done, StateData) ->
     {done, StateData};
