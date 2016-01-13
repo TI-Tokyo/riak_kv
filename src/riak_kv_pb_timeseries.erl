@@ -522,7 +522,7 @@ compile(Mod, {ok, SQL}) ->
 %%
 submit_query(DDL, SQL, State) ->
     case riak_kv_qry:submit(SQL, DDL) of
-        {ok, Data} when element(1, SQL) =:= riak_select_v1 ->
+        {ok, Data} when element(1, SQL) =:= ?SQL_SELECT_RECORD_NAME ->
             {reply, make_tsqueryresp(Data), State};
         {ok, Data} when element(1, SQL) =:= riak_sql_describe_v1 ->
             {reply, make_tsqueryresp(Data), State};
