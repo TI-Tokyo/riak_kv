@@ -2051,7 +2051,7 @@ quantum_field_name_no_quanta_test() ->
         quantum_field_name(DDL)
     ).
 
-% short key, partition and local keys are the same
+%% short key, partition and local keys are the same
 no_quantum_in_query_1_test() ->
     DDL = get_ddl(
         "CREATE TABLE tabab("
@@ -2070,6 +2070,7 @@ no_quantum_in_query_1_test() ->
         compile(DDL, Q, 100)
     ).
 
+%% partition and local key are different
 no_quantum_in_query_2_test() ->
     DDL = get_ddl(
         "CREATE TABLE tabab("
@@ -2079,7 +2080,7 @@ no_quantum_in_query_2_test() ->
         "d BOOLEAN NOT NULL, "
         "PRIMARY KEY  ((c,a,b), c,a,b,d))"),
     {ok, Q} = get_query(
-          "SELECT * FROM tab1 WHERE a = 1000 AND b = 'bval' AND c = 3.5"),
+          "SELECT * FROM tabab WHERE a = 1000 AND b = 'bval' AND c = 3.5"),
     {ok, [Select]} = compile(DDL, Q, 100),
     Key = 
         [{<<"c">>,double,3.5}, {<<"a">>,sint64,1000},{<<"b">>,varchar,<<"bval">>}],
@@ -2087,6 +2088,28 @@ no_quantum_in_query_2_test() ->
         [{startkey, Key},
          {endkey, Key},
          {filter,[]},
+         {end_inclusive,true}],
+        Select#riak_select_v1.'WHERE'
+    ).
+
+
+no_quantum_in_query_3_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE tababa("
+        "a SINT64 NOT NULL, "
+        "b VARCHAR NOT NULL, "
+        "c DOUBLE NOT NULL, "
+        "d BOOLEAN NOT NULL, "
+        "PRIMARY KEY  ((c,a,b), c,a,b,d))"),
+    {ok, Q} = get_query(
+          "SELECT * FROM tababa WHERE a = 1000 AND b = 'bval' AND c = 3.5 AND d = true"),
+    {ok, [Select]} = compile(DDL, Q, 100),
+    Key =
+        [{<<"c">>,double,3.5}, {<<"a">>,sint64,1000},{<<"b">>,varchar,<<"bval">>}],
+    ?assertEqual(
+        [{startkey, Key},
+         {endkey, Key},
+         {filter,{'=',{field,<<"d">>,boolean},{const, true}}},
          {end_inclusive,true}],
         Select#riak_select_v1.'WHERE'
     ).
