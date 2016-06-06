@@ -270,6 +270,10 @@ start(_Type, _StartArgs) ->
 
             ++ WorkerPools),
 
+            riak_core:register(riak_ts, [
+                {permissions, riak_kv_ts_api:api_calls()}
+            ]),
+
             ok = riak_api_pb_service:register(?SERVICES),
 
             %% Add routes to webmachine
