@@ -52,6 +52,7 @@
 -export([remove_node_from_coverage/0, reset_node_for_coverage/0]).
 -export([get_cover/3, get_cover/4, get_cover/5, replace_cover/5, replace_cover/6, replace_cover/7]).
 -export([vnode_target/1]).
+-export([ring_size/0]).
 
 -include_lib("riak_core/include/riak_core_vnode.hrl").
 
