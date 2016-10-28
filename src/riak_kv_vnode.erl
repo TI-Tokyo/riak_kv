@@ -1695,14 +1695,13 @@ handle_coverage_index(Bucket, ItemFilter, Query,
                       State=#state{mod=Mod,
                                    key_buf_size=DefaultBufSz,
                                    modstate=ModState},
-                      ResultFunFun) ->
+                      ResultFun) ->
     {ok, Capabilities} = Mod:capabilities(Bucket, ModState),
     IndexBackend = lists:member(indexes, Capabilities),
     case IndexBackend of
         true ->
             ok = riak_kv_stat:update(vnode_index_read),
 
-            ResultFun = ResultFunFun(Bucket, Sender),
             BufSize = buffer_size_for_index_query(Query, DefaultBufSz),
             Opts = [{index, Bucket, prepare_index_query(Query)},
                     {bucket, Bucket}, {buffer_size, BufSize}],
