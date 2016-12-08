@@ -2304,7 +2304,13 @@ handle_coverage_fold(FoldType, Bucket, ItemFilter, ResultFun,
                                      modstate=ModState}) ->
     %% Construct the filter function
     FilterVNode = proplists:get_value(Index, FilterVNodes),
-    KeyConvFn   = proplists:get_value(key_conv_fn, FilterVNodes),
+    KeyConvFn =
+        case proplists:get_value(key_conv_fn, FilterVNodes) of
+            {M, F} ->
+                fun(X) -> M:F(Bucket, X) end;
+            FunOrSomething ->
+                FunOrSomething
+        end,
     Filter = riak_kv_coverage_filter:build_filter(Bucket, ItemFilter, FilterVNode, KeyConvFn),
 
     % Use a buffer so each result isn't sent back individually
