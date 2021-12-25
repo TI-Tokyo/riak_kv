@@ -360,7 +360,10 @@
 
 {translation,
  "riak_kv.aae_throttle_limits",
- riak_core_throttle:create_limits_translator_fun("anti_entropy", "mailbox_size")
+ fun(_) ->
+     code:load(riak_core_throttle),
+     riak_core_throttle:create_limits_translator_fun("anti_entropy", "mailbox_size")
+ end
 }.
 
 %% @see leveldb.bloomfilter
