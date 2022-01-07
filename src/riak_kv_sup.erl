@@ -47,8 +47,8 @@ init([]) ->
                 [riak_kv_vnode, riak_kv_legacy_vnode, riak_kv]},
                permanent, 5000, worker, [riak_core_vnode_master]},
     HTTPCache = {riak_kv_http_cache,
-		 {riak_kv_http_cache, start_link, []},
-		 permanent, 5000, worker, [riak_kv_http_cache]},
+                 {riak_kv_http_cache, start_link, []},
+                 permanent, 5000, worker, [riak_kv_http_cache]},
     FastPutSup = {riak_kv_w1c_sup,
                  {riak_kv_w1c_sup, start_link, []},
                  permanent, infinity, supervisor, [riak_kv_w1c_sup]},
@@ -92,9 +92,16 @@ init([]) ->
                 {riak_kv_eraser, start_link, []},
                 permanent, 30000, worker, [riak_kv_eraser]},
 
-    EnsemblesKV =  {riak_kv_ensembles,
-                    {riak_kv_ensembles, start_link, []},
-                    permanent, 30000, worker, [riak_kv_ensembles]},
+    EnsemblesKV = {riak_kv_ensembles,
+		   {riak_kv_ensembles, start_link, []},
+		   permanent, 30000, worker, [riak_kv_ensembles]},
+
+    TimeSeries =  {riak_kv_ts_sup,
+                    {riak_kv_ts_sup, start_link, []},
+                    permanent, 30000, worker, [riak_kv_ts_sup]},
+    QrySup = {riak_kv_qry_sup,
+              {riak_kv_qry_sup, start_link, []},
+              permanent, infinity, supervisor, [riak_kv_qry_sup]},
 
     % Figure out which processes we should run...
     HasStorageBackend = (app_helper:get_env(riak_kv, storage_backend) /= undefined),
@@ -109,6 +116,7 @@ init([]) ->
         Eraser,
         ?IF(HasStorageBackend, VMaster, []),
         FastPutSup,
+        TimeSeries,
         DeleteSup,
         SinkFsmSup,
         BucketsFsmSup,
@@ -117,8 +125,13 @@ init([]) ->
         ClusterAAEFsmSup,
         HotBackupAAEFsmSup,
         [EnsemblesKV || riak_core_sup:ensembles_enabled()],
+	QrySup,
+        JSSup,
+        MapJSPool,
+        ReduceJSPool,
+        HookJSPool,
         HTTPCache
     ]),
 
-    % Run the proesses...
+    % Run the processes...
     {ok, {{one_for_one, 10, 10}, Processes}}.

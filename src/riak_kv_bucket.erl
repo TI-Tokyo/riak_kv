@@ -2,7 +2,7 @@
 %%
 %% riak_kv_bucket: bucket validation functions
 %%
-%% Copyright (c) 2007-2011 Basho Technologies, Inc.  All Rights Reserved.
+%% Copyright (c) 2007-2016 Basho Technologies, Inc.  All Rights Reserved.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -84,8 +84,6 @@
                                  ?ERROR_ALLOW_MULT_UPDATE},
                                 {hll_precision, fun hll_precision/3,
                                  fun error_hll_precision/1}]).
-
-
 %% @doc called by riak_core in a few places to ensure bucket
 %%  properties are sane. The arguments combinations have the following
 %%  meanings:-
@@ -554,6 +552,19 @@ validate_update_dt_props(Existing, New) ->
                     ?DT_PROPS_CHECK_CREATE),
     {Unvalidated, Valid, Errors}.
 
+%% @private check that allow_mult is correct
+-spec validate_update_dt_props(props(), props(), errors()) -> {props(), props(), errors()}.
+validate_update_dt_props(New, Valid, Invalid) ->
+    Unvalidated = lists:keydelete(allow_mult, 1, New),
+    case allow_mult(New) of
+        undefined ->
+            {Unvalidated, Valid, Invalid};
+        true ->
+            {Unvalidated, [{allow_mult, true} | Valid], Invalid};
+        _ ->
+            {Unvalidated, Valid, [{allow_mult, "Cannot change datatype bucket from allow_mult=true"} | Invalid]}
+end.
+
 %% @private
 %% precondition: Existing contains {write_once, true}
 -spec validate_update_w1c_props(boolean() | undefined, props()) ->
@@ -954,15 +965,8 @@ prop_create_valid() ->
                                   has_consistent(New), valid_consistent(New),
                                   has_hll(New), valid_hll(New)])
                    end,
-                   collect(with_title("{has_datatype, valid_datatype, allow_mult"
-                                      ", has_w1c, valid_w1c, has_consistent, "
-                                      "valid_consistent, lww, dvv_enabled, "
-                                      "has_hll, valid_hll}"),
-                           {has_datatype(New), valid_datatype(New),
-                            allow_mult(New), has_w1c(New), valid_w1c(New),
-                            has_consistent(New), valid_consistent(New),
-                            last_write_wins(New), dvv_enabled(New),
-                            has_hll(New), valid_hll(New)},
+                   collect(with_title("{has_datatype, valid_datatype, allow_mult, has_w1c, valid_w1c, has_consistent, valid_consistent, lww, dvv_enabled}"),
+                           {has_datatype(New), valid_datatype(New), allow_mult(New), has_w1c(New), valid_w1c(New), has_consistent(New), valid_consistent(New), last_write_wins(New), dvv_enabled(New)},
                            only_create_if_valid(Result, New)))
             end)).
 
@@ -977,28 +981,12 @@ prop_merges() ->
                                         gen_existing(),
                                         gen_new(update)},
             begin
-                %% ensure default buckets are not marked consistent or
-                %% write_once since that is invalid
-                Existing =
-                    case default_bucket(Bucket) of
-                        true ->
-                            lists:keydelete(write_once, 1,
-                                            lists:keydelete(consistent, 1,
-                                                            Existing0));
-                        false ->
-                            Existing0
-                    end,
-
-                %% Specially remove hll_precision from gen_new(update) if
-                %% datatype is not hll, as we'll skip it in the result
-                New =
-                    case riak_kv_crdt:to_mod(
-                           proplists:get_value(datatype, Existing)) of
-                        ?HLL_TYPE -> New0;
-                        _ -> lists:keydelete(hll_precision, 1, New0)
-                    end,
-
-                Result = {Good, Bad} = validate(update, Bucket, Existing, New),
+                %% ensure default buckets are not marked consistent or write_once since that is invalid
+                Existing = case default_bucket(Bucket) of
+                               true -> lists:keydelete(write_once, 1, lists:keydelete(consistent, 1, Existing0));
+                               false -> Existing0
+                           end,
+                Result={Good, Bad} = validate(update, Bucket, Existing, New),
 
                 %% All we really want to check is that every key in
                 %% Good replaces the same key in Existing, right?
@@ -1050,7 +1038,7 @@ prop_merges() ->
                            false
                    end
                   )
-            end)).
+            end).
 
 valid_dvv_lww({Good, Bad}) ->
     case last_write_wins(Good) of
@@ -1127,33 +1115,32 @@ gen_valid_dvv_lww(false) ->
 
 gen_new(update) ->
     ?LET(
-       {Mult, Datatype, WriteOnce, Consistent, NVal, LastWriteWins, DvvEnabled},
-       {
-         gen_allow_mult(),
-         oneof([[], gen_datatype_property()]),
-         oneof([[], gen_valid_w1c()]),
-         oneof([[], gen_maybe_bad_consistent()]),
-         oneof([[], [{n_val, choose(1, 10)}]]),
-         oneof([[], gen_lww()]),
-         oneof([[], gen_dvv_enabled()])
+        {Mult, Datatype, WriteOnce, Consistent, NVal, LastWriteWins, DvvEnabled},
+        {
+            gen_allow_mult(),
+            oneof([[], gen_datatype_property()]),
+            oneof([[], gen_valid_w1c()]),
+            oneof([[], gen_maybe_bad_consistent()]),
+            oneof([[], [{n_val, choose(1, 10)}]]),
+            oneof([[], gen_lww()]),
+            oneof([[], gen_dvv_enabled()])
         },
-       Mult ++ Datatype ++ WriteOnce ++ Consistent ++ NVal ++ LastWriteWins
-       ++ DvvEnabled);
+        Mult ++ Datatype ++ WriteOnce ++ Consistent ++ NVal ++ LastWriteWins ++ DvvEnabled
+    );
 gen_new(create) ->
     Defaults0 = riak_core_bucket_type:defaults(),
     Defaults1 = lists:keydelete(allow_mult, 1, Defaults0),
     Defaults2 = lists:keydelete(last_write_wins, 1, Defaults1),
     Defaults = lists:keydelete(dvv_enabled, 1, Defaults2),
     ?LET(
-       {Mult, DatatypeOrConsistent, WriteOnce, LastWriteWins, DvvEnabled},
-       {
-         gen_allow_mult(),
-         frequency([{5, gen_datatype_property()},
-                    {5, gen_maybe_bad_consistent()},
-                    {5, []}]),
-         gen_w1c(), gen_lww(), gen_dvv_enabled()},
-       Defaults ++ Mult ++ DatatypeOrConsistent ++ WriteOnce ++ LastWriteWins
-       ++ DvvEnabled).
+        {Mult, DatatypeOrConsistent, WriteOnce, LastWriteWins, DvvEnabled},
+        {
+            gen_allow_mult(),
+            frequency([{5, gen_datatype_property()},
+                       {5, gen_maybe_bad_consistent()},
+                       {5, []}]),
+            gen_w1c(), gen_lww(), gen_dvv_enabled()},
+         Defaults ++ Mult ++ DatatypeOrConsistent ++ WriteOnce ++ LastWriteWins ++ DvvEnabled).
 
 gen_allow_mult() ->
     ?LET(Mult, frequency([{9, bool()}, {1, binary()}]), [{allow_mult, Mult}]).

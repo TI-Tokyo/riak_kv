@@ -2,7 +2,7 @@
 %%
 %% riak_delete: two-step object deletion
 %%
-%% Copyright (c) 2007-2013 Basho Technologies, Inc.  All Rights Reserved.
+%% Copyright (c) 2007-2015 Basho Technologies, Inc.  All Rights Reserved.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -99,7 +99,7 @@ delete(ReqId,Bucket,Key,Options,Timeout,Client,ClientId,VClock) ->
                     {ok, C2} = riak:local_client(),
                     AsyncTimeout = 60*1000,     % Avoid client-specified value
                     timer:sleep(TombPause),
-                    Res = riak_client:get(Bucket, Key, all, AsyncTimeout, C2),
+                    Res = riak_client:get(Bucket, Key, [{r, all}, {timeout, AsyncTimeout}], C2),
                     ?DTRACE(?C_DELETE_REAPER_GET_DONE, [1], [<<"reap">>]),
                     Res;
                 _ ->
@@ -112,6 +112,7 @@ send_reply(undefined, _ReqId, _Reply) ->
     ok;
 send_reply(Client, ReqId, Reply) ->
     Client ! {ReqId, Reply}.
+
 
 get_r_options(Bucket, Options) ->
     BucketProps = riak_core_bucket:get_bucket(Bucket),
@@ -206,14 +207,12 @@ extract_passthru_options(Options) ->
     [Opt || {K, _} = Opt <- Options,
             K == sloppy_quorum orelse K == n_val].
 
+
 -spec generate_tombstone(riak_object:bucket(), riak_object:key())
                                                 -> riak_object:riak_object().
 generate_tombstone(Bucket, Key) ->
     TombLegacy =
-        riak_object:new(Bucket,
-                            Key,
-                            <<>>,
-                            dict:store(?MD_DELETED,"true", dict:new())),
+        new_tombstone_object(Bucket, Key),
     case app_helper:get_env(riak_kv, tombstone_timestamp, true) of
         true ->
             riak_object:apply_updates(
@@ -221,6 +220,19 @@ generate_tombstone(Bucket, Key) ->
         _ ->
             TombLegacy
     end.
+
+new_tombstone_object(Table, {PK, LK}) ->
+    %% TS objects have this peculiar way to use the two keys: time
+    %% quanta-based partition key, for calculating coverage; and local
+    %% key for actual lookups:
+    RO = new_tombstone_object(Table, PK),
+    MD1 = riak_object:get_update_metadata(RO),
+    MD2  = dict:store(?MD_TS_LOCAL_KEY, LK, MD1),
+    riak_object:update_metadata(RO, MD2);
+new_tombstone_object(Bucket, Key) ->
+    riak_object:new(
+      Bucket, Key, <<>>,
+      dict:store(?MD_DELETED, "true", dict:new())).
 
 %% ===================================================================
 %% EUnit tests

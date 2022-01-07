@@ -35,6 +35,7 @@
 -type bucket() :: binary() | {binary(), binary()}.
 %% -type bkey() :: {bucket(), key()}.
 -type value() :: term().
+
 -type riak_object_dict() :: dict:dict().
 
 -record(r_content, {
@@ -56,7 +57,7 @@
           key :: key(),
           contents :: list(r_content()),
           vclock = vclock:fresh() :: vclock:vclock(),
-          updatemetadata=dict:store(clean, true, dict:new()) :: riak_object_dict(),
+          updatemetadata=dict:from_list([{clean, true}]) :: riak_object_dict(),
           updatevalue :: term()
          }).
 -record(p_object, {
@@ -72,6 +73,7 @@
 -type index_op() :: add | remove.
 -type index_value() :: integer() | binary().
 -type binary_version() :: v0 | v1.
+-type encoding() :: erlang | msgpack.
 
 -define(MAX_KEY_SIZE, 65536).
 
@@ -80,8 +82,11 @@
 -define(MAGIC, 53).      %% Magic number, as opposed to 131 for Erlang term-to-binary magic
                          %% Shanley's(11) + Joe's(42)
 -define(EMPTY_VTAG_BIN, <<"e">>).
+%% sub-encoding, selecting between binary_to_term and msgpack:decode (used for TS data)
+-define(MSGPACK_MAGIC, 2). %% Magic number for msgpack encoding
+-define(ERLT2B_MAGIC, 3). %% Magic number for msgpack encoding
 
--export([new/3, new/4, ensure_robject/1, ancestors/1, reconcile/2, equal/2, remove_dominated/1]).
+-export([new/3, new/4, newts/4, ensure_robject/1, ancestors/1, reconcile/2, equal/2, remove_dominated/1]).
 -export([increment_vclock/2, increment_vclock/3, prune_vclock/3, vclock_descends/2, all_actors/1]).
 -export([actor_counter/2]).
 -export([key/1, get_metadata/1, get_metadatas/1, get_values/1, get_value/1, get_dotted_values/1]).
@@ -94,11 +99,12 @@
 -export([to_json/1, from_json/1]).
 -export([index_data/1, diff_index_data/2]).
 -export([index_specs/1, diff_index_specs/2]).
--export([to_binary/2, from_binary/3, to_binary_version/4, binary_version/1]).
+-export([to_binary/2, from_binary/3, to_binary/3,
+         to_binary_version/4, binary_version/1]).
 -export([nextgenrepl_encode/3, nextgenrepl_decode/1]).
 -export([summary_from_binary/1, aae_from_object_binary/1,
-            get_metadata_from_aae_binary/1, aae_fold_metabin/2,
-            is_aae_object_deleted/2]).
+         get_metadata_from_aae_binary/1, aae_fold_metabin/2,
+         is_aae_object_deleted/2]).
 -export([set_contents/2, set_vclock/2]). %% INTERNAL, only for riak_*
 -export([is_robject/1, is_head/1]).
 -export([update_last_modified/1, update_last_modified/2, get_last_modified/1]).
@@ -106,6 +112,8 @@
 -export([find_bestobject/1]).
 -export([spoof_getdeletedobject/1]).
 -export([delete_hash/1]).
+-export([get_ts_local_key/1]).
+-export([is_ts/1]).
 
 -ifdef(TEST).
 -export([convert_object_to_headonly/3]). % Used in unit testing of get_core
@@ -117,7 +125,6 @@ new({T, B}, K, V) when is_binary(T), is_binary(B), is_binary(K) ->
     new_int({T, B}, K, V, no_initial_metadata);
 new(B, K, V) when is_binary(B), is_binary(K) ->
     new_int(B, K, V, no_initial_metadata).
-
 %% @doc Constructor for new riak objects with an initial content-type.
 -spec new(Bucket::bucket(), Key::key(), Value::value(),
           string() | riak_object_dict() | no_initial_metadata) -> riak_object().
@@ -135,6 +142,23 @@ new({T, B}, K, V, MD) when is_binary(T), is_binary(B), is_binary(K) ->
 new(B, K, V, MD) when is_binary(B), is_binary(K) ->
     new_int(B, K, V, MD).
 
+newts(B, K, V, MD) ->
+    new_int2(B, K, V, MD).
+
+-spec is_ts(riak_object()) -> {'true', pos_integer()} | 'false'.
+is_ts(RObj) ->
+    check_for_ddl(get_contents(RObj)).
+
+check_for_ddl([{Metadata, _V}]) ->
+    case dict:find(<<"ddl">>, Metadata) of
+        {ok, Version} ->
+            {true, Version};
+        _ ->
+            false
+    end;
+check_for_ddl(_) ->
+    false.
+
 %% internal version after all validation has been done
 new_int(B, K, V, MD) ->
     case size(K) > ?MAX_KEY_SIZE of
@@ -143,15 +167,16 @@ new_int(B, K, V, MD) ->
         false ->
             case MD of
                 no_initial_metadata ->
-                    Contents = [#r_content{metadata=dict:new(), value=V}],
-                    #r_object{bucket=B,key=K,
-                              contents=Contents,vclock=vclock:fresh()};
+                    new_int2(B, K, V, dict:new());
                 _ ->
-                    Contents = [#r_content{metadata=MD, value=V}],
-                    #r_object{bucket=B,key=K,updatemetadata=MD,
-                              contents=Contents,vclock=vclock:fresh()}
+                    new_int2(B, K, V, MD)
             end
     end.
+
+new_int2(B, K, V, MD) ->
+    Contents = [#r_content{metadata=MD, value=V}],
+    #r_object{bucket=B,key=K,updatemetadata=MD,
+              contents=Contents,vclock=vclock:fresh()}.
 
 -spec is_robject(any()) -> boolean()|proxy.
 %% Is this a recognised riak object
@@ -231,7 +256,16 @@ reconcile(Objects, AllowMultiple) ->
             RObj
     end.
 
-%% @doc remove all Objects from the list that are causally
+%% @doc gets the Local Index key
+-spec get_ts_local_key(riak_object()) ->
+        {ok, key()} | error.
+get_ts_local_key(RObj) when is_record(RObj, r_object) ->
+    % TODO 
+    % using update metadata while testing with ts_run2, updates should
+    % be applied by this point!
+    dict:find(?MD_TS_LOCAL_KEY, get_update_metadata(RObj)).
+
+%% @private remove all Objects from the list that are causally
 %% dominated by any other object in the list. Only concurrent /
 %% conflicting objects will remain.
 remove_dominated(Objects) ->
@@ -249,7 +283,7 @@ remove_dominated(Objects) ->
 %% IdxHeadList is a list of indexes and headers that may need to be updated to
 %% objects before the merge can be complete, and the IdxObjList is a list of
 %% vnode indexes and objects which are ready to be merged
--spec find_bestobject(list({non_neg_integer(), {ok, riak_object()}})) -> 
+-spec find_bestobject(list({non_neg_integer(), {ok, riak_object()}})) ->
                         {list({non_neg_integer(), {ok, riak_object()}}),
                             list({non_neg_integer(), {ok, riak_object()}})}.
 find_bestobject(FetchedItems) ->
@@ -263,7 +297,7 @@ find_bestobject(FetchedItems) ->
     {Objects, Heads} = lists:partition(ObjNotJustHeadFun, FetchedItems),
     %% prefer full objects to heads
     FoldList = Heads ++ Objects,
-    
+
     DescendsFun =
         fun(ObjClock, DescendsDirection) ->
             fun({_BestIdxSib, {ok, BestObjSib}}) ->
@@ -275,12 +309,12 @@ find_bestobject(FetchedItems) ->
                 end
             end
         end,
-    
+
     FoldFun =
         % BestAnswers are a list of [{Idx, {ok, Obj}}] there are either the
         % best answer or a sibling of the best answer,  BestAnswers can also
         % be undefined at the start of the fold
-        % 
+        %
         % If BestAnswers is undefined the object being folded over must now
         % be the head of the list of BestAnswers
         %
@@ -293,7 +327,7 @@ find_bestobject(FetchedItems) ->
         % on the Best answers and becomes the single best answer
         %
         % If neither way represents a clean descent, then we consider
-        % Comparison Object to be a sibling of at least one of the BestAnswers 
+        % Comparison Object to be a sibling of at least one of the BestAnswers
         fun({Idx, {ok, Obj}}, BestAnswers) ->
             case BestAnswers of
                 undefined ->
@@ -317,7 +351,7 @@ find_bestobject(FetchedItems) ->
                     end
             end
         end,
-    
+
     %% prefer the rightmost (fastest responder)
     BestAnswerList = lists:foldr(FoldFun, undefined, FoldList),
 
@@ -326,9 +360,9 @@ find_bestobject(FetchedItems) ->
     % gives variation in behaviour base don order, to make this more
     % determenistic by removing all dominated siblings with this additional
     % check
-    DominatedSibCheckFun = 
+    DominatedSibCheckFun =
         fun({_, {ok, BA_Obj}}) ->
-            not lists:any(fun({_, {ok, CheckObj}}) -> 
+            not lists:any(fun({_, {ok, CheckObj}}) ->
                                 vclock:dominates(vclock(CheckObj),
                                                     vclock(BA_Obj))
                             end,
@@ -851,12 +885,12 @@ hash(Obj=#r_object{}) ->
             legacy_hash(Obj)
     end.
 
--spec hash(bucket(), key(), 
-            riak_object()|proxy_object()|binary(), 
+-spec hash(bucket(), key(),
+            riak_object()|proxy_object()|binary(),
             non_neg_integer()|legacy) -> binary().
 %% @doc calculates the canonical hash of a riak object depending on version
 %% May accept as input either a real object or a proxy object, or an object
-%% that is still serialised in a binary form (where that serialised object 
+%% that is still serialised in a binary form (where that serialised object
 %% could be either a proxy or a riak object)
 hash(_Bucket, _Key, RObj=#r_object{}, Version) ->
     hash(RObj, Version);
@@ -877,7 +911,7 @@ hash(Obj=#r_object{}, _Version) ->
 -spec legacy_hash(riak_object()) -> binary().
 legacy_hash(Obj=#r_object{}) ->
     % Blow up if we ever try performing a legacy hash on a proxy
-    % object.  
+    % object.
     UpdObj = riak_object:set_vclock(Obj, lists:sort(vclock(Obj))),
     Hash = erlang:phash2(to_binary(v0, UpdObj)),
     term_to_binary(Hash).
@@ -1022,7 +1056,7 @@ diff_specs_core(AllIndexSet, OldIndexSet) ->
 
 %% @doc Get a list of {Index, Value} tuples from the
 %% metadata of an object.
--spec index_data(riak_object() | undefined) -> [{binary(), index_value()}].
+-spec index_data(undefined | riak_object()) -> [{binary(), index_value()}].
 index_data(undefined) ->
     [];
 index_data(Obj) ->
@@ -1153,20 +1187,25 @@ proxy_size(Obj) ->
 contents_size(Vsn, Contents) ->
     lists:sum([metadata_size(Vsn, MD) + value_size(Val) || {MD, Val} <- Contents]).
 
-metadata_size(v0, MD) ->
+metadata_size(V, MD) ->
+    metadata_size(V, MD, erlang).
+metadata_size(v0, MD, _Enc) ->
     size(term_to_binary(MD));
-metadata_size(v1, MD) ->
-    size(meta_bin(MD)).
+metadata_size(v1, MD, Enc) ->
+    size(meta_bin(MD, Enc)).
 
 value_size(Value) when is_binary(Value) -> size(Value);
 value_size(Value) -> size(term_to_binary(Value)).
 
 %% @doc Convert riak object to binary form
 -spec to_binary(binary_version(), riak_object()) -> binary().
-to_binary(v0, RObj) ->
+-spec to_binary(binary_version(), riak_object(), encoding()) -> binary().
+to_binary(Vers, RObj) ->
+    to_binary(Vers, RObj, erlang).
+to_binary(v0, RObj, _) ->
     term_to_binary(RObj);
-to_binary(v1, #r_object{contents=Contents, vclock=VClock}) ->
-    new_v1(VClock, Contents).
+to_binary(v1, #r_object{contents=Contents, vclock=VClock}, Enc) ->
+    new_v1(VClock, Contents, Enc).
 
 %% @doc convert a binary encoded riak object to a different
 %% encoding version. If the binary is already in the desired
@@ -1233,26 +1272,27 @@ nextgenrepl_decode(B, K, true, ObjBin) ->
 nextgenrepl_decode(B, K, false, ObjBin) ->
     riak_object:from_binary(B, K, ObjBin).
 
+
 %% @doc Convert binary object to riak object
--spec from_binary(bucket(),key(),binary()) ->
+-spec from_binary(bucket(), key(), binary()) ->
     riak_object() | {error, 'bad_object_format'} | proxy_object().
 from_binary(B, K, <<131, _Rest/binary>>=ObjTerm) ->
     case binary_to_term(ObjTerm) of
         {proxy_object, HeadBin, ObjSize, Fetcher} ->
             RObj = from_binary(B, K, HeadBin),
             #p_object{r_object = RObj,
-                        proxy = Fetcher,
-                        size = ObjSize};
+                      proxy = Fetcher,
+                      size = ObjSize};
         T ->
             T
     end;
-from_binary(B, K, <<?MAGIC:8/integer, 1:8/integer, Rest/binary>>=_ObjBin) ->
+from_binary(B, K, <<?MAGIC:8/integer, 1:8/integer, Rest/binary>> = _ObjBin) ->
     %% Version 1 of binary riak object
     case Rest of
         <<VclockLen:32/integer, VclockBin:VclockLen/binary, SibCount:32/integer, SibsBin/binary>> ->
             Vclock = binary_to_term(VclockBin),
             Contents = sibs_of_binary(SibCount, SibsBin),
-            #r_object{bucket=B,key=K,contents=Contents,vclock=Vclock};
+            #r_object{bucket=B, key=K, contents=Contents, vclock=Vclock};
         _Other ->
             {error, bad_object_format}
     end;
@@ -1260,14 +1300,14 @@ from_binary(_B, _K, Obj = #r_object{}) ->
     Obj.
 
 
--spec summary_from_binary(binary()) -> 
+-spec summary_from_binary(binary()) ->
         {vclock:vclock(), integer(), integer(),
             list(erlang:timestamp())|undefined, binary()}.
 %% @doc
-%% Extract only sumarry infromation from the binary - the vector, the object 
+%% Extract only sumarry infromation from the binary - the vector, the object
 %% size and the sibling count
-summary_from_binary(<<131, _Rest/binary>>=ObjBin) ->
-    case binary_to_term(ObjBin) of 
+summary_from_binary(<<131, _Rest/binary>> = ObjBin) ->
+    case binary_to_term(ObjBin) of
         {proxy_object, HeadBin, ObjSize, _Fetcher} ->
             summary_from_binary(HeadBin, ObjSize);
         T ->
@@ -1286,28 +1326,28 @@ summary_from_binary(Object = #r_object{}) ->
 -spec summary_from_binary(binary(), integer()) ->
     {vclock:vclock(), non_neg_integer(), non_neg_integer(),
         list(erlang:timestamp()), binary()}.
-%% @doc 
+%% @doc
 %% Return afrom a version 1 binary the vector clock and siblings
 summary_from_binary(ObjBin, ObjSize) ->
-    <<?MAGIC:8/integer, 
-        1:8/integer, 
-        VclockLen:32/integer, VclockBin:VclockLen/binary, 
-        SibCount:32/integer, 
+    <<?MAGIC:8/integer,
+        1:8/integer,
+        VclockLen:32/integer, VclockBin:VclockLen/binary,
+        SibCount:32/integer,
         SibsBin/binary>> = ObjBin,
-    {LastMods, SibBin} = 
+    {LastMods, SibBin} =
         case SibCount of
             SC when is_integer(SC) ->
                 get_metadata_from_siblings(SibsBin,
-                                            SibCount,
-                                            [],
-                                            [])
+                                           SibCount,
+                                           [],
+                                           [])
         end,
     {binary_to_term(VclockBin), ObjSize, SibCount, LastMods, SibBin}.
 
 %% @doc
 %% Function used to split objects in parallel AAE store
 -spec aae_from_object_binary(boolean()) ->
-        fun((binary()) -> 
+        fun((binary()) ->
             {integer(), integer(), integer(),
                 list(erlang:timestamp()), binary()}).
 aae_from_object_binary(true) ->
@@ -1333,16 +1373,16 @@ aae_from_object_binary(false) ->
 get_metadata_from_siblings(<<>>, 0, LastMods, SibMDList) ->
     {LastMods, term_to_binary(SibMDList)};
 get_metadata_from_siblings(<<ValLen:32/integer, Rest0/binary>>,
-                            SibCount,
-                            LastMods,
-                            SibMDList) ->
+                           SibCount,
+                           LastMods,
+                           SibMDList) ->
     <<_ValBin:ValLen/binary, MetaLen:32/integer, Rest1/binary>> = Rest0,
     SibBin = <<0:32/integer, MetaLen:32/integer, Rest1/binary>>,
     {SibMetaData, LastMod, Remainder} = sib_of_binary(SibBin),
     get_metadata_from_siblings(Remainder,
-                                SibCount - 1,
-                                [LastMod|LastMods],
-                                [SibMetaData|SibMDList]).
+                               SibCount - 1,
+                               [LastMod|LastMods],
+                               [SibMetaData|SibMDList]).
 
 %% @doc Where sibs_of_binary has been used to create a value-free binary of
 %% an object - reverse it here.
@@ -1379,7 +1419,7 @@ aae_fold_metabin(Bin, _SibMDAcc) ->
 %% in processing the metadata after determining the tombstone status - if true
 %% the de-serialised metadata list is returned along with the deleted status.
 -spec is_aae_object_deleted(binary()|list(), boolean()) ->
-                                                {boolean(), list()|undefined}.
+                                   {boolean(), list()|undefined}.
 is_aae_object_deleted(<<0:32, _Rest/binary>> = MetaBin, false) ->
     {is_binary_deleted(MetaBin, true), undefined};
 is_aae_object_deleted(MetaBin, ReturnMD) when is_binary(MetaBin) ->
@@ -1392,7 +1432,7 @@ is_aae_object_deleted([], ReturnMD) ->
             {false, undefined}
     end;
 is_aae_object_deleted(MDs, ReturnMD) ->
-    PredFun = 
+    PredFun =
         fun(M) ->
             dict:is_key(<<"X-Riak-Deleted">>, M)
         end,
@@ -1421,7 +1461,7 @@ is_binary_deleted(_SibBin, false) ->
     false.
 
 
-sibs_of_binary(Count,SibsBin) ->
+sibs_of_binary(Count, SibsBin) ->
     sibs_of_binary(Count, SibsBin, []).
 
 sibs_of_binary(0, <<>>, Result) -> lists:reverse(Result);
@@ -1431,8 +1471,16 @@ sibs_of_binary(Count, SibsBin, Result) ->
     {Sib, _LastMod, SibsRest} = sib_of_binary(SibsBin),
     sibs_of_binary(Count-1, SibsRest, [Sib | Result]).
 
-sib_of_binary(<<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, MetaBin:MetaLen/binary, Rest/binary>>) ->
-    <<LMMega:32/integer, LMSecs:32/integer, LMMicro:32/integer, VTagLen:8/integer, VTag:VTagLen/binary, Deleted:1/binary-unit:8, MetaRestBin/binary>> = MetaBin,
+sib_of_binary(Bin) ->
+    sib_of_binary(Bin, erlang).
+sib_of_binary(<<ValLen:32/integer,
+                ValBin:ValLen/binary,
+                MetaLen:32/integer,
+                MetaBin:MetaLen/binary,
+                Rest/binary>>) ->
+    <<LMMega:32/integer, LMSecs:32/integer, LMMicro:32/integer,
+      VTagLen:8/integer, VTag:VTagLen/binary,
+      Deleted:1/binary-unit:8, MetaRestBin/binary>> = MetaBin,
     LastModDate = {LMMega, LMSecs, LMMicro},
     MDList0 = deleted_meta(Deleted, []),
     MDList1 = last_mod_meta(LastModDate, MDList0),
@@ -1440,7 +1488,9 @@ sib_of_binary(<<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, Met
     MDList3 = val_encoding_meta(ValBin, MDList2),
     MDList = meta_of_binary(MetaRestBin, MDList3),
     MD = dict:from_list(MDList),
-    {#r_content{metadata=MD, value=decode_maybe_binary(ValBin)}, LastModDate, Rest}.
+    {#r_content{metadata = MD,
+                value = decode_maybe_binary(ValBin)},
+     LastModDate, Rest}.
 
 val_encoding_meta(<<>>, MDList) ->
     MDList;
@@ -1468,7 +1518,11 @@ vtag_meta(VTag, MDList) ->
 
 meta_of_binary(<<>>, Acc) ->
     Acc;
-meta_of_binary(<<KeyLen:32/integer, KeyBin:KeyLen/binary, ValueLen:32/integer, ValueBin:ValueLen/binary, Rest/binary>>, ResultList) ->
+meta_of_binary(<<KeyLen:32/integer,
+                 KeyBin:KeyLen/binary,
+                 ValueLen:32/integer,
+                 ValueBin:ValueLen/binary,
+                 Rest/binary>>, ResultList) ->
     Key = decode_maybe_binary(KeyBin),
     Value = decode_maybe_binary(ValueBin),
     meta_of_binary(Rest, [{Key, Value} | ResultList]).
@@ -1483,31 +1537,32 @@ meta_of_binary(<<KeyLen:32/integer, KeyBin:KeyLen/binary, ValueLen:32/integer, V
 %% -type binobj_value()      :: <<ValueLen:32, ValueBin/binary, MetaLen:32,
 %%                                [binobj_meta()]>>.
 %% -type binobj()            :: <<binobj_header(), [binobj_value()]>>.
-new_v1(Vclock, Siblings) ->
+new_v1(Vclock, Siblings, Enc) ->
     VclockBin = term_to_binary(Vclock),
     VclockLen = byte_size(VclockBin),
     SibCount = length(Siblings),
-    SibsBin = bin_contents(Siblings),
+    SibsBin = bin_contents(Siblings, Enc),
     <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer, VclockBin/binary, SibCount:32/integer, SibsBin/binary>>.
 
-bin_content(#r_content{metadata=Meta0, value=Val}) ->
+bin_content(#r_content{metadata=Meta0, value=Val}, Enc) ->
     {TypeTag, Meta} = determine_binary_type(Val, Meta0),
-    ValBin = encode_maybe_binary(Val, TypeTag),
+    ValBin = encode_maybe_binary(Val, TypeTag, Enc),
     ValLen = byte_size(ValBin),
-    MetaBin = meta_bin(Meta),
+    MetaBin = meta_bin(Meta, Enc),
     MetaLen = byte_size(MetaBin),
     <<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, MetaBin:MetaLen/binary>>.
 
-bin_contents(Contents) ->
+bin_contents(Contents, Enc) ->
     F = fun(Content, Acc) ->
-                <<Acc/binary, (bin_content(Content))/binary>>
+                <<Acc/binary, (bin_content(Content, Enc))/binary>>
         end,
     lists:foldl(F, <<>>, Contents).
 
-meta_bin(MD) ->
-    {{VTagVal, Deleted, LastModVal}, RestBin} = dict:fold(fun fold_meta_to_bin/3,
-                                                          {{undefined, <<0>>, undefined}, <<>>},
-                                                          MD),
+meta_bin(MD, Enc) ->
+    {{VTagVal, Deleted, LastModVal, _}, RestBin} =
+        dict:fold(fun fold_meta_to_bin/4,
+                  {{undefined, <<0>>, undefined, Enc}, <<>>},
+                  MD),
     VTagBin = case VTagVal of
                   undefined ->  ?EMPTY_VTAG_BIN;
                   _ -> list_to_binary(VTagVal)
@@ -1520,32 +1575,32 @@ meta_bin(MD) ->
     <<LastModBin/binary, VTagLen:8/integer, VTagBin:VTagLen/binary,
       Deleted:1/binary-unit:8, RestBin/binary>>.
 
-fold_meta_to_bin(?MD_VTAG, Value, {{_Vt,Del,Lm},RestBin}) ->
-    {{Value, Del, Lm}, RestBin};
-fold_meta_to_bin(?MD_LASTMOD, Value, {{Vt,Del,_Lm},RestBin}) ->
-     {{Vt, Del, Value}, RestBin};
-fold_meta_to_bin(?MD_DELETED, true, {{Vt,_Del,Lm},RestBin})->
-     {{Vt, <<1>>, Lm}, RestBin};
+fold_meta_to_bin(?MD_VTAG, Value, {{_Vt,Del,Lm, _Enc}, RestBin}) ->
+    {{Value, Del, Lm, _Enc}, RestBin};
+fold_meta_to_bin(?MD_LASTMOD, Value, {{Vt,Del,_Lm, _Enc}, RestBin}) ->
+     {{Vt, Del, Value, Enc}, RestBin};
+fold_meta_to_bin(?MD_DELETED, true, {{Vt,_Del,Lm, _Enc}, RestBin})->
+     {{Vt, <<1>>, Lm, _Enc}, RestBin};
 fold_meta_to_bin(?MD_DELETED, "true", Acc) ->
     fold_meta_to_bin(?MD_DELETED, true, Acc);
-fold_meta_to_bin(?MD_DELETED, _, {{Vt,_Del,Lm},RestBin}) ->
-    {{Vt, <<0>>, Lm}, RestBin};
-fold_meta_to_bin(Key, Value, {{_Vt,_Del,_Lm}=Elems,RestBin}) ->
-    ValueBin = encode_maybe_binary(Value),
+fold_meta_to_bin(?MD_DELETED, _, {{Vt,_Del,Lm, _Enc}, RestBin}) ->
+    {{Vt, <<0>>, Lm, _Enc}, RestBin};
+fold_meta_to_bin(Key, Value, {{_Vt, _Del, _Lm, Enc} = Elems, RestBin}) ->
+    ValueBin = encode_maybe_binary(Value, Enc),
     ValueLen = byte_size(ValueBin),
-    KeyBin = encode_maybe_binary(Key),
+    KeyBin = encode_maybe_binary(Key, Enc),
     KeyLen = byte_size(KeyBin),
     MetaBin = <<KeyLen:32/integer, KeyBin/binary, ValueLen:32/integer, ValueBin/binary>>,
     {Elems, <<RestBin/binary, MetaBin/binary>>}.
 
-encode_maybe_binary(Value) when is_binary(Value) ->
-    encode_maybe_binary(Value, 1);
-encode_maybe_binary(Value) when not is_binary(Value) ->
-    encode_maybe_binary(Value, 0).
-encode_maybe_binary(Value, TypeTag) when is_binary(Value) ->
+encode_maybe_binary(Value, Enc) when is_binary(Value) ->
+    encode_maybe_binary(Value, 1, Enc);
+encode_maybe_binary(Value, Enc) when not is_binary(Value) ->
+    encode_maybe_binary(Value, 0, Enc).
+encode_maybe_binary(Value, TypeTag, _Enc) when is_binary(Value) ->
     <<TypeTag, Value/binary>>;
-encode_maybe_binary(Value, 0) when not is_binary(Value) ->
-    <<0, (term_to_binary(Value))/binary>>.
+encode_maybe_binary(Value, 0, Enc) when not is_binary(Value) ->
+    <<0, (sub_encode(Value, Enc))/binary>>.
 
 determine_binary_type(Val, Meta) when is_binary(Val) ->
     case dict:find(?MD_VAL_ENCODING, Meta) of
@@ -1560,9 +1615,29 @@ decode_maybe_binary(<<>>) ->
 decode_maybe_binary(<<1, Bin/binary>>) ->
     Bin;
 decode_maybe_binary(<<0, Bin/binary>>) ->
-    binary_to_term(Bin);
+    sub_decode(Bin);
 decode_maybe_binary(<<_Other:8, Bin/binary>>) ->
     Bin.
+
+
+sub_encode(Bin, erlang) ->
+    <<?ERLT2B_MAGIC:8/integer, (term_to_binary(Bin))/binary>>;
+sub_encode(Bin, msgpack) ->
+    <<?MSGPACK_MAGIC:8/integer, (msgpack:pack(Bin, [{format, jsx}]))/binary>>.
+
+sub_decode(<<?ERLT2B_MAGIC:8/binary, Bin>>) ->
+    binary_to_term(Bin).
+sub_decode(<<?MSGPACK_MAGIC:8/binary, Bin>>) ->
+    {ok, Unpacked} = msgpack:unpack(Bin, [{format, jsx}]),
+    Unpacked;
+sub_decode(Bin) ->
+    try
+        binary_to_term(Bin)
+    catch
+        _:_ ->
+            Bin
+    end.
+
 
 %% Update X-Riak-VTag and X-Riak-Last-Modified in the object's metadata, if
 %% necessary.
@@ -1617,7 +1692,7 @@ get_last_modified(MD) ->
 %% Fetch the preferred vclock encoding method:
 -spec vclock_encoding_method() -> atom().
 vclock_encoding_method() ->
-    riak_core_capability:get({riak_kv, vclock_data_encoding}, encode_zlib).
+    riak_core_capability:get({riak_kv, vclock_data_encoding}, encode_raw).
 
 %% Encode a vclock in accordance with our capability setting:
 encode_vclock(VClock) ->
@@ -1727,7 +1802,7 @@ get_binary_type_tag_and_metadata_from_full_binary(Binary) ->
     <<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, MetaBinRest:MetaLen/binary>> = SibsBin,
     <<_LMMega:32/integer, _LMSecs:32/integer, _LMMicro:32/integer, VTagLen:8/integer, _VTag:VTagLen/binary, _Deleted:1/binary-unit:8, MetaBin/binary>> = MetaBinRest,
     <<FirstBinaryByte:8, _Rest/binary>> = ValBin,
-    {FirstBinaryByte, dict:from_list(meta_of_binary(MetaBin, []))}.
+    {FirstBinaryByte, dict:from_list(meta_of_binary(MetaBin, [], erlang))}.
 
 
 convert_object_to_headonly(B, K, Object) ->
@@ -1849,7 +1924,7 @@ find_bestobject_reconcile() ->
                                         {4, {ok, Obj4}},
                                         {3, {ok, Obj3}},
                                         {5, {ok, Obj5}}])),
-                                        
+
     Obj6 = riak_object:increment_vclock(Obj2, two_pid),
     Hdr6 = convert_object_to_headonly(B, K, Obj6),
 
@@ -1861,7 +1936,7 @@ find_bestobject_reconcile() ->
                     find_bestobject([{2, {ok, Obj2}},
                                         {3, {ok, Obj3}},
                                         {6, {ok, Obj6}}])),
-                                        
+
     ?assertMatch({[{6, {ok, Obj6}}], []},
                     find_bestobject([{2, {ok, Obj2}},
                                     {4, {ok, Obj4}},
@@ -1877,7 +1952,7 @@ find_bestobject_reconcile() ->
                                     {6, {ok, Obj6}},
                                     {7, {ok, Obj6}},
                                     {8, {ok, Hdr6}}])),
-    
+
     Hdr3 = convert_object_to_headonly(B, K, Obj3),
     ?assertMatch({[{7, {ok, Obj6}}], [{3, {ok, Hdr3}}]},
                     find_bestobject([{2, {ok, Obj2}},
@@ -2181,6 +2256,16 @@ vclock_codec_test() ->
     [ ?assertEqual({Method, VC}, {Method, decode_vclock(encode_vclock(Method, VC))})
      || VC <- VCs, Method <- [encode_raw, encode_zlib]].
 
+packObj_test() ->
+    io:format("packObj_test~n"),
+    Obj = riak_object:new(<<"bucket">>, <<"key">>, [{<<"field1">>, 1}, {<<"field2">>, 2.123}]),
+    PackedErl = riak_object:to_binary(v1, Obj, erlang),
+    PackedMsg = riak_object:to_binary(v1, Obj, msgpack),
+    ObjErl = riak_object:from_binary(<<"bucket">>, <<"key">>, PackedErl),
+    ObjMsg = riak_object:from_binary(<<"bucket">>, <<"key">>, PackedMsg),
+    ?assertEqual(Obj, ObjErl),
+    ?assertEqual(Obj, ObjMsg).
+
 dotted_values_reconcile() ->
     {B, K} = {<<"b">>, <<"k">>},
     A = riak_object:increment_vclock(riak_object:new(B, K, <<"a">>), a),
@@ -2258,7 +2343,7 @@ head_binary(VC1) ->
     head_binary(VC1, false).
 
 head_binary(VC1, IsDeleted) ->
-    DelBin = 
+    DelBin =
         case IsDeleted of
             true -> <<1>>;
             false -> <<0>>
@@ -2289,7 +2374,7 @@ from_binary_headonly_test() ->
     Bucket = <<"B">>,
     Key = <<"K1">>,
     VC1 = term_to_binary(vclock:fresh(a, 3)),
-    
+
     RObjBin = head_binary(VC1, false),
     RObj = riak_object:from_binary(Bucket, Key, RObjBin),
 
@@ -2297,7 +2382,7 @@ from_binary_headonly_test() ->
     ?assertMatch(VC1, term_to_binary(riak_object:vclock(RObj))),
     ?assertMatch(true, is_head(RObj)),
     ?assertMatch(false, riak_kv_util:is_x_deleted(RObj)),
-    
+
     RObjBinD = head_binary(VC1, true),
     RObjD = riak_object:from_binary(Bucket, Key, RObjBinD),
     ?assertMatch(true, is_robject(RObjD)),
@@ -2382,13 +2467,13 @@ summary_binary_extract() ->
     ?assertMatch(true, element(1, is_aae_object_deleted(SibBinB, true))),
     ?assertMatch(false, element(1, is_aae_object_deleted(SibBinC, true))),
     ?assertMatch({true, undefined}, is_aae_object_deleted(SibBinE, false)),
-    
+
     ObjBinA = trim_value_frombinary(to_binary(v1, ObjectA)),
     ObjBinB = trim_value_frombinary(to_binary(v1, ObjectB)),
     ObjBinC = trim_value_frombinary(to_binary(v1, ObjectC)),
     ObjBinD = trim_value_frombinary(to_binary(v1, ObjectD)),
     ObjBinE = trim_value_frombinary(to_binary(v1, ObjectE)),
-    
+
     % Prove that we cna extract metadata - and see is deleted status
     MDLA = aae_fold_metabin(ObjBinA, []),
     MDLB = aae_fold_metabin(ObjBinB, []),
@@ -2400,7 +2485,7 @@ summary_binary_extract() ->
     ?assertMatch({false, undefined}, is_aae_object_deleted(MDLC, false)),
     ?assertMatch({true, undefined}, is_aae_object_deleted(MDLD, false)),
     ?assertMatch({true, undefined}, is_aae_object_deleted(MDLE, false)),
-    
+
     % Should be able to see is_deleted status straight from binary
     ?assertMatch({false, undefined}, is_aae_object_deleted(ObjBinA, false)),
     ?assertMatch({true, undefined}, is_aae_object_deleted(ObjBinB, false)),

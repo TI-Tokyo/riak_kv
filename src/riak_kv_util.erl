@@ -49,7 +49,6 @@
          overload_reply/1,
          get_backend_config/3,
          is_modfun_allowed/2]).
--export([report_hashtree_tokens/0, reset_hashtree_tokens/2]).
 
 -include_lib("riak_kv_vnode.hrl").
 
@@ -274,7 +273,7 @@ preflist_siblings(Index, N, Ring) ->
     lists:reverse(Pred) ++ Succ.
 
 -spec responsible_preflists(index()) -> [index_n()].
-responsible_preflists(Index) ->
+responsible_preflists(Index) when is_integer(Index) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     responsible_preflists(Index, Ring).
 

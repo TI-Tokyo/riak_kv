@@ -36,16 +36,19 @@
          to_index_query/2,
          make_continuation/1,
          return_terms/2,
-         return_body/1,
+         return_foldtype/1,
          upgrade_query/1,
          object_key_in_range/3,
          index_key_in_range/3,
-         add_timeout_opt/2
+         add_timeout_opt/2,
+         is_system_index/1,
+         system_index_list/0
         ]).
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
+-include("riak_kv_ts.hrl").
 -include("riak_kv_wm_raw.hrl").
 -include("riak_kv_index.hrl").
 -define(TIMEOUT, 30000).
@@ -63,14 +66,13 @@
 %%                          | {field_parsing_failed, {Field :: binary(), Value :: binary()}}.
 
 %% @type bucketname()      = binary().
-%% @type index_field()     = binary().
-%% @type index_value()     = binary() | integer().
-%% @type query_element()   = {eq,    index_field(), index_value()} |
-%%                           {range, index_field(), index_value(), index_value()}
-
-% -type query_def() :: {ok, term()} | {error, term()} | {term(), {error, term()}}.
-% -export_type([query_def/0]).
--type query_def() :: #riak_kv_index_v3{}|#riak_kv_index_v2{}.
+-type index_field() :: binary().
+-type index_value() :: binary() | integer().
+-type query_def() :: ?KV_INDEX_Q{} |
+                     #riak_kv_index_v3{} |
+                     #riak_kv_index_v2{} |
+                     {eq, index_field(), index_value()} |
+                     {range, index_field(), index_value(), index_value()}.
 -export_type([query_def/0]).
 
 -type last_result() :: {value(), key()} | key().
@@ -88,6 +90,18 @@ mapred_index(_Pipe, [Bucket, Query], Timeout) ->
     {ok, ReqId, _} =
         riak_client:stream_get_index(Bucket, Query, [{timeout, Timeout}], C),
     {ok, Bucket, ReqId}.
+
+-spec is_system_index(binary()) -> boolean().
+is_system_index(<<"$bucket">>) ->
+    true;
+is_system_index(<<"$key">>) ->
+    true;
+is_system_index(_) ->
+    false.
+
+-spec system_index_list() -> list(binary()).
+system_index_list() ->
+    [<<"$bucket">>, <<"$key">>].
 
 %% @spec parse_object_hook(riak_object:riak_object()) ->
 %%         riak_object:riak_object() | {fail, [failure_reason()]}
@@ -369,8 +383,13 @@ upgrade_query(#riak_kv_index_v2{
         end_inclusive=EndInclusive,
         return_body=ReturnBody};
 upgrade_query(Q) when is_tuple(Q) ->
-    {ok, Q2} = make_query(Q, ?KV_INDEX_Q{}),
-    Q2.
+    case riak_kv_select:is_sql_select_record(Q) of
+        true ->
+            Q;
+        false ->
+            {ok, Q2} = make_query(Q, ?KV_INDEX_Q{}),
+            Q2
+    end.
 
 %% @doc Downgrade a lastest version query record to a previous version.
 -spec downgrade_query(V :: query_version(), ?KV_INDEX_Q{}) ->
@@ -408,14 +427,13 @@ return_terms(true, OldQ) ->
 return_terms(_, _) ->
     false.
 
-%% @doc Should the object body of an indexed key
-%% be returned with the result?
-return_body(?KV_INDEX_Q{return_body=true, filter_field=FF})
+%% @doc what type of fold should be performed
+return_foldtype(?KV_INDEX_Q{return_body=true, filter_field=FF})
   when FF =:= ?KEYFIELD;
        FF =:= ?BUCKETFIELD ->
-    true;
-return_body(_) ->
-    false.
+    fold_objects;
+return_foldtype(_) ->
+    fold_keys.
 
 %% @doc is an index key in range for a 2i query?
 index_key_in_range({Bucket, Key, Field, Term}=IK, Bucket,
@@ -491,7 +509,14 @@ make_continuation([]) ->
     undefined;
 make_continuation(L) ->
     Last = lists:last(L),
-    base64:encode(term_to_binary(Last)).
+    encode_continuation(Last).
+
+%% @doc Helper function for `make_continuation/1'; results can be
+%% either keys or full objects, and we only wish to encode the key
+encode_continuation({o, Key, _Body}) ->
+    encode_continuation(Key);
+encode_continuation(Key) ->
+    base64:encode(term_to_binary(Key)).
 
 %% @doc decode a continuation received from the outside world.
 -spec decode_continuation(continuation() | undefined) -> last_result() | undefined.
