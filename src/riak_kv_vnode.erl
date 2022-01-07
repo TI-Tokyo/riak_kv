@@ -1,4 +1,4 @@
-%% -------------------------------------------------------------------
+>%% -------------------------------------------------------------------
 %%
 %% riak_kv_vnode: VNode Implementation
 %%
@@ -251,7 +251,8 @@
                   readrepair=false :: boolean(),
                   is_index=false :: boolean(), %% set if the b/end supports indexes
                   crdt_op = undefined :: undefined | term(), %% if set this is a crdt operation
-                  hash_ops = no_hash_ops
+                  hash_ops = no_hash_ops,
+                  is_write_once = false :: boolean()
                  }).
 -type putargs() :: #putargs{}.
 
@@ -2661,7 +2662,8 @@ do_put(Sender, {Bucket, _Key}=BKey, RObj, ReqID, StartTime, Options, State) ->
                        starttime=StartTime,
                        readrepair = ReadRepair,
                        prunetime=PruneTime,
-                       crdt_op = CRDTOp},
+                       crdt_op = CRDTOp,
+                       is_write_once = proplists:get_value(is_write_once,Options,false)},
     {PrepPutRes, UpdPutArgs, State2} = prepare_put(State, PutArgs),
     {Reply, UpdState} = perform_put(PrepPutRes, State2, UpdPutArgs),
     riak_core_vnode:reply(Sender, Reply),
@@ -2739,14 +2741,16 @@ prepare_put(State=#state{vnodeid=VId,
                              coord=Coord,
                              robj=RObj,
                              starttime=StartTime,
-                             bprops = BProps}) ->
+                             bprops = BProps,
+                             is_write_once = IsWriteOnce}) ->
     %% Can we avoid reading the existing object? If this is not an
-    %% index backend, and the bucket is set to last-write-wins, then
-    %% no need to incur additional get. Otherwise, we need to read the
+    %% index backend, and the bucket is set to last-write-wins or write_once,
+    %% then no need to incur additional get. Otherwise, we need to read the
     %% old object to know how the indexes have changed.
     IndexBackend = is_indexed_backend(Mod, Bucket, ModState),
     IsSearchable = maybe_requires_existing_object(UpdateHook, BProps),
-    SkipReadBeforeWrite = LWW andalso (not IndexBackend) andalso (not IsSearchable),
+    SkipReadBeforeWrite = IsSearchable
+        orelse (LWW andalso (not IndexBackend) andalso (not IsSearchable)),
     case SkipReadBeforeWrite of
         true ->
             prepare_blind_put(Coord, RObj, VId, StartTime, PutArgs, State);
