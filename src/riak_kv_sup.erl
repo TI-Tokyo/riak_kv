@@ -99,6 +99,9 @@ init([]) ->
     TimeSeries =  {riak_kv_ts_sup,
                     {riak_kv_ts_sup, start_link, []},
                     permanent, 30000, worker, [riak_kv_ts_sup]},
+    QrySup = {riak_kv_qry_sup,
+	      {riak_kv_qry_sup, start_link, []},
+	      permanent, infinity, supervisor, [riak_kv_qry_sup]},
 
     % Figure out which processes we should run...
     HasStorageBackend = (app_helper:get_env(riak_kv, storage_backend) /= undefined),
@@ -122,8 +125,13 @@ init([]) ->
         ClusterAAEFsmSup,
         HotBackupAAEFsmSup,
         [EnsemblesKV || riak_core_sup:ensembles_enabled()],
+	QrySup,
+        JSSup,
+        MapJSPool,
+        ReduceJSPool,
+        HookJSPool,
         HTTPCache
     ]),
 
-    % Run the proesses...
+    % Run the processes...
     {ok, {{one_for_one, 10, 10}, Processes}}.
