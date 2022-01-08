@@ -256,7 +256,7 @@ get_li_key(RObj) when is_record(RObj, r_object) ->
     MetaData = get_metadata(RObj),
     _Key = dict:fetch(?MD_LI_IDX, MetaData).
 
-%% @doc remove all Objects from the list that are causally
+%% @private remove all Objects from the list that are causally
 %% dominated by any other object in the list. Only concurrent /
 %% conflicting objects will remain.
 remove_dominated(Objects) ->
