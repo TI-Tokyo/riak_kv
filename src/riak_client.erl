@@ -444,7 +444,7 @@ put(RObj, W, DW, Timeout, Options, {?MODULE, [_Node, _ClientId]}=THIS) ->
     put(RObj, [{w, W}, {dw, DW}, {timeout, Timeout} | Options], THIS).
 
 maybe_normal_put(RObj, Options, {?MODULE, [Node, _ClientId]}=THIS) when is_list(Options) ->
-    case is_write_once(Node, riak_object:bucket(RObj)) of
+    case write_once(Node, riak_object:bucket(RObj)) of
         true ->
             write_once_put(Node, RObj, Options, THIS);
         false ->
@@ -1134,9 +1134,9 @@ consistent_object(Node, Bucket) ->
             Result
     end.
 
-is_write_once(Node, Bucket) when Node =:= node() ->
+write_once(Node, Bucket) when Node =:= node() ->
     riak_kv_util:get_write_once(Bucket);
-is_write_once(Node, Bucket) ->
+write_once(Node, Bucket) ->
     case rpc:call(Node, riak_kv_util, get_write_once, [Bucket]) of
         {badrpc, {'EXIT', {undef, _}}} ->
             false;

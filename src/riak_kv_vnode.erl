@@ -251,8 +251,7 @@
                   readrepair=false :: boolean(),
                   is_index=false :: boolean(), %% set if the b/end supports indexes
                   crdt_op = undefined :: undefined | term(), %% if set this is a crdt operation
-                  hash_ops = no_hash_ops,
-                  is_write_once = false :: boolean()
+                  hash_ops = no_hash_ops
                  }).
 -type putargs() :: #putargs{}.
 
@@ -2742,7 +2741,6 @@ prepare_put(State=#state{vnodeid = VId,
                              coord = Coord,
                              robj = RObj,
                              starttime = StartTime,
-                             is_write_once = IsWriteOnce,
                              bprops = BProps,
                              starttime = StartTime}) ->
 
@@ -2757,8 +2755,7 @@ prepare_put(State=#state{vnodeid = VId,
     %% old object to know how the indexes have changed.
     IndexBackend = is_indexed_backend(Mod, Bucket, ModState),
     IsSearchable = maybe_requires_existing_object(UpdateHook, BProps),
-    SkipReadBeforeWrite = IsWriteOnce
-        orelse (LWW andalso (not IndexBackend) andalso (not IsSearchable)),
+    SkipReadBeforeWrite = LWW andalso (not IndexBackend) andalso (not IsSearchable),
     case SkipReadBeforeWrite of
         true ->
             prepare_blind_put(Coord, RObj, VId, StartTime, PutArgs, State);
