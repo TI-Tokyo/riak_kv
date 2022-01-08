@@ -411,9 +411,9 @@ validate(timeout, StateData0 = #state{from = {raw, ReqId, _Pid},
                         {[], true};
                     _ ->
                         case Postcommit of
-                            [] -> 
+                            [] ->
                                 {[], false};
-                            _ -> 
+                            _ ->
                                 {[{returnbody,true}], false}
                         end
                 end,
