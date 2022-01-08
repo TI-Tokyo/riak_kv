@@ -11,10 +11,17 @@
          timestamp_to_ms/1,
          ms_to_timestamp/1]).
 
--type time_ms() :: non_neg_integer().
-%% A timestamp in millisconds representing number of millisconds from Unix epoch
+%% @doc This module serves to generate time quanta on multi - (year, month, day, hour, minute,
+%% second) boundaries. The quanta are based on an origin time of Jan 1, 1970 00:00:00 (Unix Epoch).
+%% The function `quanta/3` takes a time in milliseconds to quantify, a size of the quanta, and the
+%% units of said quanta. For instance, the following call would create buckets for timestamps on 15
+%% minute boundaries: `quanta(Time, 15, m)`. The quanta time is returned in milliseconds since the
+%% Unix epoch.
 
+%% @doc A timestamp in millisconds representing number of millisconds from Unix epoch
+-type time_ms() :: non_neg_integer().
 -type time_unit() :: y | mo | d | h | m | s.
+
 -type err() :: {error, term()}.
 
 %% The Number of Days from Jan 1, 0 to Jan 1, 1970
