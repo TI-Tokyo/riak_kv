@@ -45,25 +45,30 @@
           max_results :: integer() | undefined
          }).
 
-%% TODO these types will be improved over the duration of the time series project
--type selection()     :: term().
--type filter()        :: term().
--type operator()      :: term().
--type sorter()        :: term().
--type combinator()    :: term().
--type limit()         :: any().
+-record(colocation, {
+          create_key_fn      :: atom(),
+          args          = [] :: list()
+         }).
 
-%% this the query record for the local index (the composite index)
-%% as used in time series (and going forward)
+%% TODO these types will be improved over the duration of the time series project
+-type selection()  :: term().
+-type filter()     :: term().
+-type operator()   :: term().
+-type sorter()     :: term().
+-type combinator() :: term().
+-type colocation() :: #colocation{}.
+-type limit()      :: any().
+
 -record(riak_kv_li_index_v1, {
-	  bucket      = <<>> :: binary(),
-	  selections  = []   :: [selection()],
-	  filters     = []   :: [filter()],
-	  operators   = []   :: [operator()],
-	  sorters     = []   :: [sorter()],
-	  combinators = []   :: [combinator()],
-	  limit       = none :: limit()
-	 }).
+          key              :: binary(),
+          colocation       :: colocation(),
+          selections  = [] :: [selection()],
+          filters     = [] :: [filter()],
+          operators   = [] :: [operator()],
+          sorters     = [] :: [sorter()],
+          combinators = [] :: [combinator()],
+          limit            :: limit()
+         }).
 
 -define(KV_INDEX_Q,    #riak_kv_index_v3).
 -define(KV_LI_INDEX_Q, #riak_kv_li_index_v1).
