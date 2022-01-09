@@ -14,6 +14,52 @@
           req_id :: non_neg_integer(),
           caller :: pid()}).
 
+-record(riak_kv_listkeys_req_v3, {
+          bucket :: binary() | tuple(),
+          item_filter :: function()}).
+
+%% same as _v3, but triggers ack-based backpressure
+-record(riak_kv_listkeys_req_v4, {
+          bucket :: binary() | tuple(),
+          item_filter :: function()}).
+
+-record(riak_kv_listbuckets_req_v1, {
+          item_filter :: function()}).
+
+-record(riak_kv_index_req_v1, {
+          bucket :: binary() | tuple(),
+          item_filter :: riak_kv_coverage_filter:filter(),
+          qry :: riak_index:query_def()}).
+
+%% same as _v1, but triggers ack-based backpressure
+-record(riak_kv_index_req_v2, {
+          bucket :: binary() | tuple(),
+          item_filter :: riak_kv_coverage_filter:filter(),
+          qry :: riak_index:query_def()}).
+
+%% TODO get riak_ql types included properly somehow
+-record(riak_kv_sql_select_req_v1, {
+	  bucket :: binary() | tuple(),
+	  qry}).
+
+-record(riak_kv_vnode_status_req_v1, {}).
+
+-record(riak_kv_delete_req_v1, {
+          bkey :: {binary(), binary()},
+          req_id :: non_neg_integer()}).
+
+-record(riak_kv_map_req_v1, {
+          bkey :: {binary(), binary()},
+          qterm :: term(),
+          keydata :: term(),
+          from :: term()}).
+
+-record(riak_kv_vclock_req_v1, {
+          bkeys = [] :: [{binary(), binary()}]
+         }).
+
+-define(KV_PUT_REQ, #riak_kv_put_req_v1).
+-define(KV_W1C_PUT_REQ, #riak_kv_w1c_put_req_v1).
 -define(KV_W1C_PUT_REPLY, #riak_kv_w1c_put_reply_v1).
 
 %% @doc vnode_lock(PartitionIndex) is a kv per-vnode lock, used possibly,

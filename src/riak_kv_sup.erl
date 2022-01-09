@@ -92,9 +92,9 @@ init([]) ->
                 {riak_kv_eraser, start_link, []},
                 permanent, 30000, worker, [riak_kv_eraser]},
 
-    EnsemblesKV =  {riak_kv_ensembles,
-                    {riak_kv_ensembles, start_link, []},
-                    permanent, 30000, worker, [riak_kv_ensembles]},
+    EnsemblesKV = {riak_kv_ensembles,
+		   {riak_kv_ensembles, start_link, []},
+		   permanent, 30000, worker, [riak_kv_ensembles]},
 
     TimeSeries =  {riak_kv_ts_sup,
                     {riak_kv_ts_sup, start_link, []},
@@ -125,7 +125,7 @@ init([]) ->
         ClusterAAEFsmSup,
         HotBackupAAEFsmSup,
         [EnsemblesKV || riak_core_sup:ensembles_enabled()],
-        % QrySup,
+	QrySup,
         JSSup,
         MapJSPool,
         ReduceJSPool,

@@ -203,6 +203,7 @@
                       | kv_head_request
                       | kv_aaefold_request
                       | kv_hotbackup_request
+                      | kv_sql_select_req
                       | unknown.
 
 -spec request_type(request()) -> request_type().
@@ -222,6 +223,7 @@ request_type(#riak_kv_vclock_req_v1{})-> kv_vclock_request;
 request_type(#riak_kv_head_req_v1{}) -> kv_head_request;
 request_type(#riak_kv_aaefold_req_v1{}) -> kv_aaefold_request;
 request_type(#riak_kv_hotbackup_req_v1{}) -> kv_hotbackup_request;
+request_type(#riak_kv_sql_select_req_v1{}) -> kv_sql_select_req;
 request_type(_) -> unknown.
 
 -spec new_put_request(bucket_key(),
