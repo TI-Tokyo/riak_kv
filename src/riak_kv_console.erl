@@ -534,7 +534,7 @@ bucket_type_create(_, Type, _) ->
 
 %%
 -spec maybe_parse_table_def(BucketType :: binary(),
-                            Props :: list(proplists:property())) -> 
+                            Props :: list(proplists:property())) ->
         {ok, Props2 :: [proplists:property()]} | {error, any()}.
 maybe_parse_table_def(BucketType, Props) ->
     case lists:keytake(<<"table_def">>, 1, Props) of
@@ -545,10 +545,35 @@ maybe_parse_table_def(BucketType, Props) ->
                 {ok, DDL} ->
                     ok = assert_type_and_table_name_same(BucketType, DDL),
                     ok = try_compile_ddl(DDL),
-                    {ok, [{<<"ddl">>, DDL} | PropsNoDef]};
+                    ok = assert_write_once_not_false(PropsNoDef),
+                    apply_timeseries_bucket_props(DDL, PropsNoDef);
                 {error, _} = E ->
                     E
             end
+    end.
+
+%%
+-spec apply_timeseries_bucket_props(DDL::any(),
+                                    Props1::[proplists:property()]) ->
+        {ok, {Props2::[proplists:property()]}}.
+apply_timeseries_bucket_props(DDL, Props1) ->
+    Props2 = lists:keystore(
+        <<"write_once">>, 1, Props1, {<<"write_once">>, true}),
+    {ok, [{<<"ddl">>, DDL} | Props2]}.
+
+%% Time series must always use write_once so throw an error if the write_once
+%% property is ever set to false. This prevents a user thinking they have
+%% disabled write_once when it has been set to true internally.
+assert_write_once_not_false(Props) ->
+    case lists:keyfind(<<"write_once">>, 1, Props) of
+        {<<"write_once">>, false} ->
+            io:format(
+                "Error, the bucket type could not be the created. "
+                "The write_once property had a value of false but must be true "
+                "or left blank~n"),
+            error(write_once_cannot_be_false);
+        _ ->
+            ok
     end.
 
 %%
@@ -926,7 +951,7 @@ bucket_type_create_with_timeseries_table_test() ->
         <<"CREATE TABLE my_type ",
           "(time TIMESTAMP NOT NULL, ",
           " PRIMARY KEY (time))">>,
-    JSON = json_props([{bucket_type, my_type}, 
+    JSON = json_props([{bucket_type, my_type},
                        {table_def, TableDef}]),
     bucket_type_create(
         fun(Props) -> put(Ref, Props) end,
@@ -934,8 +959,26 @@ bucket_type_create_with_timeseries_table_test() ->
         mochijson2:decode(JSON)
     ),
     ?assertMatch(
-        [{ddl, _}, {bucket_type, <<"my_type">>}],
+        [{ddl, _}, {bucket_type, <<"my_type">>} | _],
         get(Ref)
+    ).
+
+bucket_type_create_with_timeseries_table_is_write_once_test() ->
+    Ref = make_ref(),
+    TableDef =
+        <<"CREATE TABLE my_type ",
+          "(time TIMESTAMP NOT NULL, ",
+          " PRIMARY KEY (time))">>,
+    JSON = json_props([{bucket_type, my_type},
+                       {table_def, TableDef}]),
+    bucket_type_create(
+        fun(Props) -> put(Ref, Props) end,
+        <<"my_type">>,
+        mochijson2:decode(JSON)
+    ),
+    ?assertEqual(
+        {write_once, true},
+        lists:keyfind(write_once, 1, get(Ref))
     ).
 
 bucket_type_and_table_name_must_match_test() ->
@@ -944,7 +987,7 @@ bucket_type_and_table_name_must_match_test() ->
         <<"CREATE TABLE times ",
           "(time TIMESTAMP NOT NULL, ",
           " PRIMARY KEY (time))">>,
-    JSON = json_props([{bucket_type, my_type}, 
+    JSON = json_props([{bucket_type, my_type},
                        {table_def, TableDef}]),
     % if this error changes slightly it is not so important, as long as
     % the bucket type is not allowed to be created.
@@ -953,6 +996,24 @@ bucket_type_and_table_name_must_match_test() ->
             {error,
                 {bucket_type_and_table_name_different,
                     <<"my_type">>,<<"times">>}}},
+        bucket_type_create(
+            fun(Props) -> put(Ref, Props) end,
+            <<"my_type">>,
+            mochijson2:decode(JSON)
+        )
+    ).
+
+bucket_type_create_with_timeseries_table_error_when_write_once_set_to_false_test() ->
+    Ref = make_ref(),
+    TableDef =
+        <<"CREATE TABLE my_type ",
+          "(time TIMESTAMP NOT NULL, ",
+          " PRIMARY KEY (time))">>,
+    JSON = json_props([{bucket_type, my_type},
+                       {table_def, TableDef},
+                       {write_once, false}]),
+    ?assertError(
+        write_once_cannot_be_false,
         bucket_type_create(
             fun(Props) -> put(Ref, Props) end,
             <<"my_type">>,
