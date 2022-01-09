@@ -239,7 +239,10 @@ reconcile(Objects, AllowMultiple) ->
 -spec get_ts_local_key(riak_object()) ->
         {ok, key()} | error.
 get_ts_local_key(RObj) when is_record(RObj, r_object) ->
-    dict:find(?MD_TS_LOCAL_KEY, get_metadata(RObj)).
+    % TODO 
+    % using update metadata while testing with ts_run2, updates should
+    % be applied by this point!
+    dict:find(?MD_TS_LOCAL_KEY, get_update_metadata(RObj)).
 
 %% @private remove all Objects from the list that are causally
 %% dominated by any other object in the list. Only concurrent /
@@ -1618,6 +1621,7 @@ encode_msgpack(Bin) ->
 decode_msgpack(ValBin) ->
     {ok, Unpacked} = msgpack:unpack(ValBin, [{format, jsx}]),
     Unpacked.
+
 
 %% Update X-Riak-VTag and X-Riak-Last-Modified in the object's metadata, if
 %% necessary.
