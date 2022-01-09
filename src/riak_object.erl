@@ -35,7 +35,6 @@
 -type bucket() :: binary() | {binary(), binary()}.
 %% -type bkey() :: {bucket(), key()}.
 -type value() :: term().
--type li_index() :: {key(), [{binary(), index_value()}]}.
 
 -type riak_object_dict() :: dict:dict().
 
@@ -108,7 +107,7 @@
 -export([find_bestobject/1]).
 -export([spoof_getdeletedobject/1]).
 -export([delete_hash/1]).
--export([get_li_index/1, is_li/1, get_li_key/1]).
+-export([get_ts_local_key/1]).
 
 -ifdef(TEST).
 -export([convert_object_to_headonly/3]). % Used in unit testing of get_core
@@ -120,7 +119,6 @@ new({T, B}, K, V) when is_binary(T), is_binary(B), is_binary(K) ->
     new_int({T, B}, K, V, no_initial_metadata);
 new(B, K, V) when is_binary(B), is_binary(K) ->
     new_int(B, K, V, no_initial_metadata).
-
 %% @doc Constructor for new riak objects with an initial content-type.
 -spec new(Bucket::bucket(), Key::key(), Value::value(),
           string() | riak_object_dict() | no_initial_metadata) -> riak_object().
@@ -234,27 +232,11 @@ reconcile(Objects, AllowMultiple) ->
             RObj
     end.
 
-%% @doc get the composite index from a riak_object
--spec get_li_index(riak_object()) -> li_index().
-get_li_index(RObj) when is_record(RObj, r_object) ->
-    MetaData = get_metadata(RObj),
-    case dict:find(?MD_LI_IDX, MetaData) of
-        {ok, LI} -> LI;
-        error    -> exit("attempting to read non-existent key")
-    end.
-
-%% @doc checks if the object has a composite index in it
--spec is_li(riak_object()) -> boolean().
-is_li(RObj) when is_record(RObj, r_object) ->
-    MetaData = get_metadata(RObj),
-    dict:is_key(?MD_LI_IDX, MetaData).
-
 %% @doc gets the Local Index key
-%% TODO return error or crash?
--spec get_li_key(riak_object()) -> key().
-get_li_key(RObj) when is_record(RObj, r_object) ->
-    MetaData = get_metadata(RObj),
-    _Key = dict:fetch(?MD_LI_IDX, MetaData).
+-spec get_ts_local_key(riak_object()) ->
+        {ok, key()} | error.
+get_ts_local_key(RObj) when is_record(RObj, r_object) ->
+    dict:find(?MD_TS_LOCAL_KEY, get_metadata(RObj)).
 
 %% @private remove all Objects from the list that are causally
 %% dominated by any other object in the list. Only concurrent /

@@ -75,6 +75,15 @@ workers() ->
 start_link(Name) ->
     gen_server:start_link({local, Name}, ?MODULE, [], []).
 
+%%
+get_key(RObj) ->
+    case riak_object:get_ts_local_key(RObj) of
+        {ok, LocalKey} ->
+            LocalKey;
+        error ->
+            riak_object:key(RObj)
+    end.
+
 %% @spec put(RObj :: riak_object:riak_object(), riak_object:options(), riak_object:riak_client()) ->
 %%        ok |
 %%       {error, timeout} |
@@ -82,9 +91,10 @@ start_link(Name) ->
 put(RObj, Options) ->
     StartTS = os:timestamp(),
     Bucket = riak_object:bucket(RObj),
-    Key = riak_object:key(RObj),
+    Key = get_key(RObj),
+    BKey = {Bucket, Key},
     BucketProps = riak_core_bucket:get_bucket(Bucket),
-    DocIdx = riak_core_util:chash_key({Bucket, Key}, BucketProps),
+    DocIdx = riak_core_util:chash_key(BKey, BucketProps),
     NVal = proplists:get_value(n_val, BucketProps),
     Preflist =
         case proplists:get_value(sloppy_quorum, Options, true) of

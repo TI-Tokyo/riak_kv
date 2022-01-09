@@ -2807,11 +2807,6 @@ prepare_put(State=#state{vnodeid = VId,
                              bprops = BProps,
                              starttime = StartTime}) ->
 
-    %% if this is a composite index write we need to change the key to be
-    %% the key we will actually write into leveldb
-    NewK = maybe_rewrite_li_key(RObj, Key),
-    PutArgs1 = PutArgs#putargs{bkey = {Bucket, NewK}},
-
     %% Can we avoid reading the existing object? If this is not an
     %% index backend, and the bucket is set to last-write-wins or write_once,
     %% then no need to incur additional get. Otherwise, we need to read the
@@ -3134,12 +3129,6 @@ do_reformat({Bucket, Key}=BKey, State=#state{mod=Mod, modstate=ModState}) ->
     end,
     {Reply, UpdState}.
 
-%% @private
-maybe_rewrite_li_key(RObj, Key) ->
-    case riak_object:is_li(RObj) of
-	true  -> riak_object:get_li_key(RObj);
-	false -> Key
-    end.
 
 %% @private
 %% enforce allow_mult bucket property so that no backend ever stores
