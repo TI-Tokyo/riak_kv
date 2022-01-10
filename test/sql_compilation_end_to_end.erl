@@ -116,16 +116,16 @@ get_standard_lk() -> #key_v1{ast = [
              {error, {missing_param, <<"Missing parameter user in where clause.">>}}).
 
 ?assert_test(spanning_qry_test,
-             "CREATE TABLE GeoCheckin " ++
-                 "(geohash varchar not null, " ++
-                 "user varchar not null, " ++
-                 "time timestamp not null, " ++
-                 "weather varchar not null, " ++
-                 "temperature varchar, " ++
-                 "PRIMARY KEY((quantum(time, 15, s)), time, user))",
-             "select weather from GeoCheckin where time > 3000 and time < 18000 "
-             "and user = gordon",
-             [
+              "CREATE TABLE GeoCheckin " ++
+                  "(geohash varchar not null, " ++
+                  "user varchar not null, " ++
+                  "time timestamp not null, " ++
+                  "weather varchar not null, " ++
+                  "temperature varchar, " ++
+                  "PRIMARY KEY((quantum(time, 15, s)), time, user))",
+              "select weather from GeoCheckin where time > 3000 and time < 18000 "
+              "and user = gordon",
+              [
               #riak_sql_v1{'SELECT'      = [[<<"weather">>]],
                            'FROM'        = <<"GeoCheckin">>,
                            'WHERE'       = [
@@ -148,8 +148,7 @@ get_standard_lk() -> #key_v1{ast = [
                                                        ]
                                             },
                                             {filter, []},
-                                            {start_inclusive, false},
-                                            {end_inclusive,   true}
+                                            {start_inclusive, false}
                                            ],
                            helper_mod    = riak_ql_ddl:make_module_name(<<"GeoCheckin">>),
                            partition_key = get_standard_pk(),
@@ -162,7 +161,7 @@ get_standard_lk() -> #key_v1{ast = [
                                             {startkey, [
                                                         {<<"time">>,
                                                          timestamp,
-                                                         3000},
+                                                         15000},
                                                         {<<"user">>,
                                                          binary,
                                                          <<"gordon">>}
@@ -171,7 +170,7 @@ get_standard_lk() -> #key_v1{ast = [
                                             {endkey,   [
                                                         {<<"time">>,
                                                          timestamp,
-                                                         15000},
+                                                         18000},
                                                         {<<"user">>,
                                                          binary,
                                                          <<"gordon">>}
