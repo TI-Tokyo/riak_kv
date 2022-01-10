@@ -37,7 +37,14 @@
          process/2,
          process_stream/3]).
 
-%% General-purpose function with no obviously better place to put it
+%% NOTE: Clients will work with table names. Those names map to a
+%% bucket type/bucket name tuple in Riak, with both the type name and
+%% the bucket name matching the table.
+%%
+%% Thus, as soon as code transitions from dealing with timeseries
+%% concepts to Riak KV concepts, the table name must be converted to a
+%% bucket tuple. This function is a convenient mechanism for doing so
+%% and making that transition more obvious.
 -export([table_to_bucket/1]).
 
 -record(state, {}).
@@ -245,9 +252,10 @@ put_data(Data, Table, Mod) ->
                       riak_ql_ddl:get_local_key(DDL, Raw)),
 
               RObj0 = riak_object:new(table_to_bucket(Table), PK, Obj),
-              MD_ = riak_object:get_update_metadata(RObj0),
-              MD  = dict:store(?MD_TS_LOCAL_KEY, LK, MD_),
-              RObj = riak_object:update_metadata(RObj0, MD),
+              MD = riak_object:get_update_metadata(RObj0),
+              MD1 = dict:store(?MD_TS_LOCAL_KEY, LK, MD),
+              MD2 = dict:store(?MD_DDL_VERSION, ?DDL_VERSION, MD1),
+              RObj = riak_object:update_metadata(RObj0, MD2),
 
               case riak_client:put(RObj, {riak_client, [node(), undefined]}) of
                   {error, _Why} ->
