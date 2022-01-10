@@ -2,7 +2,7 @@
 %%
 %% riak_client: object used for access into the riak system
 %%
-%% Copyright (c) 2007-2013 Basho Technologies, Inc.  All Rights Reserved.
+%% Copyright (c) 2007-2015 Basho Technologies, Inc.  All Rights Reserved.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -59,6 +59,12 @@
 -define(DEFAULT_TIMEOUT, 60000).
 -define(DEFAULT_FOLD_TIMEOUT, 3600000).
 -define(DEFAULT_ERRTOL, 0.00003).
+
+%% keys going via get path can eventually also be of TS kind (i.e., {PK, LK})
+-define(IS_KEY(K),
+        (is_binary(K)
+         orelse (is_tuple(K) andalso size(K) == 2
+                 andalso is_binary(element(1, K)) andalso is_binary(element(2, K))))).
 
 %% TODO: This type needs to be better specified and validated against
 %%       any dependents on riak_kv.
@@ -288,7 +294,7 @@ get(Bucket, Key, R, {?MODULE, [_Node, _ClientId]}=THIS) ->
 %%      nodes have responded with a value or error, or TimeoutMillisecs passes.
 get(Bucket, Key, R, Timeout, {?MODULE, [_Node, _ClientId]}=THIS) when
                                   (is_binary(Bucket) orelse is_tuple(Bucket)),
-                                  is_binary(Key),
+                                  ?IS_KEY(Key),
                                   (is_atom(R) or is_integer(R)),
                                   is_integer(Timeout) ->
     get(Bucket, Key, [{r, R}, {timeout, Timeout}], THIS).

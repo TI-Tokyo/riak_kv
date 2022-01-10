@@ -252,7 +252,7 @@ queue_fetch(timeout, StateData) ->
 
 
 %% @private
-prepare(timeout, StateData=#state{bkey=BKey={Bucket,_Key},
+prepare(timeout, StateData=#state{bkey = {Bucket, Key},
                                   options=Options,
                                   trace=Trace}) ->
     ?DTRACE(Trace, ?C_GET_FSM_PREPARE, [], ["prepare"]),
@@ -268,7 +268,9 @@ prepare(timeout, StateData=#state{bkey=BKey={Bucket,_Key},
             true ->
                 BucketProps
         end,
-    DocIdx = riak_core_util:chash_key(BKey, BucketProps),
+
+    DocIdx = riak_core_util:chash_key({Bucket, riak_kv_pb_timeseries:pk(Key)}, BucketProps),
+
     Bucket_N = get_option(n_val, BucketProps),
     CrdtOp = get_option(crdt_op, Options),
     ForceAAE = get_option(force_aae, Options, false),
@@ -296,18 +298,19 @@ prepare(timeout, StateData=#state{bkey=BKey={Bucket,_Key},
                         riak_core_apl:get_apl_ann(DocIdx, N, UpNodes)
                 end,
             RequestType = get_default_support_request_type(?DEFAULT_RT),
-            
             new_state_timeout(validate,
                                 StateData#state{
-                                            starttime=riak_core_util:moment(),
-                                            n = N,
-                                            bucket_props=Props,
-                                            preflist2 = Preflist2,
-                                            tracked_bucket = StatTracked,
-                                            crdt_op = CrdtOp,
-                                            request_type=RequestType,
-                                            force_aae = ForceAAE})
+                                  bkey = {Bucket, riak_kv_pb_timeseries:lk(Key)},
+                                  starttime=riak_core_util:moment(),
+                                  n = N,
+                                  bucket_props=Props,
+                                  preflist2 = Preflist2,
+                                  tracked_bucket = StatTracked,
+                                  crdt_op = CrdtOp,
+                                  request_type=RequestType,
+                                  force_aae = ForceAAE})
     end.
+
 
 %% @private
 validate(timeout, StateData=#state{from = {raw, ReqId, _Pid}, options = Options,
