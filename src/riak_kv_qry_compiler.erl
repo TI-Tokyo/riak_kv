@@ -80,7 +80,7 @@ expand_where(Where, #key_v1{ast = PAST}) ->
     if
         NoSubQueries =:= 1 ->
             [Where];
-        1 < NoSubQueries andalso NoSubQueries < ?MAXSUBQ ->
+        1 < NoSubQueries andalso NoSubQueries =< ?MAXSUBQ ->
             _NewWs = make_wheres(Where, QField, Min, Max, Boundaries);
         ?MAXSUBQ < NoSubQueries ->
             {error, {too_many_subqueries, NoSubQueries}}
@@ -157,8 +157,7 @@ check_if_timeseries(#ddl_v1{bucket = B, partition_key = PK, local_key = LK},
                         true  -> [];
                         false -> [{end_inclusive, true}]
                     end,
-           HasErrs = [X || {error, _} = X <- [StartKey, EndKey]],
-           case HasErrs of
+           case has_errors(StartKey, EndKey) of
                [] ->
                    RewrittenFilter = add_types_to_filter(Filter, Mod),
                    {true, lists:flatten([
@@ -167,10 +166,16 @@ check_if_timeseries(#ddl_v1{bucket = B, partition_key = PK, local_key = LK},
                                          {filter,   RewrittenFilter}
                                         ] ++ IncStart ++ IncEnd
                                        )};
-               _ ->
-                   {error, {invalid_where_clause, W}}
+               Errors ->
+                   {error, Errors}
            end
-    catch  _:_ -> {error, {where_not_timeseries, W}}
+    catch
+        error:{incomplete_where_clause, _} = E ->
+            {error, E};
+        error:Reason ->
+                                                % if it is not a known error then return the stack trace for
+                                                % debugging
+            {error, {where_not_timeseries, Reason, erlang:get_stacktrace()}}
     end;
 check_if_timeseries(_DLL, Where) ->
                                                 % TODO return the SQL string
