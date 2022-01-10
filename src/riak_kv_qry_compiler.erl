@@ -157,25 +157,22 @@ check_if_timeseries(#ddl_v1{bucket = B, partition_key = PK, local_key = LK},
                           true  -> [];
                           false -> [{end_inclusive, true}]
                       end,
-           case has_errors(StartKey, EndKey) of
+           HasErrs = [X || {error, _} = X <- [StartKey, EndKey]],
+           case HasErrs of
                [] ->
                    RewrittenFilter = add_types_to_filter(Filter, Mod),
+                   gg:format("Filter is ~p~n- RewrittenFitler is ~p~n",
+                             [Filter, RewrittenFilter]),
                    {true, lists:flatten([
                                          {startkey, StartKey},
                                          {endkey,   EndKey},
                                          {filter,   RewrittenFilter}
-                                        ] ++ IncStart ++IncEnd
+                                        ] ++ IncStart ++ IncEnd
                                        )};
-               Errors ->
-                   {error, Errors}
+               _ ->
+                   {error, {invalid_where_clause, W}}
            end
-    catch
-        error:{incomplete_where_clause, _} = E ->
-            {error, E};
-        error:Reason ->
-            % if it is not a known error then return the stack trace for
-            % debugging
-            {error, {where_not_timeseries, Reason, erlang:get_stacktrace()}}
+    catch  _:_ -> {error, {where_not_timeseries, W}}
     end;
 check_if_timeseries(_DLL, Where) ->
     % TODO return the SQL string
@@ -250,9 +247,9 @@ add_types2([{Op, Field, {_, Val}} | T], Mod, Acc) ->
 make_ands([]) ->
     [];
 make_ands([H | []]) ->
-    H;
+    [H];
 make_ands([H | T]) ->
-    {and_, H, make_ands(T)}.
+    [{and_, H, make_ands(T)}].
 
 rewrite(#key_v1{ast = AST}, W, Mod) ->
     rew2(AST, W, Mod, []).
