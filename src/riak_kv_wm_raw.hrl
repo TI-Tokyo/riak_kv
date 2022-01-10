@@ -24,8 +24,13 @@
 -define(MD_USERMETA, <<"X-Riak-Meta">>).
 -define(MD_INDEX,    <<"index">>).
 -define(MD_TS_LOCAL_KEY, <<"timeseries-local-key">>).
+-define(MD_DDL_VERSION,  <<"ddl">>).
 -define(MD_DELETED,  <<"X-Riak-Deleted">>).
 -define(MD_VAL_ENCODING, <<"X-Riak-Val-Encoding">>).
+
+%% for the first DDL version we just brute force it to 1
+-define(DDL_VERSION, 1).
+
 
 %% Names of HTTP header fields
 -define(HEAD_CTYPE,           "Content-Type").
