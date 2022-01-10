@@ -154,9 +154,9 @@ check_if_timeseries(#ddl_v1{bucket = B, partition_key = PK, local_key = LK},
                           false -> []
                       end,
            IncEnd = case includes(EndW, '<', Mod) of
-                          true  -> [];
-                          false -> [{end_inclusive, true}]
-                      end,
+                        true  -> [];
+                        false -> [{end_inclusive, true}]
+                    end,
            HasErrs = [X || {error, _} = X <- [StartKey, EndKey]],
            case HasErrs of
                [] ->
@@ -173,7 +173,7 @@ check_if_timeseries(#ddl_v1{bucket = B, partition_key = PK, local_key = LK},
     catch  _:_ -> {error, {where_not_timeseries, W}}
     end;
 check_if_timeseries(_DLL, Where) ->
-    % TODO return the SQL string
+                                                % TODO return the SQL string
     {error, {where_not_supported, Where}}.
 
 %%
@@ -237,7 +237,7 @@ add_types2([{Op, LHS, RHS} | T], Mod, Acc) when Op =:= and_ orelse
     NewAcc = {Op, add_types2([LHS], Mod, []), add_types2([RHS], Mod, [])},
     add_types2(T, Mod, [NewAcc | Acc]);
 add_types2([{Op, Field, {_, Val}} | T], Mod, Acc) ->
-    % Val2 = msgpack:pack(Val, [{format,jsx}]),
+                                                % Val2 = msgpack:pack(Val, [{format,jsx}]),
     NewAcc = {Op, {field, Field, Mod:get_field_type([Field])}, {const, Val}},
     add_types2(T, Mod, [NewAcc | Acc]).
 
@@ -266,7 +266,7 @@ rew2([#param_v1{name = [N]} | T], W, Mod, Acc) ->
             {error, {missing_param, ?E_MISSING_PARAM_IN_WHERE_CLAUSE(N)}};
         {value, {_, _, {_, Val}}, NewW} ->
             rew2(T, NewW, Mod, [{N, Type, Val} | Acc])
-end.
+    end.
 
 -ifdef(TEST).
 -compile(export_all).
@@ -377,16 +377,16 @@ simple_filter_typing_test() ->
               {'=', <<"extra">>, {int, 1}}
              ],
     Got = add_types_to_filter(Filter, Mod),
-    Expected = [{and_,
-                 {or_,
-                  {'=', {field, <<"weather">>, binary}, {const, <<"yankee">>}},
-                  {and_,
-                   {'=', {field, <<"geohash">>,     binary}, {const, <<"erko">>}},
-                   {'=', {field, <<"temperature">>, binary}, {const, <<"yelp">>}}
-                  }
-                 },
-                 {'=', {field, <<"extra">>, integer}, {const, 1}}
-                }],
+    Expected = {and_,
+                {or_,
+                 {'=', {field, <<"weather">>, binary}, {const, <<"yankee">>}},
+                 {and_,
+                  {'=', {field, <<"geohash">>,     binary}, {const, <<"erko">>}},
+                  {'=', {field, <<"temperature">>, binary}, {const, <<"yelp">>}}
+                 }
+                },
+                {'=', {field, <<"extra">>, integer}, {const, 1}}
+               },
     ?assertEqual(Expected, Got).
 
 %%
@@ -430,9 +430,9 @@ simple_rewrite_fail_1_test() ->
            {'=', <<"geohash">>, {"word", "yardle"}}
           ],
     ?assertEqual(
-        {error, {missing_param, ?E_MISSING_PARAM_IN_WHERE_CLAUSE("user")}},
-        rewrite(LK, W, Mod)
-    ).
+       {error, {missing_param, ?E_MISSING_PARAM_IN_WHERE_CLAUSE("user")}},
+       rewrite(LK, W, Mod)
+      ).
 
 simple_rewrite_fail_2_test() ->
     #ddl_v1{bucket = B} = get_standard_ddl(),
@@ -445,9 +445,9 @@ simple_rewrite_fail_2_test() ->
            {'=', <<"user">>, {"word", "yardle"}}
           ],
     ?assertEqual(
-        {error, {missing_param, ?E_MISSING_PARAM_IN_WHERE_CLAUSE("geohash")}},
-        rewrite(LK, W, Mod)
-    ).
+       {error, {missing_param, ?E_MISSING_PARAM_IN_WHERE_CLAUSE("geohash")}},
+       rewrite(LK, W, Mod)
+      ).
 
 simple_rewrite_fail_3_test() ->
     #ddl_v1{bucket = B} = get_standard_ddl(),
@@ -460,12 +460,12 @@ simple_rewrite_fail_3_test() ->
     W   = [
            {'=', <<"geohash">>, {"word", "yardle"}}
           ],
-    % TODO only returns error info about the first missing param, temperature
-    %      should also be in the error message.
+                                                % TODO only returns error info about the first missing param, temperature
+                                                %      should also be in the error message.
     ?assertEqual(
-        {error, {missing_param, ?E_MISSING_PARAM_IN_WHERE_CLAUSE("user")}},
-        rewrite(LK, W, Mod)
-    ).
+       {error, {missing_param, ?E_MISSING_PARAM_IN_WHERE_CLAUSE("user")}},
+       rewrite(LK, W, Mod)
+      ).
 
 %%
 %% complete query passing tests
@@ -512,7 +512,7 @@ simple_with_filter_1_test() ->
                                 {<<"time">>, timestamp, 5000},
                                 {<<"user">>, binary,    <<"user_1">>}
                                ]},
-             {filter,          [{'=', {field, <<"weather">>, binary}, {const, <<"yankee">>}}]},
+             {filter,          {'=', {field, <<"weather">>, binary}, {const, <<"yankee">>}}},
              {start_inclusive, false}
             ],
     Expected = [Q#riak_sql_v1{is_executable = true,
@@ -538,7 +538,7 @@ simple_with_filter_2_test() ->
                          {<<"time">>, timestamp, 5000},
                          {<<"user">>, binary,    <<"user_1">>}
                         ]},
-             {filter,   [{'=', {field, <<"weather">>, binary}, {const, <<"yankee">>}}]}
+             {filter,   {'=', {field, <<"weather">>, binary}, {const, <<"yankee">>}}}
             ],
     Expected = [Q#riak_sql_v1{is_executable = true,
                               type          = timeseries,
@@ -563,7 +563,7 @@ simple_with_filter_3_test() ->
                                 {<<"time">>, timestamp, 5000},
                                 {<<"user">>, binary,    <<"user_1">>}
                                ]},
-             {filter,          [{'=', {field, <<"weather">>, binary}, {const, <<"yankee">>}}]},
+             {filter,          {'=', {field, <<"weather">>, binary}, {const, <<"yankee">>}}},
              {start_inclusive, false},
              {end_inclusive,   true}
             ],
@@ -590,12 +590,12 @@ simple_with_2_field_filter_test() ->
                                 {<<"time">>, timestamp, 5000},
                                 {<<"user">>, binary,    <<"user_1">>}
                                ]},
-             {filter,          [{and_,
+             {filter,          {and_,
                                 {'=', {field, <<"weather">>,     binary},
                                  {const, <<"yankee">>}},
                                 {'=', {field, <<"temperature">>, binary},
                                  {const, <<"yelp">>}}
-                               }]
+                               }
              },
              {start_inclusive, false}
             ],
@@ -604,7 +604,7 @@ simple_with_2_field_filter_test() ->
                               'WHERE'       = Where,
                               partition_key = get_standard_pk(),
                               local_key     = get_standard_lk()
-                     }],
+                             }],
     ?assertEqual(Expected, Got).
 
 complex_with_4_field_filter_test() ->
@@ -622,7 +622,7 @@ complex_with_4_field_filter_test() ->
                                 {<<"time">>, timestamp, 5000},
                                 {<<"user">>, binary,    <<"user_1">>}
                                ]},
-             {filter,          [{and_,
+             {filter,          {and_,
                                 {or_,
                                  {'=', {field, <<"weather">>, binary},
                                   {const, <<"yankee">>}},
@@ -635,7 +635,7 @@ complex_with_4_field_filter_test() ->
                                 },
                                 {'=', {field, <<"extra">>, integer},
                                  {const, 1}}
-                               }]
+                               }
              },
              {start_inclusive, false}
             ],
@@ -644,7 +644,7 @@ complex_with_4_field_filter_test() ->
                               'WHERE'       = Where,
                               partition_key = get_standard_pk(),
                               local_key     = get_standard_lk()
-                     }],
+                             }],
     ?assertEqual(Expected, Got).
 
 %% got for 3 queries to get partition ordering problems flushed out
@@ -711,9 +711,9 @@ no_where_clause_fail_test() ->
     Where = [],
     Q2 = Q#riak_sql_v1{'WHERE' = Where},
     ?assertEqual(
-        {error, {where_not_supported, Where}},
-        compile(DDL, Q2)
-    ).
+       {error, {where_not_supported, Where}},
+       compile(DDL, Q2)
+      ).
 
 simplest_fail_test() ->
     DDL = get_standard_ddl(),
@@ -724,9 +724,9 @@ simplest_fail_test() ->
     %% now replace the where clause
     Q2 = Q#riak_sql_v1{'WHERE' = Where},
     ?assertEqual(
-        {error, {where_not_supported, Where}},
-        compile(DDL, Q2)
-    ).
+       {error, {where_not_supported, Where}},
+       compile(DDL, Q2)
+      ).
 
 simplest_compile_once_only_fail_test() ->
     DDL = get_standard_ddl(),
