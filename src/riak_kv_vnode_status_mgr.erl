@@ -33,7 +33,7 @@
 -endif.
 
 %% API
--export([start_link/3, 
+-export([start_link/3,
         get_vnodeid_and_counter/2,
         lease_counter/2,
         clear_vnodeid/1,
@@ -326,7 +326,7 @@ get_status_item(Item, Status, Default) ->
 %% path to exists.
 -spec vnode_status_filename(non_neg_integer(), string()|undefined) -> file:filename().
 vnode_status_filename(Index, Path) ->
-    P_DataDir = 
+    P_DataDir =
         case Path of
             undefined ->
                 app_helper:get_env(riak_core, platform_data_dir);
@@ -365,7 +365,7 @@ read_vnode_status(File) ->
             %% doesn't exist? same as empty
             {ok, orddict:new()};
         {error, {_Offset, file_io_server, invalid_unicode}} ->
-            case override_consult(File) of 
+            case override_consult(File) of
                 {ok, [Status]} when is_list(Status) ->
                     {ok, orddict:from_list(Status)};
                 Er ->
@@ -407,12 +407,12 @@ consult_stream(Fd) ->
 
 consult_stream(Fd, Line, Acc) ->
     case io:read(Fd, '', Line) of
-	{ok,Term,EndLine} ->
-	    consult_stream(Fd, EndLine, [Term|Acc]);
-	{error,Error,_Line} ->
-	    {error,Error};
-	{eof,_Line} ->
-	    {ok,lists:reverse(Acc)}
+        {ok,Term,EndLine} ->
+            consult_stream(Fd, EndLine, [Term|Acc]);
+        {error,Error,_Line} ->
+            {error,Error};
+        {eof,_Line} ->
+            {ok,lists:reverse(Acc)}
     end.
 
 -ifdef(TEST).
@@ -540,7 +540,6 @@ vnode_status_test_() ->
      ]}.
 
 -endif.
-
 -ifdef(EQC).
 
 
