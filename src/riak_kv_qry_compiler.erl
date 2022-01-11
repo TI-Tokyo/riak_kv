@@ -324,8 +324,8 @@ get_long_ddl() ->
     SQL = "CREATE TABLE GeoCheckin " ++
         "(geohash varchar not null, " ++
         "user varchar not null, " ++
-        "extra integer not null, " ++
-        "more float not null, " ++
+	"extra integer not null, " ++
+	"more float not null, " ++
         "time timestamp not null, " ++
         "myboolean boolean not null," ++
         "weather varchar not null, " ++
