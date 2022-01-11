@@ -82,6 +82,9 @@
 -define(MAGIC, 53).      %% Magic number, as opposed to 131 for Erlang term-to-binary magic
                          %% Shanley's(11) + Joe's(42)
 -define(EMPTY_VTAG_BIN, <<"e">>).
+%% sub-encoding, selecting between binary_to_term and msgpack:decode (used for TS data)
+-define(MSGPACK_MAGIC, 2). %% Magic number for msgpack encoding
+-define(ERLT2B_MAGIC, 3). %% Magic number for msgpack encoding
 
 -export([new/3, new/4, ensure_robject/1, ancestors/1, reconcile/2, equal/2, remove_dominated/1]).
 -export([increment_vclock/2, increment_vclock/3, prune_vclock/3, vclock_descends/2, all_actors/1]).
@@ -97,7 +100,7 @@
 -export([index_data/1, diff_index_data/2]).
 -export([index_specs/1, diff_index_specs/2]).
 -export([to_binary/2, from_binary/3,
-         to_binary/3, from_binary/4,
+         to_binary/3,
          to_binary_version/4, binary_version/1]).
 -export([nextgenrepl_encode/3, nextgenrepl_decode/1]).
 -export([summary_from_binary/1, aae_from_object_binary/1,
@@ -1255,32 +1258,27 @@ nextgenrepl_decode(B, K, false, ObjBin) ->
 %% @doc Convert binary object to riak object
 -spec from_binary(bucket(), key(), binary()) ->
     riak_object() | {error, 'bad_object_format'} | proxy_object().
-from_binary(B, K, Obj) ->
-    from_binary(B, K, Obj, erlang).
-
--spec from_binary(bucket(), key(), binary(), encoding()) ->
-    riak_object() | {error, 'bad_object_format'} | proxy_object().
-from_binary(B, K, <<131, _Rest/binary>>=ObjTerm, Enc) ->
+from_binary(B, K, <<131, _Rest/binary>>=ObjTerm) ->
     case binary_to_term(ObjTerm) of
         {proxy_object, HeadBin, ObjSize, Fetcher} ->
-            RObj = from_binary(B, K, HeadBin, Enc),
+            RObj = from_binary(B, K, HeadBin),
             #p_object{r_object = RObj,
                       proxy = Fetcher,
                       size = ObjSize};
         T ->
             T
     end;
-from_binary(B, K, <<?MAGIC:8/integer, 1:8/integer, Rest/binary>>=_ObjBin, Enc) ->
+from_binary(B, K, <<?MAGIC:8/integer, 1:8/integer, Rest/binary>> = _ObjBin) ->
     %% Version 1 of binary riak object
     case Rest of
         <<VclockLen:32/integer, VclockBin:VclockLen/binary, SibCount:32/integer, SibsBin/binary>> ->
             Vclock = binary_to_term(VclockBin),
-            Contents = sibs_of_binary(SibCount, SibsBin, Enc),
+            Contents = sibs_of_binary(SibCount, SibsBin),
             #r_object{bucket=B, key=K, contents=Contents, vclock=Vclock};
         _Other ->
             {error, bad_object_format}
     end;
-from_binary(_B, _K, Obj = #r_object{}, _Enc) ->
+from_binary(_B, _K, Obj = #r_object{}) ->
     Obj.
 
 
@@ -1290,7 +1288,7 @@ from_binary(_B, _K, Obj = #r_object{}, _Enc) ->
 %% @doc
 %% Extract only sumarry infromation from the binary - the vector, the object
 %% size and the sibling count
-summary_from_binary(<<131, _Rest/binary>>=ObjBin) ->
+summary_from_binary(<<131, _Rest/binary>> = ObjBin) ->
     case binary_to_term(ObjBin) of
         {proxy_object, HeadBin, ObjSize, _Fetcher} ->
             summary_from_binary(HeadBin, ObjSize);
@@ -1322,9 +1320,9 @@ summary_from_binary(ObjBin, ObjSize) ->
         case SibCount of
             SC when is_integer(SC) ->
                 get_metadata_from_siblings(SibsBin,
-                                            SibCount,
-                                            [],
-                                            [])
+                                           SibCount,
+                                           [],
+                                           [])
         end,
     {binary_to_term(VclockBin), ObjSize, SibCount, LastMods, SibBin}.
 
@@ -1357,16 +1355,16 @@ aae_from_object_binary(false) ->
 get_metadata_from_siblings(<<>>, 0, LastMods, SibMDList) ->
     {LastMods, term_to_binary(SibMDList)};
 get_metadata_from_siblings(<<ValLen:32/integer, Rest0/binary>>,
-                            SibCount,
-                            LastMods,
-                            SibMDList) ->
+                           SibCount,
+                           LastMods,
+                           SibMDList) ->
     <<_ValBin:ValLen/binary, MetaLen:32/integer, Rest1/binary>> = Rest0,
     SibBin = <<0:32/integer, MetaLen:32/integer, Rest1/binary>>,
     {SibMetaData, LastMod, Remainder} = sib_of_binary(SibBin),
     get_metadata_from_siblings(Remainder,
-                                SibCount - 1,
-                                [LastMod|LastMods],
-                                [SibMetaData|SibMDList]).
+                               SibCount - 1,
+                               [LastMod|LastMods],
+                               [SibMetaData|SibMDList]).
 
 %% @doc Where sibs_of_binary has been used to create a value-free binary of
 %% an object - reverse it here.
@@ -1403,7 +1401,7 @@ aae_fold_metabin(Bin, _SibMDAcc) ->
 %% in processing the metadata after determining the tombstone status - if true
 %% the de-serialised metadata list is returned along with the deleted status.
 -spec is_aae_object_deleted(binary()|list(), boolean()) ->
-                                                {boolean(), list()|undefined}.
+                                   {boolean(), list()|undefined}.
 is_aae_object_deleted(<<0:32, _Rest/binary>> = MetaBin, false) ->
     {is_binary_deleted(MetaBin, true), undefined};
 is_aae_object_deleted(MetaBin, ReturnMD) when is_binary(MetaBin) ->
@@ -1445,15 +1443,15 @@ is_binary_deleted(_SibBin, false) ->
     false.
 
 
-sibs_of_binary(Count, SibsBin, Enc) ->
-    sibs_of_binary(Count, SibsBin, [], Enc).
+sibs_of_binary(Count, SibsBin) ->
+    sibs_of_binary(Count, SibsBin, []).
 
-sibs_of_binary(0, <<>>, Result, _) -> lists:reverse(Result);
-sibs_of_binary(0, _NotEmpty, _Result, _) ->
+sibs_of_binary(0, <<>>, Result) -> lists:reverse(Result);
+sibs_of_binary(0, _NotEmpty, _Result) ->
     {error, corrupt_contents};
-sibs_of_binary(Count, SibsBin, Result, Enc) ->
-    {Sib, _LastMod, SibsRest} = sib_of_binary(SibsBin, Enc),
-    sibs_of_binary(Count-1, SibsRest, [Sib | Result], Enc).
+sibs_of_binary(Count, SibsBin, Result) ->
+    {Sib, _LastMod, SibsRest} = sib_of_binary(SibsBin),
+    sibs_of_binary(Count-1, SibsRest, [Sib | Result]).
 
 sib_of_binary(Bin) ->
     sib_of_binary(Bin, erlang).
@@ -1461,7 +1459,7 @@ sib_of_binary(<<ValLen:32/integer,
                 ValBin:ValLen/binary,
                 MetaLen:32/integer,
                 MetaBin:MetaLen/binary,
-                Rest/binary>>, Enc) ->
+                Rest/binary>>) ->
     <<LMMega:32/integer, LMSecs:32/integer, LMMicro:32/integer,
       VTagLen:8/integer, VTag:VTagLen/binary,
       Deleted:1/binary-unit:8, MetaRestBin/binary>> = MetaBin,
@@ -1470,10 +1468,10 @@ sib_of_binary(<<ValLen:32/integer,
     MDList1 = last_mod_meta(LastModDate, MDList0),
     MDList2 = vtag_meta(VTag, MDList1),
     MDList3 = val_encoding_meta(ValBin, MDList2),
-    MDList = meta_of_binary(MetaRestBin, MDList3, Enc),
+    MDList = meta_of_binary(MetaRestBin, MDList3),
     MD = dict:from_list(MDList),
     {#r_content{metadata = MD,
-                value = decode_maybe_binary(ValBin, Enc)},
+                value = decode_maybe_binary(ValBin)},
      LastModDate, Rest}.
 
 val_encoding_meta(<<>>, MDList) ->
@@ -1500,16 +1498,16 @@ vtag_meta(?EMPTY_VTAG_BIN, MDList) ->
 vtag_meta(VTag, MDList) ->
     [{?MD_VTAG, binary_to_list(VTag)} | MDList].
 
-meta_of_binary(<<>>, Acc, _Enc) ->
+meta_of_binary(<<>>, Acc) ->
     Acc;
 meta_of_binary(<<KeyLen:32/integer,
                  KeyBin:KeyLen/binary,
                  ValueLen:32/integer,
                  ValueBin:ValueLen/binary,
-                 Rest/binary>>, ResultList, Enc) ->
-    Key = decode_maybe_binary(KeyBin, Enc),
-    Value = decode_maybe_binary(ValueBin, Enc),
-    meta_of_binary(Rest, [{Key, Value} | ResultList], Enc).
+                 Rest/binary>>, ResultList) ->
+    Key = decode_maybe_binary(KeyBin),
+    Value = decode_maybe_binary(ValueBin),
+    meta_of_binary(Rest, [{Key, Value} | ResultList]).
 
 %% V1 Riak Object Binary Encoding
 %% -type binobj_header()     :: <<53:8, Version:8, VClockLen:32, VClockBin/binary,
@@ -1584,7 +1582,7 @@ encode_maybe_binary(Value, Enc) when not is_binary(Value) ->
 encode_maybe_binary(Value, TypeTag, _Enc) when is_binary(Value) ->
     <<TypeTag, Value/binary>>;
 encode_maybe_binary(Value, 0, Enc) when not is_binary(Value) ->
-    <<0, (encode(Value, Enc))/binary>>.
+    <<0, (sub_encode(Value, Enc))/binary>>.
 
 determine_binary_type(Val, Meta) when is_binary(Val) ->
     case dict:find(?MD_VAL_ENCODING, Meta) of
@@ -1594,33 +1592,33 @@ determine_binary_type(Val, Meta) when is_binary(Val) ->
 determine_binary_type(_Val, Meta) ->
     {0, Meta}.
 
-decode_maybe_binary(<<>>, _Enc) ->
+decode_maybe_binary(<<>>) ->
     head_only;
-decode_maybe_binary(<<1, Bin/binary>>, _Enc) ->
+decode_maybe_binary(<<1, Bin/binary>>) ->
     Bin;
-decode_maybe_binary(<<0, Bin/binary>>, Enc) ->
-    decode(Bin, Enc);
+decode_maybe_binary(<<0, Bin/binary>>) ->
+    sub_decode(Bin);
 decode_maybe_binary(<<_Other:8, Bin/binary>>) ->
     Bin.
 
 
-encode(Bin, erlang) ->
-    term_to_binary(Bin);
-encode(Bin, msgpack) ->
-    encode_msgpack(Bin).
+sub_encode(Bin, erlang) ->
+    <<?ERLT2B_MAGIC:8/integer, (term_to_binary(Bin))/binary>>;
+sub_encode(Bin, msgpack) ->
+    <<?MSGPACK_MAGIC:8/integer, (msgpack:pack(Bin, [{format, jsx}]))/binary>>.
 
-decode(Bin, erlang) ->
-    binary_to_term(Bin);
-decode(Bin, msgpack) ->
-    decode_msgpack(Bin).
-
-
-encode_msgpack(Bin) ->
-    msgpack:pack(Bin, [{format, jsx}]).
-
-decode_msgpack(ValBin) ->
-    {ok, Unpacked} = msgpack:unpack(ValBin, [{format, jsx}]),
-    Unpacked.
+sub_decode(<<?ERLT2B_MAGIC:8/binary, Bin>>) ->
+    binary_to_term(Bin).
+sub_decode(<<?MSGPACK_MAGIC:8/binary, Bin>>) ->
+    {ok, Unpacked} = msgpack:unpack(Bin, [{format, jsx}]),
+    Unpacked;
+sub_decode(Bin) ->
+    try
+        binary_to_term(Bin)
+    catch
+        _:_ ->
+            Bin
+    end.
 
 
 %% Update X-Riak-VTag and X-Riak-Last-Modified in the object's metadata, if
