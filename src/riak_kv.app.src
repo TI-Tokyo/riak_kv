@@ -26,8 +26,7 @@
                   redbug,
                   recon,
                   riakc,
-                  riakhttpc,
-                  riak_ql
+                  riakhttpc
                  ]},
   {registered, []},
   {mod, {riak_kv_app, []}},
