@@ -43,7 +43,7 @@ basic_schema_test() ->
         ["priv/riak_kv.schema", "priv/multi_backend.schema"], [], context(), predefined_schema()),
 
     cuttlefish_unit:assert_config(Config, "riak_kv.anti_entropy", {off, []}),
-    cuttlefish_unit:assert_config(Config, "riak_kv.storage_backend", riak_kv_bitcask_backend),
+    cuttlefish_unit:assert_config(Config, "riak_kv.storage_backend", riak_kv_eleveldb_backend),
     cuttlefish_unit:assert_config(Config, "riak_kv.anti_entropy_build_limit", {1, 3600000}),
     cuttlefish_unit:assert_config(Config, "riak_kv.anti_entropy_expire", 604800000),
     cuttlefish_unit:assert_config(Config, "riak_kv.anti_entropy_concurrency", 2),
@@ -399,7 +399,10 @@ test_job_class_enabled({error, enoent}) ->
 %% in real life.
 context() ->
     [
-        {storage_backend, "bitcask"}
+        {storage_backend, "leveldb"},
+        {map_js_vms, 8},
+        {reduce_js_vms, 6},
+        {hook_js_vms, 2}
     ].
 
 %% This predefined schema covers riak_kv's dependency on
