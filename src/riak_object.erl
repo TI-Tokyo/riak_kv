@@ -145,8 +145,6 @@ new(B, K, V, MD) when is_binary(B), is_binary(K) ->
 newts(B, K, V, MD) ->
     new_int2(B, K, V, MD).
 
-
-
 %% internal version after all validation has been done
 new_int(B, K, V, MD) ->
     case size(K) > ?MAX_KEY_SIZE of
@@ -155,9 +153,7 @@ new_int(B, K, V, MD) ->
         false ->
             case MD of
                 no_initial_metadata ->
-                    Contents = [#r_content{metadata=dict:new(), value=V}],
-                    #r_object{bucket=B,key=K,
-                              contents=Contents,vclock=vclock:fresh()};
+                    new_int2(B, K, V, dict:new());
                 _ ->
                     new_int2(B, K, V, MD)
             end
