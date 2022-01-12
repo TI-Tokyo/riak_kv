@@ -148,7 +148,7 @@ decode_results(KVList) ->
     [extract_riak_object(V) || {_, V} <- KVList].
 
 extract_riak_object(V) when is_binary(V) ->
-    % don't care about bkey
+    %% don't care about bkey
     RObj = riak_object:from_binary(<<>>, <<>>, V),
     case riak_object:get_value(RObj) of
         <<>> ->
@@ -163,36 +163,42 @@ pop_next_query() ->
     self() ! pop_next_query.
 
 %%
-execute_query({query, ReceiverPid, QId, InitialState, [Qry|_] = SubQueries, _},
+execute_query({query, ReceiverPid, QId, [Qry|_] = SubQueries, _},
               #state{ run_sub_qs_fn = RunSubQs } = State) ->
     Indices = lists:seq(1, length(SubQueries)),
     ZQueries = lists:zip(Indices, SubQueries),
+    %% all subqueries have the same select clause
+    #riak_sql_v1{'SELECT' = Sel} = Qry,
+    #riak_sel_clause_v1{initial_state = InitialState} = Sel,
     SubQs = [{{qry, Q}, {qid, {I, QId}}} || {I, Q} <- ZQueries],
     ok = RunSubQs(SubQs),
     {ok, State#state{qid          = QId,
                      receiver_pid = ReceiverPid,
                      qry          = Qry,
                      sub_qrys     = Indices,
-                     result = InitialState }}.
+                     result       = InitialState }}.
 
 %%
 add_subquery_result(SubQId, Chunk,
                     #state{qry      = Qry,
                            result   = QueryResult1,
                            sub_qrys = SubQs} = State) ->
-    #riak_sql_v1{'SELECT' = SelectSpec, result_type = ResultType } = Qry,
+    #riak_sql_v1{'SELECT' = Sel} = Qry,
+    #riak_sel_clause_v1{calc_type  = CalcType,
+                        clause     = SelClause} = Sel,
     case lists:member(SubQId, SubQs) of
         true ->
             DecodedChunk = decode_results(lists:flatten(Chunk)),
-            case ResultType of
+            case CalcType of
                 rows ->
-                    IndexedChunks = [riak_kv_qry_compiler:run_select(SelectSpec, Row) || Row <- DecodedChunk],
+                    IndexedChunks = [riak_kv_qry_compiler:run_select(SelClause, Row) 
+                                     || Row <- DecodedChunk],
                     QueryResult2 = [{SubQId, IndexedChunks} | QueryResult1];
                 aggregate ->
                     QueryResult2 = 
                       lists:foldl(
                           fun(E, Acc) ->
-                              riak_kv_qry_compiler:run_select(SelectSpec, E, Acc)
+                              riak_kv_qry_compiler:run_select(SelClause, E, Acc)
                           end, QueryResult1, DecodedChunk)
             end,
             NSubQ = lists:delete(SubQId, SubQs),
@@ -209,10 +215,10 @@ subqueries_done(QId,
                        receiver_pid = ReceiverPid,
                        result       = QueryResult1,
                        sub_qrys     = SubQQ,
-                       qry = #riak_sql_v1{ result_type = ResultType }} = State) ->
+                       qry = #riak_sql_v1{'SELECT' = Sel }} = State) ->
     case SubQQ of
         [] ->
-            QueryResult2 = prepare_final_results(ResultType, QueryResult1),
+            QueryResult2 = prepare_final_results(Sel, QueryResult1),
             %   send the results to the waiting client process
             ReceiverPid ! {ok, QueryResult2},
             pop_next_query(),
@@ -224,13 +230,14 @@ subqueries_done(QId,
     end.
 
 %%
-prepare_final_results(rows, IndexedChunks) ->
+prepare_final_results(#riak_sel_clause_v1{calc_type = rows}, IndexedChunks) ->
     %% sort by index, to reassemble according to coverage plan
     {_, [R2]} = lists:unzip(lists:sort(IndexedChunks)),
     lists:append(R2);
-prepare_final_results(aggregate, Aggregate) ->
-    [{<<"aggregate">>, A} || A <- Aggregate].
-
+prepare_final_results(#riak_sel_clause_v1{calc_type        = aggregate,
+                                          col_return_types = ColTypes,
+                                          col_names        = ColNames}, Aggregate) ->
+    [{{CN, CT}, V} || V <- Aggregate, CN <- ColNames, CT <- ColTypes].
 
 %%%===================================================================
 %%% Unit tests
