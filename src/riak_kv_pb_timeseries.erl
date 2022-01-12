@@ -338,8 +338,8 @@ do_submit_query(SQL, Table, State) ->
 %%
 submit_query(DDL, SQL, State) ->
     case riak_kv_qry:submit(SQL, DDL) of
-        {ok, Data} when element(1, SQL) =:= riak_sql_v1 ->
-            {reply, make_tsqueryresp(Data, Mod), State};
+        {ok, Data} when element(1, SQL) =:= riak_select_v1 ->
+            {reply, make_tsqueryresp(Data), State};
         {ok, Data} when element(1, SQL) =:= riak_sql_describe_v1 ->
             {reply, make_tsqueryresp(Data), State};
         {error, {E, Reason}} when is_atom(E), is_binary(Reason) ->
