@@ -86,7 +86,7 @@
 -define(MSGPACK_MAGIC, 2). %% Magic number for msgpack encoding
 -define(ERLT2B_MAGIC, 3). %% Magic number for msgpack encoding
 
--export([new/3, new/4, ensure_robject/1, ancestors/1, reconcile/2, equal/2, remove_dominated/1]).
+-export([new/3, new/4, newts/4, ensure_robject/1, ancestors/1, reconcile/2, equal/2, remove_dominated/1]).
 -export([increment_vclock/2, increment_vclock/3, prune_vclock/3, vclock_descends/2, all_actors/1]).
 -export([actor_counter/2]).
 -export([key/1, get_metadata/1, get_metadatas/1, get_values/1, get_value/1, get_dotted_values/1]).
@@ -142,6 +142,9 @@ new({T, B}, K, V, MD) when is_binary(T), is_binary(B), is_binary(K) ->
 new(B, K, V, MD) when is_binary(B), is_binary(K) ->
     new_int(B, K, V, MD).
 
+newts(B, K, V, MD) ->
+    new_int2(B, K, V, MD).
+
 %% internal version after all validation has been done
 new_int(B, K, V, MD) ->
     case size(K) > ?MAX_KEY_SIZE of
@@ -150,15 +153,16 @@ new_int(B, K, V, MD) ->
         false ->
             case MD of
                 no_initial_metadata ->
-                    Contents = [#r_content{metadata=dict:new(), value=V}],
-                    #r_object{bucket=B,key=K,
-                              contents=Contents,vclock=vclock:fresh()};
+                    new_int2(B, K, V, dict:new());
                 _ ->
-                    Contents = [#r_content{metadata=MD, value=V}],
-                    #r_object{bucket=B,key=K,updatemetadata=MD,
-                              contents=Contents,vclock=vclock:fresh()}
+                    new_int2(B, K, V, MD)
             end
     end.
+
+new_int2(B, K, V, MD) ->
+    Contents = [#r_content{metadata=MD, value=V}],
+    #r_object{bucket=B,key=K,updatemetadata=MD,
+              contents=Contents,vclock=vclock:fresh()}.
 
 -spec is_robject(any()) -> boolean()|proxy.
 %% Is this a recognised riak object
