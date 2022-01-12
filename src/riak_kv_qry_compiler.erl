@@ -97,8 +97,8 @@ run_select2([Fn | SelectTail], Row, RowState, Acc1) ->
     run_select2(SelectTail, Row, RowState, Acc2).
 
 %%
-compile_select_clause(DDL, ?SQL_SELECT{'SELECT' = #riak_sel_clause_v1{ clause = Sel } } = Q) ->
-    CompileColFn = 
+compile_select_clause(DDL, #riak_sql_v1{'SELECT' = #riak_sel_clause_v1{ clause = Sel } } = Q) ->
+    CompileColFn =
         fun(ColX, AccX) ->
                 select_column_clause_folder(DDL, ColX, AccX)
         end,
@@ -232,7 +232,19 @@ compile_select_col(DDL, Select) ->
 compile_select_col_stateless(DDL, {identifier, [<<"*">>]}) ->
     ColTypes = [X#riak_field_v1.type || X <- DDL#ddl_v1.fields],
     {ColTypes, true, fun(Row) -> Row end};
-compile_select_col_stateless(_, {Type, V}) when Type == varchar; Type == boolean ->
+compile_select_col_stateless(DDL, {negate, ExprToNegate}) ->
+    {TypeToNegate, ValidityToNegate, ValueToNegate} =
+        compile_select_col_stateless(DDL, ExprToNegate),
+    NegatingFun = fun(Row) -> -ValueToNegate(Row) end,
+    case ValidityToNegate of
+        true ->
+            {[TypeToNegate],
+             ValidityToNegate,
+             NegatingFun};
+        _ -> {[], ValidityToNegate, []}
+    end;
+compile_select_col_stateless(_, {Type, V})
+  when Type == varchar; Type == boolean ->
     {[Type], true, fun(_) -> V end};
 %% TODO why is this integer not sint64?
 compile_select_col_stateless(_, {Type, V}) when Type == integer ->
@@ -1562,12 +1574,12 @@ basic_select_arith_2_test() ->
     {ok, Rec} = get_query(SQL),
     {ok, Sel} = compile_select_clause(get_sel_ddl(), Rec),
     ?assertMatch(
-       #riak_sel_clause_v1{ 
-          calc_type = rows,
-          col_return_types = [double],
-          col_names = [<<"((1+2.0)-((3/4)*5))">>] },
-       Sel
-      ).
+        #riak_sel_clause_v1{
+            calc_type = rows,
+            col_return_types = [double],
+            col_names = [<<"((1+2.0)-((3/4)*5))">>] },
+        Sel
+    ).
 
 rows_initial_state_test() ->
     {ok, Rec} = get_query(
@@ -1599,20 +1611,42 @@ function_2_initial_state_test() ->
        Select
       ).
 
-%% basic_select_window_agg_fn_arith_1_test() ->
-%%     {ok, Rec} = get_query(
-%%         "SELECT count(location) + 1 from mytab "
-%%         "WHERE myfamily = 'familyX' "
-%%         "AND myseries = 'seriesX' AND time > 1 AND time < 2"
-%%     ),
-%%     {ok, Selection} = compile_select_clause(get_sel_ddl(), Rec),
-%%     ?assertMatch(
-%%         #riak_sel_clause_v1{
-%%             calc_type = aggregate,
-%%             col_return_types = [sint64],
-%%             col_names = [<<"COUNT(location)+1">>] },
-%%         Selection
-%%     ).
+select_negation_test() ->
+    DDL = get_sel_ddl(),
+    SQL = "SELECT -1, - 1, -1.0, - 1.0, -mydouble, - mydouble from mytab "
+        "WHERE myfamily = 'familyX' AND myseries = 'seriesX' "
+        "AND time > 1 AND time < 2",
+    {ok, Rec} = get_query(SQL),
+    {ok, Sel} = compile_select_clause(DDL, Rec),
+    ?assertMatch(#riak_sel_clause_v1{calc_type        = rows,
+                                     col_return_types = [
+                                                         sint64,
+                                                         sint64,
+                                                         double,
+                                                         double,
+                                                         double,
+                                                         double
+                                                        ],
+                                     col_names        = [
+                                                         <<"1+2.0-3/4*5">>
+                                                        ]
+                                    },
+                 Sel).
+
+% basic_select_window_agg_fn_arith_1_test() ->
+%     {ok, Rec} = get_query(
+%         "SELECT count(location) + 1 from mytab "
+%         "WHERE myfamily = 'familyX' "
+%         "AND myseries = 'seriesX' AND time > 1 AND time < 2"
+%     ),
+%     {ok, Selection} = compile_select_clause(get_sel_ddl(), Rec),
+%     ?assertMatch(
+%         #riak_sel_clause_v1{
+%             calc_type = aggregate,
+%             col_return_types = [sint64],
+%             col_names = [<<"COUNT(location)+1">>] },
+%         Selection
+%     ).
 
 %% FIXME
 %% basic_select_window_agg_fn_arith_2_test() ->
