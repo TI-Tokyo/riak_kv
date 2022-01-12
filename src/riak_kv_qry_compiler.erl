@@ -158,11 +158,11 @@ select_column_clause_folder(DDL, ColX, {TypeSet1, SelClause1}) ->
     %% ColTypes are messy because <<"*">> represents many
     %% so you need to flatten the list
     SelClause2 = #riak_sel_clause_v1{
-                    initial_state    = Init2,
-                    col_return_types = lists:flatten(ColRet2),
-                    clause           = RunFn2,
-                    is_valid         = IsValid2,
-                    finalisers       = lists:flatten(Finalisers2)},
+        initial_state    = Init2,
+        col_return_types = lists:flatten(ColRet2),
+        clause           = RunFn2,
+        is_valid         = IsValid2,
+        finalisers       = Finalisers2},
     {TypeSet2, SelClause2}.
 
 %%
