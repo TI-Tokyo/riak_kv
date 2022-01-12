@@ -43,7 +43,7 @@
          fold_keys/4,
          fold_objects/4,
          fold_indexes/4,
-	 range_scan/4,
+         range_scan/4,
          is_empty/1,
          status/1,
          callback/3]).
@@ -227,10 +227,10 @@ async_put(Context, Bucket, PrimaryKey, Val, #state{ref=Ref, write_opts=WriteOpts
 sync_put(Context, Bucket, PrimaryKey, Val, #state{ref=Ref, write_opts=WriteOpts}=State) ->
     StorageKey = to_object_key(Bucket, PrimaryKey),
     case eleveldb:sync_put(Ref, Context, StorageKey, Val, WriteOpts) of
-	ok ->
-	    {ok, State};
-	{error, Reason}  ->
-	    {error, Reason, State}
+        ok ->
+            {ok, State};
+        {error, Reason}  ->
+            {error, Reason, State}
     end.
 
 indexes_fixed(#state{ref=Ref,read_opts=ReadOpts}) ->
@@ -254,25 +254,25 @@ index_deletes(FixedIndexes, Bucket, PrimaryKey, Field, Value) ->
     KeyDelete ++ LegacyDelete.
 
 fix_index(IndexKeys, ForUpgrade, #state{ref=Ref,
-                                                read_opts=ReadOpts,
-                                                write_opts=WriteOpts} = State)
-                                        when is_list(IndexKeys) ->
+                                        read_opts=ReadOpts,
+                                        write_opts=WriteOpts} = State)
+  when is_list(IndexKeys) ->
     FoldFun =
         fun(ok, {Success, Ignore, Error}) ->
-               {Success+1, Ignore, Error};
+                {Success+1, Ignore, Error};
            (ignore, {Success, Ignore, Error}) ->
-               {Success, Ignore+1, Error};
+                {Success, Ignore+1, Error};
            ({error, _}, {Success, Ignore, Error}) ->
-               {Success, Ignore, Error+1}
+                {Success, Ignore, Error+1}
         end,
     Totals =
         lists:foldl(FoldFun, {0,0,0},
                     [fix_index(IndexKey, ForUpgrade, Ref, ReadOpts, WriteOpts)
-                        || {_Bucket, IndexKey} <- IndexKeys]),
+                     || {_Bucket, IndexKey} <- IndexKeys]),
     {reply, Totals, State};
 fix_index(IndexKey, ForUpgrade, #state{ref=Ref,
-                                                read_opts=ReadOpts,
-                                                write_opts=WriteOpts} = State) ->
+                                       read_opts=ReadOpts,
+                                       write_opts=WriteOpts} = State) ->
     case fix_index(IndexKey, ForUpgrade, Ref, ReadOpts, WriteOpts) of
         Atom when is_atom(Atom) ->
             {Atom, State};
@@ -481,23 +481,23 @@ fold_indexes_fun(FoldIndexFun) ->
     end.
 
 range_scan(FoldIndexFun, Buffer, Opts, #state{fold_opts=_FoldOpts,
-					      ref=Ref}) ->
+                                              ref=Ref}) ->
     {_, Bucket, Qry} = proplists:lookup(index, Opts),
-    #riak_sql_v1{'WHERE'    = W,
-		 helper_mod = Mod,
-		 local_key  = LK} = Qry,
+    ?SQL_SELECT{'WHERE'    = W,
+                helper_mod = Mod,
+                local_key  = LK} = Qry,
     %% this is all super-fugly
     {startkey, StartK} = proplists:lookup(startkey, W),
     {endkey,   EndK}   = proplists:lookup(endkey, W),
     {filter,   Filter} = proplists:lookup(filter, W),
     StartInclusive = case proplists:lookup(start_inclusive, W) of
-			 none  -> [];
-			 STuple -> [STuple]
-		     end,
+                         none  -> [];
+                         STuple -> [STuple]
+                     end,
     EndInclusive = case proplists:lookup(end_inclusive, W) of
-			 none  -> [];
-			 ETuple -> [ETuple]
-		     end,
+                       none  -> [];
+                       ETuple -> [ETuple]
+                   end,
     AdditionalOptions = lists:flatten(StartInclusive ++ EndInclusive),
     AdditionalOptions2 =
         case Filter of
@@ -513,19 +513,19 @@ range_scan(FoldIndexFun, Buffer, Opts, #state{fold_opts=_FoldOpts,
     EndK4 = riak_kv_ts_util:encode_typeval_key(EndK3),
     EndKey = to_object_key(Bucket, EndK4),
     FoldFun = fun({K, V}, Acc) ->
-		     [{K, V} | Acc]
-	     end,
+                      [{K, V} | Acc]
+              end,
     Options = [
                {start_key,    StartKey},
                {end_key,      EndKey},
                {fold_method,  streaming},
                {encoding,     msgpack} |
                AdditionalOptions2
-	      ],
+              ],
     KeyFolder = fun() ->
-			Vals = eleveldb:fold(Ref, FoldFun, [], Options),
-			FoldIndexFun(lists:reverse(Vals), Buffer)
-		end,
+                        Vals = eleveldb:fold(Ref, FoldFun, [], Options),
+                        FoldIndexFun(lists:reverse(Vals), Buffer)
+                end,
     {async, KeyFolder}.
 
 legacy_key_fold(Ref, FoldFun, Acc, FoldOpts0, Query={index, _, _}) ->
@@ -802,22 +802,22 @@ fold_keys_fun(FoldKeysFun, {bucket, FilterBucket}) ->
 %% 2i queries
 fold_keys_fun(FoldKeysFun, {index, FilterBucket,
                             Q=?KV_INDEX_Q{filter_field=FilterField,
-                                         term_regex=TermRe}})
+                                          term_regex=TermRe}})
   when FilterField =:= <<"$bucket">>;
        FilterField =:= <<"$key">> ->
     AccFun = case FilterField =:= <<"$key">> andalso TermRe =/= undefined of
-        true ->
-            fun(Bucket, Key, Acc) ->
-                    case re:run(Key, TermRe) of
-                        nomatch -> Acc;
-                        _ -> FoldKeysFun(Bucket, Key, Acc)
-                    end
-            end;
-        false ->
-            fun(Bucket, Key, Acc) ->
-                    FoldKeysFun(Bucket, Key, Acc)
-            end
-    end,
+                 true ->
+                     fun(Bucket, Key, Acc) ->
+                             case re:run(Key, TermRe) of
+                                 nomatch -> Acc;
+                                 _ -> FoldKeysFun(Bucket, Key, Acc)
+                             end
+                     end;
+                 false ->
+                     fun(Bucket, Key, Acc) ->
+                             FoldKeysFun(Bucket, Key, Acc)
+                     end
+             end,
 
     %% Inbuilt indexes
     fun(StorageKey, Acc) ->
@@ -832,22 +832,22 @@ fold_keys_fun(FoldKeysFun, {index, FilterBucket,
             end
     end;
 fold_keys_fun(FoldKeysFun, {index, FilterBucket, Q=?KV_INDEX_Q{return_terms=Terms,
-                                                              term_regex=TermRe}}) ->
+                                                               term_regex=TermRe}}) ->
     AccFun = case TermRe =:= undefined of
-        true ->
-            fun(Bucket, _Term, Val, Acc) ->
-                    FoldKeysFun(Bucket, Val, Acc)
-            end;
-        false ->
-            fun(Bucket, Term, Val, Acc) ->
-                    case re:run(Term, TermRe) of
-                        nomatch ->
-                            Acc;
-                        _ ->
-                            FoldKeysFun(Bucket, Val, Acc)
-                    end
-            end
-    end,
+                 true ->
+                     fun(Bucket, _Term, Val, Acc) ->
+                             FoldKeysFun(Bucket, Val, Acc)
+                     end;
+                 false ->
+                     fun(Bucket, Term, Val, Acc) ->
+                             case re:run(Term, TermRe) of
+                                 nomatch ->
+                                     Acc;
+                                 _ ->
+                                     FoldKeysFun(Bucket, Val, Acc)
+                             end
+                     end
+             end,
 
     %% User indexes
     fun(StorageKey, Acc) ->
@@ -855,9 +855,9 @@ fold_keys_fun(FoldKeysFun, {index, FilterBucket, Q=?KV_INDEX_Q{return_terms=Term
             case riak_index:index_key_in_range(IndexKey, FilterBucket, Q) of
                 {true, {Bucket, Key, _Field, Term}} ->
                     Val = if
-                        Terms -> {Term, Key};
-                        true -> Key
-                    end,
+                              Terms -> {Term, Key};
+                              true -> Key
+                          end,
                     AccFun(Bucket, Term, Val, Acc);
                 {skip, _IK} ->
                     Acc;
@@ -980,7 +980,7 @@ to_first_key({index, Bucket, Q}) ->
 to_first_key(Other) ->
     erlang:throw({unknown_limiter, Other}).
 
-% @doc If index query, encode key using legacy sext format.
+                                                % @doc If index query, encode key using legacy sext format.
 to_legacy_first_key({index, Bucket, {eq, Field, Term}}) ->
     to_legacy_first_key({index, Bucket, {range, Field, Term, Term}});
 to_legacy_first_key({index, Bucket, {range, Field, StartTerm, _EndTerm}}) ->
@@ -1007,7 +1007,7 @@ orig_to_object_key(Bucket, Key) ->
 %%
 to_object_key({TableName, TableName}, {Family, Series, Timestamp}) ->
     EncodedBucketType = % sext:encode(BucketType),
-    EncodedBucketName = sext:encode(TableName),
+        EncodedBucketName = sext:encode(TableName),
     EncodedFamily = sext:encode(Family),
     EncodedSeries = sext:encode(Series),
     EncodedTimestamp = sext:encode(Timestamp),
@@ -1127,10 +1127,10 @@ retry() ->
                                   end
                           end),
         _Pid2 = spawn_link(
-                 fun() ->
-                         Me ! {2, running},
-                         Me ! {2, start(42, [{data_root, Root}])}
-                 end),
+                  fun() ->
+                          Me ! {2, running},
+                          Me ! {2, start(42, [{data_root, Root}])}
+                  end),
         %% Ensure Pid2 is runnng and  give it 10ms to get into the open
         %% so we know it has a lock clash
         receive
@@ -1221,6 +1221,30 @@ prop_eleveldb_backend() ->
            end,
            backend_eqc:prop_backend(?MODULE, false, [{data_root, Path}])).
 
+eqc_test_() ->
+    {spawn,
+     [{inorder,
+       [{setup,
+         fun setup/0,
+         fun cleanup/1,
+         [
+          {timeout, 180,
+           [?_assertEqual(true,
+                          backend_eqc:test(?MODULE, false,
+                                           [{data_root,
+                                             "test/eleveldb-backend"}]))]}
+         ]}]}]}.
+
+setup() ->
+    application:load(sasl),
+    application:set_env(sasl, sasl_error_logger, {file, "riak_kv_eleveldb_backend_eqc_sasl.log"}),
+    error_logger:tty(false),
+    error_logger:logfile({open, "riak_kv_eleveldb_backend_eqc.log"}),
+
+    ok.
+
+cleanup(_) ->
+    ?_assertCmd("rm -rf test/eleveldb-backend").
 
 
 %%
