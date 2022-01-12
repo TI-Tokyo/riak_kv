@@ -1642,12 +1642,12 @@ handle_coverage_request(kv_sql_select_req,
 handle_coverage_request(kv_listkeys_ts,
                         #riak_kv_listkeys_ts_req_v1{table = Table,
                                                     item_filter = ItemFilter,
-                                                    ddl = DDL},
+                                                    ddl_mod = Mod},
                         FilterVNodes, Sender, State) ->
     %% ack-based backpressure, I suppose
     Bucket = {Table, Table},
     ResultFun = result_fun_ack(Bucket, Sender),
-    Opts = [{bucket, Bucket}, {ddl, DDL}],
+    Opts = [{bucket, Bucket}, {ddl_mod, Mod}],
     handle_coverage_keyfold(Bucket, ItemFilter, ResultFun,
                             FilterVNodes, Sender, Opts, State).
 
@@ -2260,11 +2260,14 @@ handle_coverage_fold(FoldType, Bucket, ItemFilter, ResultFun,
     %% if Options contain a DDL, then we are folding keys for
     %% list_ts_keys
     FoldFunSelector =
-        case proplists:get_value(ddl, Opts0) of
+        case proplists:get_value(ddl_mod, Opts0) of
             undefined ->
                 keys;
-            DDL ->
-                {keys, fun(Key) -> recover_ts_key(Key, DDL, Index) end}
+            DDLMod ->
+                #ddl_v1{table = Table,
+                        local_key = #key_v1{ast = Ast}} = DDLMod:get_ddl(),
+                {keys,
+                 fun(Key) -> recover_ts_key(Key, Table, Ast, Index) end}
         end,
     FoldFun = fold_fun(FoldFunSelector, BufferMod, Filter, Extras),
     FinishFun = finish_fun(BufferMod, Sender),
@@ -2291,23 +2294,28 @@ handle_coverage_fold(FoldType, Bucket, ItemFilter, ResultFun,
             {noreply, State}
     end.
 
--spec recover_ts_key(binary(), #ddl_v1{}, index()) -> [] | tuple().
+-spec recover_ts_key(Key::binary(), Table::binary(), Ast::term(), index()) ->
+                            [] | tuple().
 %% @private
 %% Get the full TS record, then reconstruct the TS key from it using
-%% provided DDL.
-recover_ts_key(Key, DDL = #ddl_v1{table = Table}, Index) ->
+%% provided parts (extracted from DDL to common expression recomputations).
+recover_ts_key(Key, Table, Ast, Index) ->
     Bucket = {Table, Table},
     {ok, RObj} = local_get(Index, {Bucket, Key}),
     case riak_object:get_value(RObj) of
         <<>> ->
             [];
         Record ->
-            {_Columns, Values} = lists:unzip(Record),
-            LK = riak_ql_ddl:get_local_key(DDL, list_to_tuple(Values)),
-            {_Types, LKValues} = lists:unzip(LK),
-            %% there is a lists:flatten on the way back, so:
-            list_to_tuple(LKValues)
+            list_to_tuple(
+              strip_nonlk_fields(Ast, Record))
     end.
+
+%% Special case of riak_ql_ddl:get_local_key/2: accepts [{Type,
+%% Value}] and consults Ast to only keep LK-constituent fields in Obj.
+strip_nonlk_fields(Ast, Obj) ->
+    Params = [P || #param_v1{name = [P]} <- Ast],
+    [V || {N, V} <- Obj, lists:member(N, Params)].
+
 
 
 handle_coverage_range_scan(FoldType, Bucket, ItemFilter, ResultFun,
@@ -3443,8 +3451,8 @@ fold_fun(keys, BufferMod, none, undefined) ->
     end;
 fold_fun({keys, RecoverTsFun}, BufferMod, none, undefined) ->
     fun(_, Key, Buffer) ->
-            CompoundKey = RecoverTsFun(Key),
-            BufferMod:add(CompoundKey, Buffer)
+            CompounfKey = RecoverTsFun(Key),
+            BufferMod:add(CompounfKey, Buffer)
     end;
 fold_fun(keys, BufferMod, none, {Bucket, Index, N, NumPartitions}) ->
     fun(_, Key, Buffer) ->
@@ -4789,5 +4797,27 @@ always_v1_test() ->
     % Confirm that the leveled backend will always be a v1 object
     ObjFmt = object_format(riak_kv_leveled_backend, undefined),
     ?assertEqual(v1, ObjFmt).
+
+
+strip_nonlk_fields_test() ->
+    ?assertEqual(
+       [1, 3],
+       strip_nonlk_fields(
+         [#param_v1{name = [<<"a">>]},
+          #param_v1{name = [<<"b">>]}],
+         [{<<"a">>, 1}, {<<"x">>, 2}, {<<"b">>, 3}])),
+    ?assertEqual(
+       [1, 2],
+       strip_nonlk_fields(
+         [#param_v1{name = [<<"a">>]},
+          #param_v1{name = [<<"b">>]}],
+         [{<<"a">>, 1}, {<<"b">>, 2}, {<<"x">>, 3}])),
+    ?assertEqual(
+       [1, 2],
+       strip_nonlk_fields(
+         [#param_v1{name = [<<"b">>]},
+          #param_v1{name = [<<"a">>]}],
+         [{<<"a">>, 1}, {<<"b">>, 2}, {<<"x">>, 3}])),
+    ok.
 
 -endif.
