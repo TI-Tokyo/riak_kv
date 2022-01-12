@@ -99,7 +99,7 @@ delete(ReqId,Bucket,Key,Options,Timeout,Client,ClientId,VClock) ->
                     {ok, C2} = riak:local_client(),
                     AsyncTimeout = 60*1000,     % Avoid client-specified value
                     timer:sleep(TombPause),
-                    Res = riak_client:get(Bucket, Key, all, AsyncTimeout, C2),
+                    Res = riak_client:get(Bucket, Key, [{r, all}, {timeout, AsyncTimeout}], C2),
                     ?DTRACE(?C_DELETE_REAPER_GET_DONE, [1], [<<"reap">>]),
                     Res;
                 _ ->
