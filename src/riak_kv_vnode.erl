@@ -1456,7 +1456,6 @@ handle_command({get_index_entries, Opts},
             lager:error("Backend ~p does not support incorrect index query", [Mod]),
             {reply, ignore, State}
     end;
-
 handle_command(report_hashtree_tokens, _Sender, State) ->
     {reply, get(hashtree_tokens), State};
 handle_command({reset_hashtree_tokens, MinToken, MaxToken}, _Sender, State) ->
@@ -1471,7 +1470,6 @@ handle_command({reset_hashtree_tokens, MinToken, MaxToken}, _Sender, State) ->
 
 handle_command(Req, Sender, State) ->
     handle_request(riak_kv_requests:request_type(Req), Req, Sender, State).
-
 
 %% @todo: pre record encapsulation there was no catch all clause in handle_command,
 %%        so crashing on unknown should work.
