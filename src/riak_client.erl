@@ -50,7 +50,8 @@
 -export([ensemble/1]).
 -export([fetch/2, push/4]).
 -export([remove_node_from_coverage/0, reset_node_for_coverage/0]).
--export([get_cover/2, get_cover/3, replace_cover/5]).
+-export([get_cover/3, get_cover/4, get_cover/5, replace_cover/5]).
+-export([vnode_target/1]).
 
 -include_lib("riak_core/include/riak_core_vnode.hrl").
 
