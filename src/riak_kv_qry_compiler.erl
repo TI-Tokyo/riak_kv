@@ -875,17 +875,54 @@ simple_spanning_boundary_test() ->
            ],
     ?assertEqual(Expected, Got).
 
-%% Values right at quanta edges are tricky. Make sure we're not
-%% missing them: we should be generating two queries instead of just
-%% one.
-boundary_quanta_test() ->
+
+%% check for spanning precision (same as above except selection range
+%% is exact multiple of quantum size)
+simple_spanning_boundary_precision_test() ->
     DDL = get_standard_ddl(),
-    Query = "select weather from GeoCheckin where time >= 14000 and time <= 15000 and user = 'user_1' and location = 'Scotland'",
+    Query = "select weather from GeoCheckin where time >= 3000 and time < 30000 and user = 'user_1' and location = 'Scotland'",
     {ok, Q} = get_query(Query),
     true = is_query_valid(DDL, Q),
-    %% get basic query
     Got = compile(DDL, Q),
-    ?assertEqual(2, length(Got)).
+    %% now make the result - expecting 2 queries
+    W1 = [
+        {startkey,        [
+            {<<"location">>, varchar, <<"Scotland">>},
+            {<<"user">>, varchar,    <<"user_1">>},
+            {<<"time">>, timestamp, 3000}
+        ]},
+        {endkey,          [
+            {<<"location">>, varchar, <<"Scotland">>},
+            {<<"user">>, varchar,    <<"user_1">>},
+            {<<"time">>, timestamp, 15000}
+        ]},
+      {filter,          []}
+     ],
+    W2 = [
+        {startkey,        [
+            {<<"location">>, varchar, <<"Scotland">>},
+            {<<"user">>, varchar,    <<"user_1">>},
+            {<<"time">>, timestamp, 15000}
+        ]},
+        {endkey,          [
+            {<<"location">>, varchar, <<"Scotland">>},
+            {<<"user">>, varchar,    <<"user_1">>},
+            {<<"time">>, timestamp, 30000}
+        ]},
+      {filter,          []}
+     ],
+    Expected =
+        [Q#riak_sql_v1{is_executable = true,
+                       type          = timeseries,
+                       'WHERE'       = W1,
+                       partition_key = get_standard_pk(),
+                       local_key     = get_standard_lk()},
+         Q#riak_sql_v1{is_executable = true,
+                       type          = timeseries,
+                       'WHERE'       = W2,
+                       partition_key = get_standard_pk(),
+                       local_key     = get_standard_lk()}],
+    ?assertEqual(Expected, Got).
 
 %%
 %% test failures
