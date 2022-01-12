@@ -62,28 +62,16 @@ use_ack_backpressure() ->
     riak_core_capability:get({riak_kv, listkeys_backpressure}, false) == true.
 
 %% @doc Construct the correct listkeys command record.
--spec req(binary(), term(), none|module()) -> term().
-req(Bucket, ItemFilter, none) ->
-    riak_kv_requests:new_listkeys_request(Bucket, ItemFilter, use_ack_backpressure());
-%% @doc Construct listkeys request record for TS buckets, where keys
-%% are meaningless hashes (Local Keys) and should be converted to
-%% Compound Keys using the table's DDL.
-req(Bucket, ItemFilter, Mod) ->
-    #riak_kv_listkeys_ts_req_v1{table = Bucket,
-                                item_filter = ItemFilter,
-                                ddl_mod = Mod}.
-%% @doc Exported for use in riak_kv_pipe:process/3
+-spec req(binary(), term()) -> term().
 req(Bucket, ItemFilter) ->
-    req(Bucket, ItemFilter, none).
+    riak_kv_requests:new_listkeys_request(Bucket, ItemFilter, use_ack_backpressure());
 
 
 %% @doc Return a tuple containing the ModFun to call per vnode,
 %% the number of primary preflist vnodes the operation
 %% should cover, the service to use to check for available nodes,
 %% and the registered name to use to access the vnode master process.
-init(From, [Bucket, ItemFilter, Timeout]) ->
-    init(From, [Bucket, ItemFilter, Timeout, none]);
-init(From={_, _, ClientPid}, [Bucket, ItemFilter, Timeout, DDLMod]) ->
+init(From={_, _, ClientPid}, [Bucket, ItemFilter, Timeout]) ->
     riak_core_dtrace:put_tag(io_lib:format("~p", [Bucket])),
     ClientNode = atom_to_list(node(ClientPid)),
     PidStr = pid_to_list(ClientPid),
@@ -98,7 +86,7 @@ init(From={_, _, ClientPid}, [Bucket, ItemFilter, Timeout, DDLMod]) ->
     BucketProps = riak_core_bucket:get_bucket(Bucket),
     NVal = proplists:get_value(n_val, BucketProps),
     %% Construct the key listing request
-    Req = req(Bucket, ItemFilter, DDLMod),
+    Req = req(Bucket, ItemFilter),
     {Req, all, NVal, 1, riak_kv, riak_kv_vnode_master, Timeout,
      #state{from=From}}.
 
