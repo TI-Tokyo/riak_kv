@@ -66,7 +66,6 @@ use_ack_backpressure() ->
 req(Bucket, ItemFilter) ->
     riak_kv_requests:new_listkeys_request(Bucket, ItemFilter, use_ack_backpressure());
 
-
 %% @doc Return a tuple containing the ModFun to call per vnode,
 %% the number of primary preflist vnodes the operation
 %% should cover, the service to use to check for available nodes,
