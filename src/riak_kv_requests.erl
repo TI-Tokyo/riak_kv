@@ -224,6 +224,7 @@ request_type(#riak_kv_head_req_v1{}) -> kv_head_request;
 request_type(#riak_kv_aaefold_req_v1{}) -> kv_aaefold_request;
 request_type(#riak_kv_hotbackup_req_v1{}) -> kv_hotbackup_request;
 request_type(#riak_kv_sql_select_req_v1{}) -> kv_sql_select_req;
+request_type(#riak_kv_listkeys_ts_req_v1{}) -> kv_listkeys_ts;
 request_type(_) -> unknown.
 
 -spec new_put_request(bucket_key(),

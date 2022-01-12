@@ -92,6 +92,7 @@
 -include_lib("riak_kv_index.hrl").
 -include_lib("riak_kv_map_phase.hrl").
 -include_lib("riak_core_pb.hrl").
+-include_lib("riak_ql/include/riak_ql_ddl.hrl").
 -include("riak_kv_types.hrl").
 
 -ifdef(TEST).
@@ -1597,8 +1598,8 @@ handle_coverage_request(kv_index_request, Req, FilterVNodes, Sender, State) ->
                     false -> result_fun(Bucket, Sender)
                 end,
     handle_coverage_index(Bucket, ItemFilter, Query,
-                            FilterVNodes, Sender,
-                            State, ResultFun);
+                          FilterVNodes, Sender,
+                          State, ResultFun);
 handle_coverage_request(kv_aaefold_request, Req, FilterVNodes, Sender, State) ->
     Query = riak_kv_requests:get_query(Req),
     InitAcc = riak_kv_requests:get_initacc(Req),
@@ -1606,13 +1607,81 @@ handle_coverage_request(kv_aaefold_request, Req, FilterVNodes, Sender, State) ->
     handle_coverage_aaefold(Query, InitAcc, Nval,
                             FilterVNodes, Sender,
                             State);
+handle_coverage_request(kv_hotbackup_request, Req, _FilterVnodes, Sender,
+                State=#state{mod=Mod, modstate=ModState}) ->
+    % If the backend is hot_backup capability, run the backup via the node
+    % worker pool.  Otherwise return not_supported
+    BackupPath = riak_kv_requests:get_path(Req),
+    {ok, Caps} = Mod:capabilities(ModState),
+    case lists:member(hot_backup, Caps) of
+        true ->
+            case Mod:hot_backup(ModState, BackupPath) of
+                {error, _Reason} ->
+                    % Assume the backend has logged the reason
+                    {reply, riak_kv_hotbackup_fsm:bad_request(), State};
+                {queue, BackupFolder} ->
+                    FinishFun =
+                        fun(ok) ->
+                            Complete = riak_kv_hotbackup_fsm:complete(),
+                            riak_core_vnode:reply(Sender, Complete)
+                        end,
+                    {select_queue(?AF1_QUEUE, State),
+                        {fold, BackupFolder, FinishFun},
+                        Sender, State}
+            end;
+        false ->
+            {reply, riak_kv_hotbackup_fsm:not_supported(), State}
+    end;
 handle_coverage_request(kv_sql_select_req,
                         #riak_kv_sql_select_req_v1{bucket=Bucket,
                                                    qry=Query},
                         FilterVNodes, Sender, State) ->
     ItemFilter = none,
     handle_range_scan(Bucket, ItemFilter, Query,
-                      FilterVNodes, Sender, State, fun result_fun_ack/2).
+                      FilterVNodes, Sender, State, fun result_fun_ack/2);
+handle_coverage_request(kv_listkeys_ts,
+                        #riak_kv_listkeys_ts_req_v1{table = Table,
+                                                    item_filter = ItemFilter,
+                                                    ddl = DDL},
+                        FilterVNodes, Sender, State) ->
+    %% ack-based backpressure, I suppose
+    Bucket = {Table, Table},
+    ResultFun = result_fun_ack(Bucket, Sender),
+    Opts = [{bucket, Bucket}, {ddl, DDL}],
+    handle_coverage_keyfold(Bucket, ItemFilter, ResultFun,
+                            FilterVNodes, Sender, Opts, State).
+
+
+%% @doc Handle a coverage request.
+%% More information about the specification for the ItemFilter
+%% parameter can be found in the documentation for the
+%% {@link riak_kv_coverage_filter} module.
+handle_coverage(Req, FilterVNodes, Sender, State) ->
+    handle_coverage_request(riak_kv_requests:request_type(Req),
+                            Req,
+                            FilterVNodes,
+                            Sender,
+                            State).
+
+
+
+-spec prepare_index_query(?KV_INDEX_Q{}) -> ?KV_INDEX_Q{}.
+prepare_index_query(#riak_kv_index_v3{term_regex=RE} = Q) when
+        RE =/= undefined ->
+    {ok, CompiledRE} = re:compile(RE),
+    Q#riak_kv_index_v3{term_regex=CompiledRE};
+prepare_index_query(Q) ->
+    Q.
+
+%% @doc Batch size for results is set to 2i max_results if that is less
+%% than the default size. Without this the vnode may send back to the FSM
+%% more items than could ever be sent back to the client.
+buffer_size_for_index_query(#riak_kv_index_v3{max_results=N}, DefaultSize)
+  when is_integer(N), N < DefaultSize ->
+    N;
+buffer_size_for_index_query(_Q, DefaultSize) ->
+    DefaultSize.
+
 
 handle_range_scan(Bucket, ItemFilter, Query,
                   FilterVNodes, Sender,
@@ -1638,44 +1707,6 @@ handle_range_scan(Bucket, ItemFilter, Query,
         false ->
             {reply, {error, {indexes_not_supported, Mod}}, State}
     end.
-
-handle_coverage_request(kv_hotbackup_request, Req, _FilterVnodes, Sender,
-                State=#state{mod=Mod, modstate=ModState}) ->
-    % If the backend is hot_backup capability, run the backup via the node
-    % worker pool.  Otherwise return not_supported
-    BackupPath = riak_kv_requests:get_path(Req),
-    {ok, Caps} = Mod:capabilities(ModState),
-    case lists:member(hot_backup, Caps) of
-        true ->
-            case Mod:hot_backup(ModState, BackupPath) of
-                {error, _Reason} ->
-                    % Assume the backend has logged the reason
-                    {reply, riak_kv_hotbackup_fsm:bad_request(), State};
-                {queue, BackupFolder} ->
-                    FinishFun =
-                        fun(ok) ->
-                            Complete = riak_kv_hotbackup_fsm:complete(),
-                            riak_core_vnode:reply(Sender, Complete)
-                        end,
-                    {select_queue(?AF1_QUEUE, State),
-                        {fold, BackupFolder, FinishFun},
-                        Sender, State}
-            end;
-        false ->
-            {reply, riak_kv_hotbackup_fsm:not_supported(), State}
-    end.
-
-
-%% @doc Handle a coverage request.
-%% More information about the specification for the ItemFilter
-%% parameter can be found in the documentation for the
-%% {@link riak_kv_coverage_filter} module.
-handle_coverage(Req, FilterVNodes, Sender, State) ->
-    handle_coverage_request(riak_kv_requests:request_type(Req),
-                            Req,
-                            FilterVNodes,
-                            Sender,
-                            State).
 
 
 %% @doc Batch size for results is set to 2i max_results if that is less
@@ -2226,7 +2257,16 @@ handle_coverage_fold(FoldType, Bucket, ItemFilter, ResultFun,
 
     % Build the fold and finish functions
     Extras = fold_extras_keys(Index, Bucket),
-    FoldFun = fold_fun(keys, BufferMod, Filter, Extras),
+    %% if Options contain a DDL, then we are folding keys for
+    %% list_ts_keys
+    FoldFunSelector =
+        case proplists:get_value(ddl, Opts0) of
+            undefined ->
+                keys;
+            DDL ->
+                {keys, fun(Key) -> recover_ts_key(Key, DDL, Index) end}
+        end,
+    FoldFun = fold_fun(FoldFunSelector, BufferMod, Filter, Extras),
     FinishFun = finish_fun(BufferMod, Sender),
 
     % Understand how the fold should be run - async, sync or queued
@@ -2250,6 +2290,25 @@ handle_coverage_fold(FoldType, Bucket, ItemFilter, ResultFun,
             % have already sent the results using FinishFun
             {noreply, State}
     end.
+
+-spec recover_ts_key(binary(), #ddl_v1{}, index()) -> [] | tuple().
+%% @private
+%% Get the full TS record, then reconstruct the TS key from it using
+%% provided DDL.
+recover_ts_key(Key, DDL = #ddl_v1{table = Table}, Index) ->
+    Bucket = {Table, Table},
+    {ok, RObj} = local_get(Index, {Bucket, Key}),
+    case riak_object:get_value(RObj) of
+        <<>> ->
+            [];
+        Record ->
+            {_Columns, Values} = lists:unzip(Record),
+            LK = riak_ql_ddl:get_local_key(DDL, list_to_tuple(Values)),
+            {_Types, LKValues} = lists:unzip(LK),
+            %% there is a lists:flatten on the way back, so:
+            list_to_tuple(LKValues)
+    end.
+
 
 handle_coverage_range_scan(FoldType, Bucket, ItemFilter, ResultFun,
                            FilterVNodes, Sender, Opts0,
@@ -3382,6 +3441,11 @@ fold_fun(keys, BufferMod, none, undefined) ->
     fun(_, Key, Buffer) ->
             BufferMod:add(Key, Buffer)
     end;
+fold_fun({keys, RecoverTsFun}, BufferMod, none, undefined) ->
+    fun(_, Key, Buffer) ->
+            CompounfKey = RecoverTsFun(Key),
+            BufferMod:add(CompounfKey, Buffer)
+    end;
 fold_fun(keys, BufferMod, none, {Bucket, Index, N, NumPartitions}) ->
     fun(_, Key, Buffer) ->
             Hash = riak_core_util:chash_key({Bucket, Key}),
@@ -3392,11 +3456,32 @@ fold_fun(keys, BufferMod, none, {Bucket, Index, N, NumPartitions}) ->
                     Buffer
             end
     end;
+fold_fun({keys, RecoverTsFun}, BufferMod, none, {Bucket, Index, N, NumPartitions}) ->
+    fun(_, Key, Buffer) ->
+            Hash = riak_core_util:chash_key({Bucket, Key}),
+            case riak_core_ring:future_index(Hash, Index, N, NumPartitions, NumPartitions) of
+                Index ->
+                    CompoundKey = RecoverTsFun(Key),
+                    BufferMod:add(CompoundKey, Buffer);
+                _ ->
+                    Buffer
+            end
+    end;
 fold_fun(keys, BufferMod, Filter, undefined) ->
     fun(_, Key, Buffer) ->
             case Filter(Key) of
                 true ->
                     BufferMod:add(Key, Buffer);
+                false ->
+                    Buffer
+            end
+    end;
+fold_fun({keys, RecoverTsFun}, BufferMod, Filter, undefined) ->
+    fun(_, Key, Buffer) ->
+            CompoundKey = RecoverTsFun(Key),
+            case Filter(CompoundKey) of
+                true ->
+                    BufferMod:add(CompoundKey, Buffer);
                 false ->
                     Buffer
             end
@@ -3421,6 +3506,22 @@ fold_fun(range_scan, BufferMod, none, _Extra) ->
             BufferMod:add(Range, Buffer)
     end;
 
+fold_fun({keys, RecoverTsFun}, BufferMod, Filter, {Bucket, Index, N, NumPartitions}) ->
+    fun(_, Key, Buffer) ->
+            Hash = riak_core_util:chash_key({Bucket, Key}),
+            case riak_core_ring:future_index(Hash, Index, N, NumPartitions, NumPartitions) of
+                Index ->
+                    CompoundKey = RecoverTsFun(Key),
+                    case Filter(CompoundKey) of
+                        true ->
+                            BufferMod:add(CompoundKey, Buffer);
+                        false ->
+                            Buffer
+                    end;
+                _ ->
+                    Buffer
+            end
+    end.
 
 %% @private
 result_fun(Sender) ->
