@@ -99,8 +99,7 @@
 -export([to_json/1, from_json/1]).
 -export([index_data/1, diff_index_data/2]).
 -export([index_specs/1, diff_index_specs/2]).
--export([to_binary/2, from_binary/3,
-         to_binary/3,
+-export([to_binary/2, from_binary/3, to_binary/3,
          to_binary_version/4, binary_version/1]).
 -export([nextgenrepl_encode/3, nextgenrepl_decode/1]).
 -export([summary_from_binary/1, aae_from_object_binary/1,
