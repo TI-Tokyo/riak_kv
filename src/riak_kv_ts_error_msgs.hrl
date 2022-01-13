@@ -99,3 +99,8 @@
       "Where clause when a range is not specified, but more than one was ",
       "specified.">>
 ).
+-define(
+   E_NON_UNIQUE_ORDERBY_FIELDS(N),
+   iolist_to_binary(
+     ["Column ",N," appears more than once in ORDER BY list"])
+).
