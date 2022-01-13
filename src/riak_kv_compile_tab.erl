@@ -29,6 +29,12 @@
          get_compiled_ddl_versions/1,
          get_ddl/2,
          insert/2,
+         get_table_status_pairs/0,
+         get_compiled_ddl_version/1,
+         get_state/1,
+         get_ddl_records_needing_recompiling/1,
+         insert/5,
+         is_compiling/1,
          new/1,
          populate_v3_table/0
         ]).
@@ -196,6 +202,36 @@ get_ddl_v2(BucketType) when is_binary(BucketType) ->
     case dets:lookup(?TABLE2, BucketType) of
         [{_,_,#ddl_v1{} = DDL,_,_}] ->
             {ok, DDL};
+
+%% Get the list of {TableName, Status} pairs, no matter what status they are in.
+-spec get_table_status_pairs() ->[{binary(), binary()}].
+get_table_status_pairs() ->
+    Matches = dets:match(?TABLE, {'$1','_','_','_','$2'}),
+    Tables = [ {Table, map_table_state_to_status(State)} ||
+        [Table, State] <- Matches ],
+    lists:usort(Tables).
+
+-spec map_table_state_to_status(atom()) -> binary().
+map_table_state_to_status('compiled') ->
+    <<"Active">>;
+map_table_state_to_status('retrying') ->
+    <<"Not Active">>;
+map_table_state_to_status('compiling') ->
+    <<"Not Active">>;
+map_table_state_to_status('failed') ->
+    <<"Failed">>;
+map_table_state_to_status(_TableState) ->
+    <<"Unknown">>.
+
+%% Update the compilation state using the compiler pid as a key.
+%% Since it has an active Pid, it is assumed to have a DDL version already.
+-spec update_state(CompilerPid :: pid(), State :: compiling_state()) ->
+        ok | error | notfound.
+update_state(CompilerPid, State) when is_pid(CompilerPid),
+                                       ?is_compiling_state(State) ->
+    case dets:match(?TABLE, {'$1','$2','$3',CompilerPid,'_'}) of
+        [[BucketType, DDLVersion, DDL]] ->
+            insert(BucketType, DDLVersion, DDL, CompilerPid, State);
         [] ->
             notfound
     end.
@@ -265,4 +301,29 @@ delete_table_ddls_test() ->
             )
         end).
 
+get_table_status_pairs_test() ->
+    ?in_process(
+        begin
+            Pid = spawn(fun() -> ok end),
+            Pid2 = spawn(fun() -> ok end),
+            Pid3 = spawn(fun() -> ok end),
+            Pid4 = spawn(fun() -> ok end),
+            Pid5 = spawn(fun() -> ok end),
+            ok = insert(<<"my_type1">>, 6, {ddl_v1}, Pid, compiling),
+            ok = insert(<<"my_type2">>, 7, {ddl_v1}, Pid2, compiled),
+            ok = insert(<<"my_type3">>, 6, {ddl_v1}, Pid3, retrying),
+            ok = insert(<<"my_type4">>, 8, {ddl_v1}, Pid4, failed),
+            ok = insert(<<"my_type5">>, 8, {ddl_v1}, Pid5, compiled),
+
+            ?assertEqual(
+                [
+                    {<<"my_type1">>, <<"Not Active">>},
+                    {<<"my_type2">>, <<"Active">>},
+                    {<<"my_type3">>, <<"Not Active">>},
+                    {<<"my_type4">>, <<"Failed">>},
+                    {<<"my_type5">>, <<"Active">>}
+                ],
+                get_table_status_pairs()
+            )
+    end).
 -endif.
