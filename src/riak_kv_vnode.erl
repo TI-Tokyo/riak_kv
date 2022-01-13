@@ -1673,14 +1673,6 @@ handle_coverage(Req, FilterVNodes, Sender, State) ->
 
 
 
--spec prepare_index_query(?KV_INDEX_Q{}) -> ?KV_INDEX_Q{}.
-prepare_index_query(#riak_kv_index_v3{term_regex=RE} = Q) when
-        RE =/= undefined ->
-    {ok, CompiledRE} = re:compile(RE),
-    Q#riak_kv_index_v3{term_regex=CompiledRE};
-prepare_index_query(Q) ->
-    Q.
-
 %% @doc Batch size for results is set to 2i max_results if that is less
 %% than the default size. Without this the vnode may send back to the FSM
 %% more items than could ever be sent back to the client.
@@ -1740,6 +1732,13 @@ handle_range_scan(Bucket, ItemFilter, Query,
             {reply, {error, {indexes_not_supported, Mod}}, State}
     end.
 
+
+prepare_index_query(#riak_kv_index_v3{term_regex=RE} = Q) when
+        RE =/= undefined ->
+    {ok, CompiledRE} = re:compile(RE),
+    Q#riak_kv_index_v3{term_regex=CompiledRE};
+prepare_index_query(Q) ->
+    Q.
 
 %% @doc Batch size for results is set to 2i max_results if that is less
 %% than the default size. Without this the vnode may send back to the FSM
@@ -3663,6 +3662,14 @@ options_for_folding_and_backend(Opts, true, snap_prefold) ->
 options_for_folding_and_backend(Opts, false, _) ->
     Opts.
 
+fold_type_for_query(Query) ->
+    %% @HACK
+    %% Really this should be decided in the backend
+    %% if there was a index_query fun.
+    case riak_index:return_body(Query) of
+        true -> fold_objects;
+        false -> fold_keys
+    end.
 
 %% @private
 maybe_enable_iterator_refresh(Capabilities, Opts) ->
