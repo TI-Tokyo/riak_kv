@@ -38,6 +38,7 @@
          maybe_parse_table_def/2,
          pk/1,
          queried_table/1,
+         rm_rf/1,
          row_to_key/3,
          sql_record_to_tuple/1,
          sql_to_cover/6,
@@ -769,6 +770,28 @@ find_hash_fn([_H|T]) ->
 
 %%%%%%%%%%%%
 
+%% @doc Does os:cmd(flat_format("rm -rf '~s'", [Dir])).
+rm_rf(Dir) ->
+    rm_direntries(Dir, filelib:wildcard("*", flat_format("~s", [Dir]))).
+
+rm_direntries(Dir, []) ->
+    file:del_dir(Dir);
+rm_direntries(Dir, [F|Rest]) ->
+    Entry = filename:join(Dir, F),
+    Res =
+        case filelib:is_dir(Entry) of
+            true ->
+                rm_rf(Entry);
+            false ->
+                file:delete(Entry)
+        end,
+    case Res of
+        ok ->
+            rm_direntries(Dir, Rest);
+        ER ->
+            ER
+    end.
+
 
 flat_format(Format, Args) ->
     lists:flatten(io_lib:format(Format, Args)).
@@ -1019,5 +1042,20 @@ check_table_feature_supported_when_table_is_disabled_test() ->
         {error, _},
         check_table_feature_supported(v2, DecodedReq)
     ).
+
+rm_rf_test() ->
+    Dir = test_server:temp_name("/tmp/"),
+    os:cmd(flat_format("mkdir -p '~s'", [Dir])),
+    os:cmd(flat_format("mkdir -p '~s/ke'", [Dir])),
+    os:cmd(flat_format("mkdir -p '~s/mi'", [Dir])),
+    os:cmd(flat_format("touch '~s/a'", [Dir])),
+    os:cmd(flat_format("touch '~s/ke/b'", [Dir])),
+    os:cmd(flat_format("touch '~s/d'", [Dir])),
+    os:cmd(flat_format("ln -s '~s/d' '~s/A'", [Dir, Dir])),
+    Exists1 = filelib:is_dir(Dir),
+    ?assertEqual(Exists1, true),
+    ok = rm_rf(Dir),
+    Exists2 = filelib:is_dir(Dir),
+    ?assertEqual(Exists2, false).
 
 -endif.
