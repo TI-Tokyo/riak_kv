@@ -672,7 +672,7 @@ compile(_Mod, {error, Err}) ->
     {error, make_decoder_error_response(Err)};
 compile(_Mod, {'EXIT', {Err, _}}) ->
     {error, make_decoder_error_response(Err)};
-compile(Mod, {ok, ?SQL_SELECT{}=SQL}) ->
+compile(Mod, {ok, SQL}) ->
     case (catch Mod:get_ddl()) of
         {_, {undef, _}} ->
             {error, no_helper_module};
