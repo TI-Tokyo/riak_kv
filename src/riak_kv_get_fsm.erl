@@ -269,7 +269,7 @@ prepare(timeout, StateData=#state{bkey = {Bucket, Key},
                 BucketProps
         end,
 
-    DocIdx = riak_core_util:chash_key({Bucket, riak_kv_pb_timeseries:pk(Key)}, BucketProps),
+    DocIdx = riak_core_util:chash_key({Bucket, riak_kv_ts_util:pk(Key)}, BucketProps),
 
     Bucket_N = get_option(n_val, BucketProps),
     CrdtOp = get_option(crdt_op, Options),
@@ -300,7 +300,7 @@ prepare(timeout, StateData=#state{bkey = {Bucket, Key},
             RequestType = get_default_support_request_type(?DEFAULT_RT),
             new_state_timeout(validate,
                                 StateData#state{
-                                  bkey = {Bucket, riak_kv_pb_timeseries:lk(Key)},
+                                  bkey = {Bucket, riak_kv_ts_util:lk(Key)},
                                   starttime=riak_core_util:moment(),
                                   n = N,
                                   bucket_props=Props,
