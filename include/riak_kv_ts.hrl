@@ -106,7 +106,7 @@
           %% to be supplied in #tsqueryreq.qbuf_id, which is expected
           %% to appear in a future release
           qbuf_id               :: undefined | binary()  %% control reuse of existing buffers
-       }).
+        }).
 
 -record(riak_sql_describe_v1,
         {
@@ -139,7 +139,7 @@
 -record(riak_sql_delete_query_v1,
         {
           'FROM'     = <<>> :: binary() | {list, [binary()]} | {regex, list()},
-          'WHERE'    = []   :: [riak_ql_ddl:filter()],
+          'WHERE'           :: [riak_ql_ddl:filter()],
           helper_mod        :: atom()
         }).
 -endif.
