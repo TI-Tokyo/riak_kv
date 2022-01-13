@@ -55,6 +55,7 @@
 -define(E_QBUF_CREATE_ERROR,     1023).
 -define(E_QBUF_LDB_ERROR,        1024).
 -define(E_QUANTA_LIMIT,          1025).
+-define(E_QBUF_INTERNAL_ERROR,   1026).
 
 -define(FETCH_RETRIES, 10).  %% TODO make it configurable in tsqueryreq
 -define(TABLE_ACTIVATE_WAIT, 30). %% ditto
@@ -531,6 +532,8 @@ sub_tsqueryreq(_Mod, DDL = ?DDL{table = Table}, SQL, State) ->
             {reply, make_qbuf_create_error(Reason), State};
         {error, {qbuf_ldb_error, Reason}} ->
             {reply, make_qbuf_ldb_error(Reason), State};
+        {error, {qbuf_internal_error, Reason}} ->
+            {reply, make_qbuf_internal_error(Reason), State};
 
         %% these come from riak_kv_qry_compiler, even though the query is a valid SQL.
         {error, {_DDLCompilerErrType, DDLCompilerErrDesc}} when is_atom(_DDLCompilerErrType) ->
@@ -661,6 +664,11 @@ make_qbuf_ldb_error(Reason) ->
     make_rpberrresp(
       ?E_QBUF_LDB_ERROR,
       flat_format("Query buffer I/O error: ~p", [Reason])).
+
+make_qbuf_internal_error(Reason) ->
+    make_rpberrresp(
+      ?E_QBUF_INTERNAL_ERROR,
+      flat_format("Query buffer internal error: ~p", [Reason])).
 
 make_max_query_quanta_resp(NQuanta, MaxQueryQuanta) ->
     make_rpberrresp(
