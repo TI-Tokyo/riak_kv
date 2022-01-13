@@ -150,13 +150,13 @@ raw_dispatch(Name) ->
 
      {["tombs"] ++ Prefix ++ ["buckets", bucket],
       riak_kv_wm_aaefold, Props},
-    
+
      {["reap"] ++ Prefix ++ ["buckets", bucket],
       riak_kv_wm_aaefold, Props},
 
      {["erase"] ++ Prefix ++ ["buckets", bucket],
       riak_kv_wm_aaefold, Props},
-    
+
      {["aaebucketlist"],
       riak_kv_wm_aaefold, Props},
 
