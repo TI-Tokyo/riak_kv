@@ -78,11 +78,25 @@ use_ack_backpressure() ->
 
 %% @doc Construct the correct index command record.
 -spec req(binary()|tuple(binary()), term(), term()) -> term().
-req(Bucket, _ItemFilter, ?SQL_SELECT{} = Q) ->
-    #riak_kv_sql_select_req_v1{bucket=Bucket,
-                               qry=Q};
 req(Bucket, ItemFilter, Query) ->
-    riak_kv_requests:new_index_request(Bucket, ItemFilter, Query, use_ack_backpressure()).
+    case riak_kv_select:is_sql_select_record(Query) of
+        true ->
+            #riak_kv_sql_select_req_v1{bucket = Bucket, qry = Query};
+        false ->
+            index_req(Bucket, ItemFilter, Query)
+    end.
+
+index_req(Bucket, ItemFilter, Query) ->
+    case use_ack_backpressure() of
+        true ->
+            ?KV_INDEX_REQ{bucket=Bucket,
+                          item_filter=ItemFilter,
+                          qry=Query};
+        false ->
+            #riak_kv_index_req_v1{bucket=Bucket,
+                                  item_filter=ItemFilter,
+                                  qry=Query}
+    end.
 
 %% @doc Return a tuple containing the ModFun to call per vnode,
 %% the number of primary preflist vnodes the operation
