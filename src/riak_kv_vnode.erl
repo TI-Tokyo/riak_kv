@@ -1535,7 +1535,7 @@ handle_request(kv_w1c_put_request, Req, _Sender, State=#state{async_put=false, u
 %% For now, ignore async_put. This is currently TS-only, and TS
 %% supports neither AAE nor YZ.
 handle_request(kv_w1c_batch_put_request, ?KV_W1C_BATCH_PUT_REQ{objs=Objs, type=Type},
-                _Sender, From, State=#state{mod=Mod, idx=Idx, modstate=ModState}) ->
+                _Sender, From, State=#state{mod=Mod, modstate=ModState}) ->
     StartTS = os:timestamp(),
     Context = {w1c_batch_put, From, Type, Objs, StartTS},
     case Mod:batch_put(Context, Objs, [], ModState) of
