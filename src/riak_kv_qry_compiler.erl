@@ -145,20 +145,30 @@ compile_where_clause(?DDL{} = DDL,
     end.
 
 %% now break out the query on quantum boundaries
--spec expand_query(?DDL{}, ?SQL_SELECT{}, proplists:proplist()) ->
-                          {ok, [?SQL_SELECT{}]} | {error, term()}.
-expand_query(?DDL{local_key = LK, partition_key = PK},
-             ?SQL_SELECT{} = Q1, Where1) ->
-    case expand_where(Where1, PK) of
-        {ok, Wheres} ->
-            Q2 = Q1?SQL_SELECT{is_executable = true,
-                               type          = timeseries,
-                               local_key     = LK,
-                               partition_key = PK},
-            SubQueries = [Q2?SQL_SELECT{ 'WHERE' = X } || X <- Wheres],
-            {ok, SubQueries};
-        ErrorReason ->
-            ErrorReason
+expand_query(?DDL{table = Table, local_key = LK, partition_key = PK},
+             ?SQL_SELECT{} = Q1, Where1,
+             MaxSubQueries) ->
+    case expand_where(Where1, PK, MaxSubQueries) of
+        {error, E} ->
+            {error, E};
+        Where2 ->
+            Mod = riak_ql_ddl:make_module_name(Table),
+            IsDescending = lists:member(descending, Mod:field_orders()),
+            SubQueries1 =
+                [Q1?SQL_SELECT{
+                       is_executable = true,
+                       type          = timeseries,
+                       'WHERE'       = maybe_fix_start_order(IsDescending, X, Mod, LK),
+                       local_key     = LK,
+                       partition_key = PK} || X <- Where2],
+            SubQueries2 =
+                case IsDescending of
+                    true ->
+                        fix_subquery_order(SubQueries1);
+                    false ->
+                        SubQueries1
+                end,
+            {ok, SubQueries2}
     end.
 
 %% Calulate the final result for an aggregate.
@@ -639,8 +649,7 @@ find_quantum_field_index_in_key2([#hash_fn_v1{ mod = riak_ql_quanta,
 find_quantum_field_index_in_key2([_|Tail], Index) ->
     find_quantum_field_index_in_key2(Tail, Index+1).
 
-%%
-hash_timestamp_to_quanta(QField, QSize, QUnit, QIndex, Where1) ->
+hash_timestamp_to_quanta(QField, QSize, QUnit, QIndex, MaxSubQueries, Where1) ->
     GetMaxMinFun = fun({startkey, List}, {_S, E}) ->
                            {element(3, lists:nth(QIndex, List)), E};
                       ({endkey,   List}, {S, _E}) ->
@@ -1555,18 +1564,21 @@ simple_spanning_boundary_precision_test() ->
     %% now make the result - expecting 2 queries
     [Where1, Where2] =
         test_data_where_clause(<<"Scotland">>, <<"user_1">>, [{3000, 15000}, {15000, 30000}]),
-    PK = get_standard_pk(),
-    LK = get_standard_lk(),
-    ?assertMatch(
-       {ok, [?SQL_SELECT{ 'WHERE'       = Where1,
-                          partition_key = PK,
-                          local_key     = LK},
-             ?SQL_SELECT{ 'WHERE'       = Where2,
-                          partition_key = PK,
-                          local_key     = LK
-                        }]},
-       compile(DDL, Q)
-      ).
+    _PK = get_standard_pk(),
+    _LK = get_standard_lk(),
+    {ok, [Select1, Select2]} = compile(DDL, Q, 5),
+    ?assertEqual(
+        [Where1, Where2],
+        [Select1?SQL_SELECT.'WHERE', Select2?SQL_SELECT.'WHERE']
+    ),
+    ?assertEqual(
+        [get_standard_pk(), get_standard_pk()],
+        [Select1?SQL_SELECT.partition_key, Select2?SQL_SELECT.partition_key]
+    ),
+    ?assertEqual(
+        [get_standard_lk(), get_standard_lk()],
+        [Select1?SQL_SELECT.local_key, Select2?SQL_SELECT.local_key]
+    ).
 
 %%
 %% test failures
@@ -2357,14 +2369,13 @@ no_quantum_in_query_1_test() ->
         "PRIMARY KEY  ((a,b), a,b))"),
     {ok, Q} = get_query(
           "SELECT * FROM tab1 WHERE a = 1 AND b = 1"),
-    ?assertMatch(
-        {ok, [?SQL_SELECT{
-            'WHERE' =
-                [{startkey,[{<<"a">>,timestamp,1},{<<"b">>,varchar,1}]},
-                 {endkey,  [{<<"a">>,timestamp,1},{<<"b">>,varchar,1}]},
-                 {filter,[]},
-                 {end_inclusive,true}] }]},
-        compile(DDL, Q)
+    {ok, [?SQL_SELECT{ 'WHERE' = Where }]} = compile(DDL, Q, 100),
+    ?assertEqual(
+        [{startkey,[{<<"a">>,timestamp,1},{<<"b">>,varchar,1}]},
+         {endkey,  [{<<"a">>,timestamp,1},{<<"b">>,varchar,1}]},
+         {filter,[]},
+         {end_inclusive,true}],
+        Where
     ).
 
 %% partition and local key are different
@@ -2605,7 +2616,7 @@ query_desc_order_on_quantum_at_quanta_boundaries_test() ->
     {ok, Q} = get_query(
           "SELECT * FROM table1 "
           "WHERE a = 1 AND b = 1 AND c >= 4000 AND c <= 5000"),
-    {ok, SubQueries} = compile(helper_desc_order_on_quantum_ddl(), Q),
+    {ok, SubQueries} = compile(helper_desc_order_on_quantum_ddl(), Q, 100),
     SubQueryWheres = [S?SQL_SELECT.'WHERE' || S <- SubQueries],
     ?assertEqual(
         [
@@ -2628,7 +2639,7 @@ fix_subquery_order_test() ->
     {ok, Q} = get_query(
           "SELECT * FROM table1 "
           "WHERE a = 1 AND b = 1 AND c >= 4000 AND c <= 5000"),
-    {ok, SubQueries} = compile(helper_desc_order_on_quantum_ddl(), Q),
+    {ok, SubQueries} = compile(helper_desc_order_on_quantum_ddl(), Q, 100),
     ?assertEqual(
         [
             [{startkey,[{<<"a">>,sint64,1},{<<"b">>,sint64,1},{<<"c">>,timestamp,5000}]},
@@ -2650,7 +2661,7 @@ query_desc_order_on_quantum_at_quantum_across_quanta_test() ->
     {ok, Q} = get_query(
           "SELECT * FROM table1 "
           "WHERE a = 1 AND b = 1 AND c >= 3500 AND c <= 5500"),
-    {ok, SubQueries} = compile(helper_desc_order_on_quantum_ddl(), Q),
+    {ok, SubQueries} = compile(helper_desc_order_on_quantum_ddl(), Q, 100),
     SubQueryWheres = [S?SQL_SELECT.'WHERE' || S <- SubQueries],
     ?assertEqual(
         [

@@ -26,15 +26,10 @@
          delete_dets/1,
          delete_table_ddls/1,
          get_all_table_names/0,
+         get_table_status_pairs/0,
          get_compiled_ddl_versions/1,
          get_ddl/2,
          insert/2,
-         get_table_status_pairs/0,
-         get_compiled_ddl_version/1,
-         get_state/1,
-         get_ddl_records_needing_recompiling/1,
-         insert/5,
-         is_compiling/1,
          new/1,
          populate_v3_table/0
         ]).
@@ -120,10 +115,7 @@ insert_v2(BucketType, #ddl_v1{} = DDL) ->
     %% put compiling as the compile state in the old table so that
     %% it will always recompile the modules on a downgrade
     CompileState = compiling,
-    %% the compiler pid is no longer meaningful, but v2 expects it to be unique
-    %% so just create a new one
-    CompilerPid = spawn(fun() -> ok end),
-    V2Row = {BucketType, DDLVersion, DDL, CompilerPid, CompileState},
+    V2Row = {BucketType, DDLVersion, DDL, self(), CompileState},
     dets:insert(?TABLE2, V2Row),
     log_compile_tab_v2_inserted(BucketType),
     ok = dets:sync(?TABLE2).
@@ -157,7 +149,101 @@ get_ddl(BucketType, Version) when is_binary(BucketType), is_atom(Version) ->
             notfound
     end.
 
-%%
+log_v2_to_v3_ddl_migration(BucketType) ->
+    lager:info("Moving table ~ts from compile tab v2 to v3 as part of upgrade.",
+        [BucketType]).
+
+-spec get_all_table_names_v2() -> [binary()].
+get_all_table_names_v2() ->
+    Matches = dets:match(?TABLE2, {'$1', '_', '_', '_', '_'}),
+    Tables = [Table || [Table] <- Matches],
+    lists:usort(Tables).
+
+get_ddl_v2(BucketType) when is_binary(BucketType) ->
+    case dets:lookup(?TABLE2, BucketType) of
+        [{_,_,#ddl_v1{} = DDL,_,_}] ->
+            {ok, DDL};
+
+%% Get the list of {TableName, Status} pairs, no matter what status they are in.
+-spec get_table_status_pairs() ->[{binary(), binary()}].
+get_table_status_pairs() ->
+    Matches = dets:match(?TABLE3, #row_v3{ table = '$1' }),
+    UTables = lists:usort(Matches),
+    Tables = [ {Table, get_table_status(Table)} ||
+               [Table|_T] <- UTables ],
+
+    %% sort by Status (thankfully in alphabetic sort order):
+    %% Active, Not Active, Undefined
+    SortByStatus = fun({L1,L2},{R1,R2}) -> {L2,L1} =< {R2,R1} end,
+    lists:sort(SortByStatus, Tables).
+
+get_table_status(Table) ->
+    case get_table_ddl(Table) of
+        {error, no_type} -> <<"Not Active">>;
+        {error, missing_helper_module} -> <<"Not Active">>;
+        {ok, _Mod, _DDL} -> get_table_status_by_version(Table);
+        _ -> get_table_status_by_version(Table)
+    end.
+
+get_table_status_by_version(Table) ->
+    DecodedReq = {ok, req, {"perm", Table}},
+    case check_table_feature_supported(v2, DecodedReq) of
+        DecodedReq -> <<"Active">>;
+        _ -> <<"Not Active">>
+    end.
+
+%% Forwards/Mocks for getting table status, isolating the interaction for testability
+-ifndef(TEST).
+-type ts_service_req() ::
+    {ok, riak_kv_ts_svc:ts_requests(), {PermSpec::string(), Table::binary()}}.
+
+-spec get_table_ddl(binary()) ->
+    {ok, module(), ?DDL{}} | {error, term()}.
+get_table_ddl(Table) ->
+    riak_kv_ts_util:get_table_ddl(Table).
+
+-spec check_table_feature_supported(DDLRecCap::atom(),
+                                    DecodedReq::ts_service_req()) -> ts_service_req() |
+                                                                     {error, string()}.
+check_table_feature_supported(DDLRecCap, DecodedReq) ->
+    riak_kv_ts_util:check_table_feature_supported(DDLRecCap, DecodedReq).
+
+-else.
+expected_table_status(Table) when Table =:= <<"my_type2">> ->
+    <<"Not Active">>;
+expected_table_status(Table) when Table =:= <<"my_type4">> ->
+    <<"Not Active">>;
+expected_table_status(Table) when Table =:= <<"my_type5">> ->
+    <<"Not Active">>;
+expected_table_status(_Table) ->
+    <<"Active">>.
+
+get_table_ddl(Table) when Table =:= <<"my_type4">> ->
+    {error, no_type};
+get_table_ddl(Table) when Table =:= <<"my_type5">> ->
+    {error, missing_helper_module};
+get_table_ddl(_Table) ->
+    Module = {}, %% not used by caller
+    DDL = {}, %% not used by caller
+    {ok, Module, DDL}.
+
+check_table_feature_supported(DDLRecCap, DecodedReq={ok, req, {"perm", Table}}) when
+      Table =:= <<"my_type1">> orelse
+      Table =:= <<"my_type3">> orelse
+      Table =:= <<"my_type4">> orelse
+      Table =:= <<"my_type5">>
+      ->
+    check_table_feature_supported_active(DDLRecCap, DecodedReq);
+check_table_feature_supported(DDLRecCap, DecodedReq) ->
+    check_table_feature_supported_not_active(DDLRecCap, DecodedReq).
+
+check_table_feature_supported_active(_DDLRecCap, DecodedReq) ->
+    DecodedReq.
+check_table_feature_supported_not_active(_DDLRecCap, _DecodedReq) ->
+    {notok}.
+-endif.
+%% / Forwards/Mocks for getting table status, isolating the interaction for testability
+
 -spec get_all_table_names() -> [binary()].
 get_all_table_names() ->
     Matches = dets:match(?TABLE3, #row_v3{ table = '$1' }),
@@ -202,36 +288,6 @@ get_ddl_v2(BucketType) when is_binary(BucketType) ->
     case dets:lookup(?TABLE2, BucketType) of
         [{_,_,#ddl_v1{} = DDL,_,_}] ->
             {ok, DDL};
-
-%% Get the list of {TableName, Status} pairs, no matter what status they are in.
--spec get_table_status_pairs() ->[{binary(), binary()}].
-get_table_status_pairs() ->
-    Matches = dets:match(?TABLE, {'$1','_','_','_','$2'}),
-    Tables = [ {Table, map_table_state_to_status(State)} ||
-        [Table, State] <- Matches ],
-    lists:usort(Tables).
-
--spec map_table_state_to_status(atom()) -> binary().
-map_table_state_to_status('compiled') ->
-    <<"Active">>;
-map_table_state_to_status('retrying') ->
-    <<"Not Active">>;
-map_table_state_to_status('compiling') ->
-    <<"Not Active">>;
-map_table_state_to_status('failed') ->
-    <<"Failed">>;
-map_table_state_to_status(_TableState) ->
-    <<"Unknown">>.
-
-%% Update the compilation state using the compiler pid as a key.
-%% Since it has an active Pid, it is assumed to have a DDL version already.
--spec update_state(CompilerPid :: pid(), State :: compiling_state()) ->
-        ok | error | notfound.
-update_state(CompilerPid, State) when is_pid(CompilerPid),
-                                       ?is_compiling_state(State) ->
-    case dets:match(?TABLE, {'$1','$2','$3',CompilerPid,'_'}) of
-        [[BucketType, DDLVersion, DDL]] ->
-            insert(BucketType, DDLVersion, DDL, CompilerPid, State);
         [] ->
             notfound
     end.
@@ -304,26 +360,25 @@ delete_table_ddls_test() ->
 get_table_status_pairs_test() ->
     ?in_process(
         begin
-            Pid = spawn(fun() -> ok end),
-            Pid2 = spawn(fun() -> ok end),
-            Pid3 = spawn(fun() -> ok end),
-            Pid4 = spawn(fun() -> ok end),
-            Pid5 = spawn(fun() -> ok end),
-            ok = insert(<<"my_type1">>, 6, {ddl_v1}, Pid, compiling),
-            ok = insert(<<"my_type2">>, 7, {ddl_v1}, Pid2, compiled),
-            ok = insert(<<"my_type3">>, 6, {ddl_v1}, Pid3, retrying),
-            ok = insert(<<"my_type4">>, 8, {ddl_v1}, Pid4, failed),
-            ok = insert(<<"my_type5">>, 8, {ddl_v1}, Pid5, compiled),
+            TableNameFun = fun(I) ->
+                                   list_to_binary("my_type" ++ integer_to_list(I))
+                           end,
+            InsertTableFun =
+                fun(I) ->
+                    TableName = TableNameFun(I),
+                    DDLV2 = #ddl_v2{local_key = #key_v1{ }, partition_key = #key_v1{ }},
+                    ok = insert(TableName, DDLV2)
+                end,
 
-            ?assertEqual(
-                [
-                    {<<"my_type1">>, <<"Not Active">>},
-                    {<<"my_type2">>, <<"Active">>},
-                    {<<"my_type3">>, <<"Not Active">>},
-                    {<<"my_type4">>, <<"Failed">>},
-                    {<<"my_type5">>, <<"Active">>}
-                ],
-                get_table_status_pairs()
-            )
-    end).
+            lists:foreach(InsertTableFun, lists:seq(1, 5)),
+            ExpectedTableStatus0 = [{TableNameFun(I), expected_table_status(TableNameFun(I))} ||
+                                   I <- lists:seq(1, 5)],
+
+            SortByStatus = fun({L1,L2},{R1,R2}) -> {L2,L1} =< {R2,R1} end,
+            ExpectedTableStatus = lists:sort(SortByStatus, ExpectedTableStatus0),
+
+            ActualTableStatus = get_table_status_pairs(),
+
+            ?assertEqual(ExpectedTableStatus, ActualTableStatus)
+        end).
 -endif.

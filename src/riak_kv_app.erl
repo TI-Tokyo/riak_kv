@@ -249,6 +249,7 @@ start(_Type, _StartArgs) ->
             riak_core_capability:register({riak_kv, put_soft_limit},
                                           [true, false],
                                           false),
+
             riak_core_capability:register({riak_kv, riak_ql_ddl_rec_version},
                                            [v2,v1],
                                            riak_ql_ddl:first_version()),

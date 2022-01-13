@@ -135,9 +135,9 @@ build_sql_record_int(describe, SQL, _Options) ->
     D = proplists:get_value(identifier, SQL),
     {ok, #riak_sql_describe_v1{'DESCRIBE' = D}};
 
-build_sql_record_int(insert, SQL, _Options) ->
-    T = proplists:get_value(table, SQL),
-    case is_binary(T) of
+build_sql_record_int(insert, SQL, _Cover) ->
+    Table = proplists:get_value(table, SQL),
+    case is_binary(Table) of
         true ->
             %% To support non- and partial specification of columns, the DDL
             %% Module, Fields specified in the query, and Values specified in
@@ -1070,5 +1070,70 @@ rm_rf_test() ->
     ok = rm_rf(Dir),
     Exists2 = filelib:is_dir(Dir),
     ?assertEqual(Exists2, false).
+
+
+
+%%
+helper_sql_to_module(SQL) ->
+    Lexed = riak_ql_lexer:get_tokens(SQL),
+    {ddl, DDL, _Props} = riak_ql_parser:ql_parse(Lexed),
+    {module, _Module} = riak_ql_ddl_compiler:compile_and_load_from_tmp(DDL).
+
+check_table_feature_supported_error_test() ->
+    ?assertEqual(
+        {error, myerror},
+        check_table_feature_supported(v2, {error, myerror})
+    ).
+
+check_table_feature_supported_is_supported_v1_test() ->
+    Table =
+        "CREATE TABLE check_table_feature_supported_is_supported_v1_test ("
+        " a varchar not null,"
+        " b varchar not null,"
+        " c timestamp not null,"
+        " primary key ((a, b, quantum(c, 1, 'm')), a, b, c))",
+    {module, _Mod} = helper_sql_to_module(Table),
+    DecodedReq = {ok, req, {"perm", <<"check_table_feature_supported_is_supported_v1_test">>}},
+    ?assertEqual(
+        DecodedReq,
+        check_table_feature_supported(v1, DecodedReq)
+    ).
+
+check_table_feature_supported_is_supported_v2_test() ->
+    Table =
+        "CREATE TABLE check_table_feature_supported_is_supported_v2_test ("
+        " a varchar not null,"
+        " b varchar not null,"
+        " c timestamp not null,"
+        " primary key ((a, b, quantum(c, 1, 'm')), a, b, c))",
+    {module, _Mod} = helper_sql_to_module(Table),
+    DecodedReq = {ok, req, {"perm", <<"check_table_feature_supported_is_supported_v2_test">>}},
+    ?assertEqual(
+        DecodedReq,
+        check_table_feature_supported(v2, DecodedReq)
+    ).
+
+check_table_feature_supported_not_supported_test() ->
+    Table =
+        "CREATE TABLE check_table_feature_supported_not_supported_test ("
+        " a varchar not null,"
+        " b varchar not null,"
+        " c timestamp not null,"
+        " primary key ((a, b, quantum(c, 1, 'm')), a, b, c DESC))",
+    {module, _Mod} = helper_sql_to_module(Table),
+    DecodedReq = {ok, req, {"perm", <<"check_table_feature_supported_not_supported_test">>}},
+    ?assertMatch(
+        {error, _},
+        check_table_feature_supported(v1, DecodedReq)
+    ).
+
+check_table_feature_supported_when_table_is_disabled_test() ->
+    Table = <<"check_table_feature_supported_when_table_is_disabled_test">>,
+    {module, _Mod} = riak_ql_ddl_compiler:compile_and_load_disabled_module_from_tmp(Table),
+    DecodedReq = {ok, req, {"perm", Table}},
+    ?assertMatch(
+        {error, _},
+        check_table_feature_supported(v2, DecodedReq)
+    ).
 
 -endif.
