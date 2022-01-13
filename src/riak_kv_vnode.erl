@@ -883,6 +883,8 @@ handle_overload_request(kv_head_request, Req, Sender, Idx) ->
 handle_overload_request(kv_w1c_put_request, Req, Sender, _Idx) ->
     Type = riak_kv_requests:get_replica_type(Req),
     riak_core_vnode:reply(Sender, ?KV_W1C_PUT_REPLY{reply={error, overload}, type=Type});
+handle_overload_command(kv_w1c_batch_put_request, ?KV_W1C_BATCH_PUT_REQ{type=Type}, Sender, _Idx) ->
+    riak_core_vnode:reply(Sender, ?KV_W1C_BATCH_PUT_REPLY{reply={error, overload}, type=Type});
 handle_overload_request(kv_vnode_status_request, _Req, Sender, Idx) ->
     riak_core_vnode:reply(Sender, {vnode_status, Idx, [{error, overload}]});
 handle_overload_request(_, _Req, Sender, _Idx) ->
@@ -1529,6 +1531,23 @@ handle_request(kv_w1c_put_request, Req, _Sender, State=#state{async_put=false, u
             {reply, ?KV_W1C_PUT_REPLY{reply=ok, type=ReplicaType}, State#state{modstate=UpModState}};
         {error, Reason, UpModState} ->
             {reply, ?KV_W1C_PUT_REPLY{reply={error, Reason}, type=ReplicaType}, State#state{modstate=UpModState}}
+    end;
+%% For now, ignore async_put
+handle_request(kv_w1c_batch_put_request, ?KV_W1C_BATCH_PUT_REQ{objs=Objs, type=Type},
+                _Sender, From, State=#state{mod=Mod, idx=Idx, modstate=ModState}) ->
+    StartTS = os:timestamp(),
+    Context = {w1c_batch_put, From, Type, Objs, StartTS},
+    case Mod:batch_put(Context, Objs, [], ModState) of
+        {ok, UpModState} ->
+            lists:foreach(
+              fun({{Bucket, Key}, EncodedVal}) ->
+                      update_hashtree(Bucket, Key, EncodedVal, State),
+                      ?INDEX_BIN(Bucket, Key, EncodedVal, put, Idx)
+              end,
+              Objs),
+            {reply, ?KV_W1C_BATCH_PUT_REPLY{reply=ok, type=Type}, State#state{modstate=UpModState}};
+        {error, Reason, UpModState} ->
+            {reply, ?KV_W1C_BATCH_PUT_REPLY{reply={error, Reason}, type=Type}, State#state{modstate=UpModState}}
     end;
 handle_request(kv_vnode_status_request, _Req, _Sender, State=#state{idx=Index,
                                                                    mod=Mod,

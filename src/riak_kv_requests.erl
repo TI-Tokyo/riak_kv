@@ -210,6 +210,7 @@
 request_type(#riak_kv_put_req_v1{}) -> kv_put_request;
 request_type(#riak_kv_get_req_v1{}) -> kv_get_request;
 request_type(#riak_kv_w1c_put_req_v1{}) -> kv_w1c_put_request;
+request_type(#riak_kv_w1c_batch_put_req_v1{}) -> kv_w1c_batch_put_request;
 request_type(#riak_kv_listkeys_req_v3{})-> kv_listkeys_request;
 request_type(#riak_kv_listkeys_req_v4{})-> kv_listkeys_request;
 request_type(#riak_kv_listbuckets_req_v1{})-> kv_listbuckets_request;
