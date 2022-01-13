@@ -952,8 +952,8 @@ handle_command(#riak_kv_listkeys_req_v2{bucket=Input, req_id=ReqId, caller=Calle
     BufferMod = riak_kv_fold_buffer,
     case Bucket of
         '_' ->
-            Opts = get_asyncopts(State, all),
-
+            {ok, Capabilities} = Mod:capabilities(ModState),
+            Opts = maybe_enable_async_fold(AsyncFolding, Capabilities, []),
             BufferFun =
                 fun(Results) ->
                         UniqueResults = lists:usort(Results),
@@ -962,7 +962,8 @@ handle_command(#riak_kv_listkeys_req_v2{bucket=Input, req_id=ReqId, caller=Calle
             FoldFun = fold_fun(buckets, BufferMod, Filter, undefined),
             ModFun = fold_buckets;
         _ ->
-            Opts = get_asyncopts(State, Bucket),
+            {ok, Capabilities} = Mod:capabilities(Bucket, ModState),
+            Opts = maybe_enable_async_fold(AsyncFolding, Capabilities, [{bucket, Bucket}]),
             BufferFun =
                 fun(Results) ->
                         Caller ! {ReqId, {kl, Idx, Results}}
@@ -1689,6 +1690,31 @@ buffer_size_for_index_query(#riak_kv_index_v3{max_results=N}, DefaultSize)
 buffer_size_for_index_query(_Q, DefaultSize) ->
     DefaultSize.
 
+handle_coverage_index(Bucket, ItemFilter, Query,
+                      FilterVNodes, Sender,
+                      State=#state{mod=Mod,
+                                   key_buf_size=DefaultBufSz,
+                                   modstate=ModState},
+                      ResultFunFun) ->
+    {ok, Capabilities} = Mod:capabilities(Bucket, ModState),
+    IndexBackend = lists:member(indexes, Capabilities),
+    case IndexBackend of
+        true ->
+            ok = riak_kv_stat:update(vnode_index_read),
+
+            ResultFun = ResultFunFun(Bucket, Sender),
+            BufSize = buffer_size_for_index_query(Query, DefaultBufSz),
+            Opts = [{index, Bucket, prepare_index_query(Query)},
+                    {bucket, Bucket}, {buffer_size, BufSize}],
+            %% @HACK
+            %% Really this should be decided in the backend
+            %% if there was a index_query fun.
+            FoldType = riak_index:return_foldtype(Query),
+            handle_coverage_fold(FoldType, Bucket, ItemFilter, ResultFun,
+                                 FilterVNodes, Sender, Opts, State);
+        false ->
+            {reply, {error, {indexes_not_supported, Mod}}, State}
+    end.
 
 handle_range_scan(Bucket, ItemFilter, Query,
                   FilterVNodes, Sender,
@@ -2310,13 +2336,7 @@ handle_coverage_range_scan(FoldType, Bucket, ItemFilter, ResultFun,
     FoldFun = fold_fun(range_scan, BufferMod, Filter, Extras),
     FinishFun = finish_fun(BufferMod, Sender),
     {ok, Capabilities} = Mod:capabilities(Bucket, ModState),
-    AsyncBackend = lists:member(async_fold, Capabilities),
-    Opts = case AsyncFolding andalso AsyncBackend of
-               true ->
-                   [async_fold | Opts0];
-               false ->
-                   Opts0
-           end,
+    Opts = maybe_enable_async_fold(AsyncFolding, Capabilities, Opts0),
     case list(FoldFun, FinishFun, Mod, FoldType, ModState, Opts, Buffer) of
         {async, AsyncWork} ->
             {async, {fold, AsyncWork, FinishFun}, Sender, State};
