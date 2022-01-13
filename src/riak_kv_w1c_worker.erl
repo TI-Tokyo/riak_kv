@@ -20,9 +20,12 @@
 
 -behaviour(gen_server).
 
--compile({nowarn_deprecated_function, 
-            [{gen_fsm, send_event, 2}]}).
+-compile({nowarn_deprecated_function,
+          [{gen_fsm, send_event, 2}]}).
 
+-ifdef(TEST).
+-compile(export_all).
+-endif.
 
 %% API
 -export([start_link/1, put/2, async_put/8, async_put_replies/2,
