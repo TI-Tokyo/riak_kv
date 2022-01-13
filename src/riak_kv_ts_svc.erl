@@ -86,8 +86,7 @@ decode_query_common(Q, Cover) ->
     end.
 
 -spec decode_query(Query::#tsinterpolation{}, Cover::term()) ->
-    {error, _} | {ddl, {ok, {?DDL{}, proplists:proplist()}}}
-               | {ts_query_types(), riak_kv_qry:sql_query_type_record()}.
+    {error, _} | {atom(), {ok, ts_query_types()}}.
 decode_query(#tsinterpolation{}, Cover)
   when not (Cover == undefined orelse is_binary(Cover)) ->
     {error, bad_coverage_context};
