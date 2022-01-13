@@ -883,7 +883,8 @@ handle_overload_request(kv_head_request, Req, Sender, Idx) ->
 handle_overload_request(kv_w1c_put_request, Req, Sender, _Idx) ->
     Type = riak_kv_requests:get_replica_type(Req),
     riak_core_vnode:reply(Sender, ?KV_W1C_PUT_REPLY{reply={error, overload}, type=Type});
-handle_overload_command(kv_w1c_batch_put_request, ?KV_W1C_BATCH_PUT_REQ{type=Type}, Sender, _Idx) ->
+handle_overload_request(kv_w1c_batch_put_request, Req, Sender, _Idx) ->
+    Type = riak_kv_requests:get_replica_type(Req),
     riak_core_vnode:reply(Sender, ?KV_W1C_BATCH_PUT_REPLY{reply={error, overload}, type=Type});
 handle_overload_request(kv_vnode_status_request, _Req, Sender, Idx) ->
     riak_core_vnode:reply(Sender, {vnode_status, Idx, [{error, overload}]});
@@ -1506,11 +1507,15 @@ handle_request(kv_w1c_put_request, Req, Sender, State=#state{async_put=true}) ->
     ReplicaType = riak_kv_requests:get_replica_type(Req),
     Mod = State#state.mod,
     ModState = State#state.modstate,
+    Idx = State#state.idx,
     StartTS = os:timestamp(),
     Context = {w1c_async_put, Sender, ReplicaType, Bucket, Key, EncodedVal, StartTS},
-    case Mod:async_put(Context, Bucket, Key, EncodedVal, ModState) of
+    %% NOTE: sync_put is TS-only, async_put is KV default
+    case Mod:sync_put(Context, Bucket, Key, EncodedVal, ModState) of
         {ok, UpModState} ->
-            {noreply, State#state{modstate=UpModState}};
+            update_hashtree(Bucket, Key, EncodedVal, State),
+            ?INDEX_BIN(Bucket, Key, EncodedVal, put, Idx),
+            {reply, ?KV_W1C_PUT_REPLY{reply=ok, type=ReplicaType}, State#state{modstate=UpModState}};
         {error, Reason, UpModState} ->
             {reply, ?KV_W1C_PUT_REPLY{reply={error, Reason}, type=ReplicaType}, State#state{modstate=UpModState}}
     end;
@@ -1535,10 +1540,13 @@ handle_request(kv_w1c_put_request, Req, _Sender, State=#state{async_put=false, u
     end;
 %% For now, ignore async_put. This is currently TS-only, and TS
 %% supports neither AAE nor YZ.
-handle_request(kv_w1c_batch_put_request, ?KV_W1C_BATCH_PUT_REQ{objs=Objs, type=Type},
-                _Sender, From, State=#state{mod=Mod, modstate=ModState}) ->
+handle_request(kv_w1c_batch_put_request, Req, Sender, State) ->
+    ReplicaType = riak_kv_requests:get_replica_type(Req),
+    Mod = State#state.mod,
+    ModState = State#state.modstate,
     StartTS = os:timestamp(),
-    Context = {w1c_batch_put, From, Type, Objs, StartTS},
+    Objs = riak_kv_requests:get_w1c_objects(Req),
+    Context = {w1c_batch_put, Sender, ReplicaType, Objs, StartTS},
     case Mod:batch_put(Context, Objs, [], ModState) of
         {ok, UpModState} ->
             %% When we support AAE, be sure to call a batch version of
@@ -1547,9 +1555,9 @@ handle_request(kv_w1c_batch_put_request, ?KV_W1C_BATCH_PUT_REQ{objs=Objs, type=T
             %%
             %% riak_kv_index_hashtree:insert/async_insert can
             %% take a list
-            {reply, ?KV_W1C_BATCH_PUT_REPLY{reply=ok, type=Type}, State#state{modstate=UpModState}};
+            {reply, ?KV_W1C_BATCH_PUT_REPLY{reply=ok, type=ReplicaType}, State#state{modstate=UpModState}};
         {error, Reason, UpModState} ->
-            {reply, ?KV_W1C_BATCH_PUT_REPLY{reply={error, Reason}, type=Type}, State#state{modstate=UpModState}}
+            {reply, ?KV_W1C_BATCH_PUT_REPLY{reply={error, Reason}, type=ReplicaType}, State#state{modstate=UpModState}}
     end;
 handle_request(kv_vnode_status_request, _Req, _Sender, State=#state{idx=Index,
                                                                    mod=Mod,
@@ -1608,6 +1616,16 @@ handle_coverage_request(kv_listbuckets_request,
         _ ->
             {noreply, State}
     end;
+handle_coverage_request(kv_sql_select_request,
+                        Req,
+                        FilterVNodes,
+                        Sender,
+                        State) ->
+    ItemFilter = none,
+    Bucket = riak_kv_requests:get_bucket(Req),
+    Query = riak_kv_requests:get_query(Req),
+    handle_range_scan(Bucket, ItemFilter, Query,
+                      FilterVNodes, Sender, State, fun result_fun_ack/2);
 handle_coverage_request(kv_index_request, Req, FilterVNodes, Sender, State) ->
     Bucket = riak_kv_requests:get_bucket(Req),
     ItemFilter = riak_kv_requests:get_item_filter(Req),
@@ -1672,6 +1690,14 @@ handle_coverage(Req, FilterVNodes, Sender, State) ->
                             State).
 
 
+
+-spec prepare_index_query(?KV_INDEX_Q{}) -> ?KV_INDEX_Q{}.
+prepare_index_query(#riak_kv_index_v3{term_regex=RE} = Q) when
+    RE =/= undefined ->
+    {ok, CompiledRE} = re:compile(RE),
+    Q#riak_kv_index_v3{term_regex=CompiledRE};
+prepare_index_query(Q) ->
+    Q.
 
 %% @doc Batch size for results is set to 2i max_results if that is less
 %% than the default size. Without this the vnode may send back to the FSM
@@ -3661,15 +3687,6 @@ options_for_folding_and_backend(Opts, true, snap_prefold) ->
     [snap_prefold | Opts];
 options_for_folding_and_backend(Opts, false, _) ->
     Opts.
-
-fold_type_for_query(Query) ->
-    %% @HACK
-    %% Really this should be decided in the backend
-    %% if there was a index_query fun.
-    case riak_index:return_body(Query) of
-        true -> fold_objects;
-        false -> fold_keys
-    end.
 
 %% @private
 maybe_enable_iterator_refresh(Capabilities, Opts) ->
