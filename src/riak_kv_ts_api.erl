@@ -46,7 +46,7 @@
 -include("riak_kv_ts.hrl").
 
 %% external API calls enumerated
--type query_api_call() :: create_table | query_select | describe_table | query_insert | query_explain | show_tables.
+-type query_api_call() :: create_table | query_select | describe_table | query_insert | query_explain | show_tables | query_delete.
 -type api_call() :: get | put | delete | list_keys | coverage | query_api_call().
 -export_type([query_api_call/0, api_call/0]).
 
@@ -57,6 +57,7 @@ api_call_from_sql_type(describe)          -> describe_table;
 api_call_from_sql_type(show_create_table) -> show_create_table;
 api_call_from_sql_type(show_tables)       -> show_tables;
 api_call_from_sql_type(insert)            -> query_insert;
+api_call_from_sql_type(delete)      -> query_delete.
 api_call_from_sql_type(explain)           -> query_explain.
 
 -spec api_call_to_perm(api_call()) -> string().
@@ -81,6 +82,8 @@ api_call_to_perm(describe_table) ->
 %% SHOW CREATE TABLE is an extended version of DESCRIBE
 api_call_to_perm(show_create_table) ->
     api_call_to_perm(describe_table);
+api_call_to_perm(query_delete) ->
+    "riak_ts.query_delete";
 %% INSERT query is a put, so let's call it that
 api_call_to_perm(query_insert) ->
     api_call_to_perm(put);
