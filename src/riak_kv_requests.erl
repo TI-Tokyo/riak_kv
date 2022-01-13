@@ -150,7 +150,7 @@
           bkey :: {binary(), binary()},
           req_id :: non_neg_integer()}).
 
--record(riak_kv_aaefold_req_v1, 
+-record(riak_kv_aaefold_req_v1,
             {qry :: riak_kv_clusteraae_fsm:query_definition(),
                 init_acc :: any(),
                 n_val :: pos_integer()}).
@@ -355,6 +355,7 @@ get_item_filter(#riak_kv_index_req_v2{item_filter = ItemFilter}) ->
 
 -spec get_ack_backpressure(listkeys_request()|index_request())
                             -> UseAckBackpressure::boolean().
+-spec get_ack_backpressure(listkeys_request()) -> UseAckBackpressure::boolean().
 get_ack_backpressure(#riak_kv_listkeys_req_v3{}) ->
     false;
 get_ack_backpressure(#riak_kv_listkeys_req_v4{}) ->

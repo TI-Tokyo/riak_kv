@@ -64,7 +64,8 @@ use_ack_backpressure() ->
 %% @doc Construct the correct listkeys command record.
 -spec req(binary(), term()) -> term().
 req(Bucket, ItemFilter) ->
-    riak_kv_requests:new_listkeys_request(Bucket, ItemFilter, use_ack_backpressure());
+    riak_kv_requests:new_listkeys_request(Bucket, ItemFilter, use_ack_backpressure()).
+
 
 %% @doc Return a tuple containing the ModFun to call per vnode,
 %% the number of primary preflist vnodes the operation

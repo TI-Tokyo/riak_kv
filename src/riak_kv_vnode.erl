@@ -1582,7 +1582,7 @@ handle_coverage_request(kv_listkeys_request, Req, FilterVNodes, Sender, State) -
                 end,
     Opts = [{bucket, Bucket}],
     handle_coverage_snapkeyfold(Bucket, ItemFilter, ResultFun,
-                            FilterVNodes, Sender, Opts, State);
+                                FilterVNodes, Sender, Opts, State);
 handle_coverage_request(kv_listbuckets_request,
                         Req,
                         _FilterVNodes,
