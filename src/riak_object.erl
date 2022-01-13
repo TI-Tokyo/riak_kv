@@ -114,6 +114,7 @@
 -export([spoof_getdeletedobject/1]).
 -export([delete_hash/1]).
 -export([get_ts_local_key/1]).
+-export([is_ts/1]).
 
 -ifdef(TEST).
 -export([convert_object_to_headonly/3]). % Used in unit testing of get_core
@@ -145,6 +146,21 @@ new(B, K, V, MD) when is_binary(B), is_binary(K) ->
 newts(B, K, V, MD) ->
     new_int2(B, K, V, MD).
 
+%% {true, DDL-version}
+%% false
+is_ts(RObj) ->
+    check_for_ddl(get_contents(RObj)).
+
+check_for_ddl([{Metadata, _V}]) ->
+    case dict:find(<<"ddl">>, Metadata) of
+        {ok, Version} ->
+            {true, Version};
+        _ ->
+            false
+    end;
+check_for_ddl(_) ->
+    false.
+
 %% internal version after all validation has been done
 new_int(B, K, V, MD) ->
     case size(K) > ?MAX_KEY_SIZE of
@@ -153,9 +169,7 @@ new_int(B, K, V, MD) ->
         false ->
             case MD of
                 no_initial_metadata ->
-                    Contents = [#r_content{metadata=dict:new(), value=V}],
-                    #r_object{bucket=B,key=K,
-                              contents=Contents,vclock=vclock:fresh()};
+                    new_int2(B, K, V, dict:new());
                 _ ->
                     new_int2(B, K, V, MD)
             end
