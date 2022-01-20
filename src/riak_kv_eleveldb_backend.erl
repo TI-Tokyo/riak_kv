@@ -387,8 +387,8 @@ delete(Bucket, PrimaryKey, IndexSpecs, #state{ref=Ref,
 fold_buckets(FoldBucketsFun, Acc, Opts, #state{fold_opts=FoldOpts,
                                                ref=Ref}) ->
     FoldFun = fold_buckets_fun(FoldBucketsFun),
-    FirstKey = to_first_key(undefined),
-    FoldOpts1 = [{first_key, FirstKey} | FoldOpts],
+    FirstKey = to_start_key(undefined),
+    FoldOpts1 = [{start_key, FirstKey} | FoldOpts],
     BucketFolder =
         fun() ->
                 try
@@ -429,9 +429,9 @@ fold_keys(FoldKeysFun, Acc, Opts, #state{fold_opts=FoldOpts,
         end,
 
     %% Set up the fold...
-    FirstKey = to_first_key(Limiter),
+    FirstKey = to_start_key(Limiter),
     FoldFun = fold_keys_fun(FoldKeysFun, Limiter),
-    FoldOpts1 = [{first_key, FirstKey} | FoldOpts],
+    FoldOpts1 = [{start_key, FirstKey} | FoldOpts],
     ExtraFold = not FixedIdx orelse WriteLegacyIdx,
     Itr =
         case lists:member(snap_prefold, Opts) of
@@ -442,7 +442,7 @@ fold_keys(FoldKeysFun, Acc, Opts, #state{fold_opts=FoldOpts,
             false ->
                 not_snapped
         end,
-	KeyFolder =
+        KeyFolder =
         fun() ->
             %% Do the fold. ELevelDB uses throw/1 to break out of a fold...
             AccFinal =
@@ -480,7 +480,7 @@ fold_keys(FoldKeysFun, Acc, Opts, #state{fold_opts=FoldOpts,
 fold_indexes(FoldIndexFun, Acc, _Opts, #state{fold_opts=FoldOpts,
                                               ref=Ref}) ->
     FirstKey = to_index_key(<<>>, <<>>, <<>>, <<>>),
-    FoldOpts1 = [{first_key, FirstKey} | FoldOpts],
+    FoldOpts1 = [{start_key, FirstKey} | FoldOpts],
     FoldFun = fold_indexes_fun(FoldIndexFun),
     KeyFolder =
         fun() ->
@@ -590,12 +590,12 @@ key_prefix({TableName,_}, PK2, LocalKeyLen) ->
       PKPrefix/binary>>.
 
 legacy_key_fold(Ref, FoldFun, Acc, FoldOpts0, Query={index, _, _}) ->
-    {_, FirstKey} = lists:keyfind(first_key, 1, FoldOpts0),
-    LegacyKey = to_legacy_first_key(Query),
+    {_, FirstKey} = lists:keyfind(start_key, 1, FoldOpts0),
+    LegacyKey = to_legacy_start_key(Query),
     case LegacyKey =/= FirstKey of
         true ->
             try
-                FoldOpts = lists:keyreplace(first_key, 1, FoldOpts0, {first_key, LegacyKey}),
+                FoldOpts = lists:keyreplace(start_key, 1, FoldOpts0, {start_key, LegacyKey}),
                 eleveldb:fold_keys(Ref, FoldFun, Acc, FoldOpts)
             catch
                 {break, AccFinal} ->
@@ -631,9 +631,9 @@ fold_objects(FoldObjectsFun, Acc, Opts, #state{fold_opts=FoldOpts,
             false -> [];
             Tuple -> [Tuple]
         end,
-    
-    StandardObjectFold = 
-        case lists:keyfind(standard_object_fold, 1, Opts) of    
+
+    StandardObjectFold =
+        case lists:keyfind(standard_object_fold, 1, Opts) of
             {standard_object_fold, Bool} ->
                 Bool;
             false ->
@@ -641,8 +641,8 @@ fold_objects(FoldObjectsFun, Acc, Opts, #state{fold_opts=FoldOpts,
         end,
 
     %% Set up the fold...
-    FirstKey = to_first_key(Limiter),
-    FoldOpts1 = IteratorRefresh ++ [{first_key, FirstKey} | FoldOpts],
+    FirstKey = to_start_key(Limiter),
+    FoldOpts1 = IteratorRefresh ++ [{start_key, FirstKey} | FoldOpts],
     FoldFun = fold_objects_fun(FoldObjectsFun, Limiter, StandardObjectFold),
 
     ObjectFolder =
@@ -965,15 +965,15 @@ fold_keys_fun(FoldKeysFun, {index, Bucket, V1Q}) ->
 
 %% @private
 %% Return a function to fold over the objects on this backend
-fold_objects_fun(FoldObjectsFun, 
-                    {index, FilterBucket, Q=?KV_INDEX_Q{}}, 
+fold_objects_fun(FoldObjectsFun,
+                    {index, FilterBucket, Q=?KV_INDEX_Q{}},
                     StObjFold) ->
     %% 2I query on $key or $bucket field with return_body
     fun({StorageKey, Value}, Acc) ->
             ObjectKey = from_object_key(StorageKey),
             case riak_index:object_key_in_range(ObjectKey, FilterBucket, Q) of
                 {true, {Bucket, Key}} ->
-                    case StObjFold of   
+                    case StObjFold of
                         true ->
                             FoldObjectsFun(Bucket, Key, Value, Acc);
                         false ->
@@ -1015,39 +1015,39 @@ fold_objects_fun(FoldObjectsFun, undefined, _StObjFold) ->
 %%
 %% For starting ranges, use key undefined.  Keys are either binaries
 %% for tuples for time series.  Either of sort *after* a bare atom.
-to_first_key(undefined) ->
+to_start_key(undefined) ->
     %% Start at the first object in LevelDB...
-    to_object_key({<<>>, <<>>}, undefined); 
-to_first_key({bucket, Bucket}) ->
+    to_object_key({<<>>, <<>>}, undefined);
+to_start_key({bucket, Bucket}) ->
     %% Start at the first object for a given bucket...
     to_object_key(Bucket, undefined);
-to_first_key({index, incorrect_format, ForUpgrade}) when is_boolean(ForUpgrade) ->
+to_start_key({index, incorrect_format, ForUpgrade}) when is_boolean(ForUpgrade) ->
     %% Start at first index entry
     to_index_key(<<>>, <<>>, <<>>, <<>>);
 %% V2 indexes
-to_first_key({index, Bucket,
+to_start_key({index, Bucket,
               ?KV_INDEX_Q{filter_field=Field,
                           start_key=StartKey}}) when Field == <<"$key">>;
                                                      Field == <<"$bucket">> ->
     to_object_key(Bucket, StartKey);
-to_first_key({index, Bucket, ?KV_INDEX_Q{filter_field=Field,
+to_start_key({index, Bucket, ?KV_INDEX_Q{filter_field=Field,
                                          start_key=StartKey,
                                          start_term=StartTerm}}) ->
     to_index_key(Bucket, StartKey, Field, StartTerm);
 %% Upgrade legacy queries to current version
-to_first_key({index, Bucket, Q}) ->
+to_start_key({index, Bucket, Q}) ->
     UpgradeQ = riak_index:upgrade_query(Q),
-    to_first_key({index, Bucket, UpgradeQ});
-to_first_key(Other) ->
+    to_start_key({index, Bucket, UpgradeQ});
+to_start_key(Other) ->
     erlang:throw({unknown_limiter, Other}).
 
 %% @doc If index query, encode key using legacy sext format.
-to_legacy_first_key({index, Bucket, {eq, Field, Term}}) ->
-    to_legacy_first_key({index, Bucket, {range, Field, Term, Term}});
-to_legacy_first_key({index, Bucket, {range, Field, StartTerm, _EndTerm}}) ->
+to_legacy_start_key({index, Bucket, {eq, Field, Term}}) ->
+    to_legacy_start_key({index, Bucket, {range, Field, Term, Term}});
+to_legacy_start_key({index, Bucket, {range, Field, StartTerm, _EndTerm}}) ->
     to_legacy_index_key(Bucket, <<>>, Field, StartTerm);
-to_legacy_first_key(Other) ->
-    to_first_key(Other).
+to_legacy_start_key(Other) ->
+    to_start_key(Other).
 
 orig_to_object_key(Bucket, Key) ->
     sext:encode({o, Bucket, Key}).
