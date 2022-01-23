@@ -1637,7 +1637,7 @@ handle_coverage_request(kv_sql_select_request,
     Bucket = riak_kv_requests:get_bucket(Req),
     Query = riak_kv_requests:get_query(Req),
     handle_range_scan(Bucket, ItemFilter, Query,
-                      FilterVNodes, Sender, State, fun result_fun_ack/2);
+                      FilterVNodes, Sender, State, fun range_scan_result_fun_ack/2);
 handle_coverage_request(kv_index_request, Req, FilterVNodes, Sender, State) ->
     Bucket = riak_kv_requests:get_bucket(Req),
     ItemFilter = riak_kv_requests:get_item_filter(Req),
@@ -3099,7 +3099,7 @@ perform_put({true, {_Obj, _OldObj}=Objects},
             MaxCheckFlag = do_max_check
     end,
     {Reply, State2} =
-        actual_put(BKey, Objects, IndexSpecs, RB, ReqID, MaxCheckFlag, false, State),
+        actual_put(BKey, Objects, IndexSpecs, RB, ReqID, MaxCheckFlag, Coord, State),
     {Reply, State2}.
 
 actual_put(BKey, {Obj, OldObj}, IndexSpecs, RB, ReqID, State) ->
