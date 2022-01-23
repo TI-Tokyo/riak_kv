@@ -3091,46 +3091,30 @@ perform_put({true, {_Obj, _OldObj}=Objects},
                      reqid=ReqID,
                      coord=Coord,
                      index_specs=IndexSpecs,
-                     readrepair=ReadRepair,
-                     sync_on_write=SyncOnWrite}) ->
+                     readrepair=ReadRepair}) ->
     case ReadRepair of
         true ->
             MaxCheckFlag = no_max_check;
         false ->
             MaxCheckFlag = do_max_check
     end,
-    Sync =
-        case SyncOnWrite of
-            all ->
-                true;
-            %% 'one' does not override the backend value for the other nodes
-            %% therefore is only useful if the backend is configured to not
-            %% sync-on-write
-            one ->
-                Coord;
-            _ ->
-            %% anything but all or one means do the default configured backend
-            %% write
-                false
-        end,
     {Reply, State2} =
-        actual_put(BKey, Objects, IndexSpecs, RB, ReqID, MaxCheckFlag,
-                    {Coord, Sync}, State),
+        actual_put(BKey, Objects, IndexSpecs, RB, ReqID, MaxCheckFlag, false, State),
     {Reply, State2}.
 
 actual_put(BKey, {Obj, OldObj}, IndexSpecs, RB, ReqID, State) ->
-    actual_put(BKey, {Obj, OldObj}, IndexSpecs, RB, ReqID, do_max_check,
-                {false, false}, State).
+    actual_put(BKey, {Obj, OldObj}, IndexSpecs,
+                RB, ReqID, do_max_check, false, State).
 
 actual_put(BKey={Bucket, Key},
            {Obj, OldObj},
            IndexSpecs,
            RB, ReqID,
-           MaxCheckFlag,
-           {Coord, Sync},
+           MaxCheckFlag, Coord,
            State = #state{idx=Idx,
                           mod=Mod,
-                          modstate=ModState}) ->
+                          modstate=ModState,
+                          update_hook=UpdateHook}) ->
     case encode_and_put(Obj, Mod, Bucket, Key, IndexSpecs, ModState,
                        MaxCheckFlag) of
         {{ok, UpdModState}, EncodedVal} ->
@@ -3863,7 +3847,7 @@ aae_update(Bucket, Key, UpdObj, PrevObj, UpdObjBin,
                     _ ->
                         UpdObj
                 end,
-            update_hashtree(Bucket, Key, RObj, Trees, Async)
+            update_hashtree_for_aae(Bucket, Key, RObj, Trees, Async)
     end,
     case {TAAE, PrevObj} of
         {false, _} ->
@@ -4007,6 +3991,25 @@ update_hashtree(Bucket, Key, RObj, #state{hashtrees=Trees}) ->
         false ->
             riak_kv_index_hashtree:insert(Items, [], Trees),
             put(hashtree_tokens, max_hashtree_tokens()),
+            ok
+    end.
+
+-spec update_hashtree_for_aae(binary(), binary(), riak_object:riak_object(), pid(),
+                              boolean()) -> ok.
+%% @doc
+%% Update hashtree based AAE when enabled.
+%% Note that this requires an object copy - the object has been converted from
+%% a binary before being sent to another pid.  Also, all information on the
+%% object is ignored other than that necessary to hash the object.  There is
+%% scope for greater efficiency here, even without moving to Tictac AAE
+update_hashtree_for_aae(Bucket, Key, RObj, Trees, Async) ->
+    Items = [{object, {Bucket, Key}, RObj}],
+    case Async of
+        true ->
+            riak_kv_index_hashtree:async_insert(Items, [], Trees),
+            ok;
+        false ->
+            riak_kv_index_hashtree:insert(Items, [], Trees),
             ok
     end.
 
