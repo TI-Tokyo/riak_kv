@@ -138,7 +138,7 @@ insert_putreqs(Mod, Table, Data) ->
 %%
 %% Return an all-null empty row ready to be populated by the values
 %%
--spec make_empty_row(module()) -> tuple(undefined).
+-spec make_empty_row(module()) -> tuple().
 make_empty_row(Mod) ->
     Positions = Mod:get_field_positions(),
     list_to_tuple(lists:duplicate(length(Positions), undefined)).
@@ -179,7 +179,7 @@ lookup_field_positions(Mod, FieldIdentifiers) ->
 %% repackage list to tuple here, rather than separately as a
 %% post-processing step on Data, to avoid another round of
 %% list_to_tuple(tuple_to_list())
--spec xlate_insert_to_putdata([[riak_ql_ddl:data_value()]], [pos_integer()], tuple(undefined),
+-spec xlate_insert_to_putdata([[riak_ql_ddl:data_value()]], [pos_integer()], tuple(),
                               [riak_ql_ddl:internal_field_type()]) ->
                               {ok, [tuple()]} | {error, string()}.
 xlate_insert_to_putdata(Values, Positions, Empty, FieldTypes) ->
@@ -226,76 +226,6 @@ maybe_convert_timestamp({binary, String}, timestamp) ->
 maybe_convert_timestamp({_NonTSType, Val}, _OtherType) ->
     Val.
 
-
-
--spec do_describe(?DDL{}) ->
-                         {ok, query_tabular_result()} | {error, term()}.
-do_describe(?DDL{fields = FieldSpecs,
-                 partition_key = #key_v1{ast = PKSpec},
-                 local_key     = #key_v1{ast = LKSpec}}) ->
-    ColumnNames = [<<"Column">>, <<"Type">>, <<"Is Null">>, <<"Partition Key">>, <<"Local Key">>, <<"Interval">>, <<"Unit">>, <<"Sort Order">>],
-    ColumnTypes = [   varchar,      varchar,    boolean,       sint64,            sint64,         sint64,         varchar,      varchar],
-    Quantum = find_quantum_field(PKSpec),
-    Rows =
-        [[Name, list_to_binary(atom_to_list(Type)), Nullable,
-          column_pk_position_or_blank(Name, PKSpec),
-          column_lk_position_or_blank(Name, LKSpec)] ++
-          columns_quantum_or_blank(Name, Quantum) ++
-          column_lk_order(Name, LKSpec)
-         || #riak_field_v1{name = Name,
-                           type = Type,
-                           optional = Nullable} <- FieldSpecs],
-    {ok, {ColumnNames, ColumnTypes, Rows}}.
-
-%% Return the sort order of the local key for this column, or null if it is not
-%% a local key or has an undefined sort order.
-column_lk_order(Name, LK) when is_binary(Name) ->
-    case lists:keyfind([Name], #riak_field_v1.name, LK) of
-        ?SQL_PARAM{ordering = descending} ->
-            [<<"DESC">>];
-        ?SQL_PARAM{ordering = ascending} ->
-            [<<"ASC">>];
-        _ ->
-            [[]]
-    end.
-
-%% the following two functions are identical, for the way fields and
-%% keys are represented as of 2015-12-18; duplication here is a hint
-%% of things to come.
--spec column_pk_position_or_blank(binary(), [?SQL_PARAM{}]) -> integer() | [].
-column_pk_position_or_blank(Col, KSpec) ->
-    count_to_position(Col, KSpec, 1).
-
--spec column_lk_position_or_blank(binary(), [?SQL_PARAM{}]) -> integer() | [].
-column_lk_position_or_blank(Col, KSpec) ->
-    count_to_position(Col, KSpec, 1).
-
-%% Extract the quantum column information, if it exists in the table definition
-%% and put in two additional columns
--spec columns_quantum_or_blank(Col :: binary(), PKSpec :: [?SQL_PARAM{}|#hash_fn_v1{}]) ->
-      [binary() | []].
-columns_quantum_or_blank(Col, #hash_fn_v1{args = [?SQL_PARAM{name = [Col]}, Interval, Unit]}) ->
-    [Interval, list_to_binary(io_lib:format("~p", [Unit]))];
-columns_quantum_or_blank(_Col, _PKSpec) ->
-    [[], []].
-
-%% Find the field associated with the quantum, if there is one
--spec find_quantum_field([?SQL_PARAM{}|#hash_fn_v1{}]) -> [] | #hash_fn_v1{}.
-find_quantum_field([]) ->
-    [];
-find_quantum_field([Q = #hash_fn_v1{}|_]) ->
-    Q;
-find_quantum_field([_|T]) ->
-    find_quantum_field(T).
-
-count_to_position(_, [], _) ->
-    [];
-count_to_position(Col, [?SQL_PARAM{name = [Col]} | _], Pos) ->
-    Pos;
-count_to_position(Col, [#hash_fn_v1{args = [?SQL_PARAM{name = [Col]} | _]} | _], Pos) ->
-    Pos;
-count_to_position(Col, [_ | Rest], Pos) ->
-    count_to_position(Col, Rest, Pos + 1).
 
 
 %% SELECT
@@ -484,6 +414,77 @@ do_delete(#riak_sql_delete_query_v1{'FROM'     = F,
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
+
+
+-spec do_describe(?DDL{}) ->
+                         {ok, query_tabular_result()} | {error, term()}.
+do_describe(?DDL{fields = FieldSpecs,
+                 partition_key = #key_v1{ast = PKSpec},
+                 local_key     = #key_v1{ast = LKSpec}}) ->
+    ColumnNames = [<<"Column">>, <<"Type">>, <<"Is Null">>, <<"Partition Key">>, <<"Local Key">>, <<"Interval">>, <<"Unit">>, <<"Sort Order">>],
+    ColumnTypes = [   varchar,      varchar,    boolean,       sint64,            sint64,         sint64,         varchar,      varchar],
+    Quantum = find_quantum_field(PKSpec),
+    Rows =
+        [[Name, list_to_binary(atom_to_list(Type)), Nullable,
+          column_pk_position_or_blank(Name, PKSpec),
+          column_lk_position_or_blank(Name, LKSpec)] ++
+          columns_quantum_or_blank(Name, Quantum) ++
+          column_lk_order(Name, LKSpec)
+         || #riak_field_v1{name = Name,
+                           type = Type,
+                           optional = Nullable} <- FieldSpecs],
+    {ok, {ColumnNames, ColumnTypes, Rows}}.
+
+%% Return the sort order of the local key for this column, or null if it is not
+%% a local key or has an undefined sort order.
+column_lk_order(Name, LK) when is_binary(Name) ->
+    case lists:keyfind([Name], #riak_field_v1.name, LK) of
+        ?SQL_PARAM{ordering = descending} ->
+            [<<"DESC">>];
+        ?SQL_PARAM{ordering = ascending} ->
+            [<<"ASC">>];
+        _ ->
+            [[]]
+    end.
+
+%% the following two functions are identical, for the way fields and
+%% keys are represented as of 2015-12-18; duplication here is a hint
+%% of things to come.
+-spec column_pk_position_or_blank(binary(), [?SQL_PARAM{}]) -> integer() | [].
+column_pk_position_or_blank(Col, KSpec) ->
+    count_to_position(Col, KSpec, 1).
+
+-spec column_lk_position_or_blank(binary(), [?SQL_PARAM{}]) -> integer() | [].
+column_lk_position_or_blank(Col, KSpec) ->
+    count_to_position(Col, KSpec, 1).
+
+%% Extract the quantum column information, if it exists in the table definition
+%% and put in two additional columns
+-spec columns_quantum_or_blank(Col :: binary(), PKSpec :: [?SQL_PARAM{}|#hash_fn_v1{}]) ->
+      [binary() | []].
+columns_quantum_or_blank(Col, #hash_fn_v1{args = [?SQL_PARAM{name = [Col]}, Interval, Unit]}) ->
+    [Interval, list_to_binary(io_lib:format("~p", [Unit]))];
+columns_quantum_or_blank(_Col, _PKSpec) ->
+    [[], []].
+
+%% Find the field associated with the quantum, if there is one
+-spec find_quantum_field([?SQL_PARAM{}|#hash_fn_v1{}]) -> [] | #hash_fn_v1{}.
+find_quantum_field([]) ->
+    [];
+find_quantum_field([Q = #hash_fn_v1{}|_]) ->
+    Q;
+find_quantum_field([_|T]) ->
+    find_quantum_field(T).
+
+count_to_position(_, [], _) ->
+    [];
+count_to_position(Col, [?SQL_PARAM{name = [Col]} | _], Pos) ->
+    Pos;
+count_to_position(Col, [#hash_fn_v1{args = [?SQL_PARAM{name = [Col]} | _]} | _], Pos) ->
+    Pos;
+count_to_position(Col, [_ | Rest], Pos) ->
+    count_to_position(Col, Rest, Pos + 1).
+
 
 describe_table_columns_test() ->
     {ddl, DDL, []} =

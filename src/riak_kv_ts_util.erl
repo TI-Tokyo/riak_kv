@@ -69,7 +69,7 @@
 -include_lib("riak_ql/include/riak_ql_ddl.hrl").
 -include("riak_kv_ts.hrl").
 
--spec sql_record_to_tuple(?SQL_SELECT{}) -> {binary(), [tuple(2) | tuple(3)], list(), [tuple(2)]}.
+-spec sql_record_to_tuple(?SQL_SELECT{}) -> {binary(), [tuple()], list(), [tuple()]}.
 %% riak_ql_ddl:is_query_valid expects a tuple, not a SQL record
 sql_record_to_tuple(?SQL_SELECT{'FROM'   = From,
                                 'SELECT' = #riak_sel_clause_v1{clause=Select},
@@ -170,7 +170,7 @@ build_sql_record_int(show_tables, _SQL, _Options) ->
     {ok, #riak_sql_show_tables_v1{}};
 build_sql_record_int(show_create_table, SQL, _Options) ->
     Table = proplists:get_value(identifier, SQL),
-    {ok, #riak_sql_show_create_table_v1{'SHOW_CREATE_TABLE' = Table}}.
+    {ok, #riak_sql_show_create_table_v1{'SHOW_CREATE_TABLE' = Table}};
 
 build_sql_record_int(delete, SQL, _Cover) ->
     T = proplists:get_value(table, SQL),

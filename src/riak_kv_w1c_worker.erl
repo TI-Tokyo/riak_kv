@@ -387,13 +387,6 @@ random_worker() ->
     element(R, workers()).
 
 
-encoded_val(RObj) ->
-    RObj2 = riak_object:set_vclock(RObj, vclock:fresh(<<0:8>>, 1)),
-    RObj3 = riak_object:update_last_modified(RObj2),
-    RObj4 = riak_object:apply_updates(RObj3),
-    riak_object:to_binary(v1, RObj4).
-
-
 validate_options(NVal, Preflist, Options, BucketProps) ->
     PW = get_rw_value(pw, BucketProps, NVal, Options),
     W = case get_rw_value(dw, BucketProps, NVal, Options) of

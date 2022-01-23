@@ -1471,8 +1471,6 @@ sibs_of_binary(Count, SibsBin, Result) ->
     {Sib, _LastMod, SibsRest} = sib_of_binary(SibsBin),
     sibs_of_binary(Count-1, SibsRest, [Sib | Result]).
 
-sib_of_binary(Bin) ->
-    sib_of_binary(Bin, erlang).
 sib_of_binary(<<ValLen:32/integer,
                 ValBin:ValLen/binary,
                 MetaLen:32/integer,
@@ -1560,7 +1558,7 @@ bin_contents(Contents, Enc) ->
 
 meta_bin(MD, Enc) ->
     {{VTagVal, Deleted, LastModVal, _}, RestBin} =
-        dict:fold(fun fold_meta_to_bin/4,
+        dict:fold(fun fold_meta_to_bin/3,
                   {{undefined, <<0>>, undefined, Enc}, <<>>},
                   MD),
     VTagBin = case VTagVal of
@@ -1578,7 +1576,7 @@ meta_bin(MD, Enc) ->
 fold_meta_to_bin(?MD_VTAG, Value, {{_Vt,Del,Lm, _Enc}, RestBin}) ->
     {{Value, Del, Lm, _Enc}, RestBin};
 fold_meta_to_bin(?MD_LASTMOD, Value, {{Vt,Del,_Lm, _Enc}, RestBin}) ->
-     {{Vt, Del, Value, Enc}, RestBin};
+     {{Vt, Del, Value, _Enc}, RestBin};
 fold_meta_to_bin(?MD_DELETED, true, {{Vt,_Del,Lm, _Enc}, RestBin})->
      {{Vt, <<1>>, Lm, _Enc}, RestBin};
 fold_meta_to_bin(?MD_DELETED, "true", Acc) ->
@@ -1626,7 +1624,7 @@ sub_encode(Bin, msgpack) ->
     <<?MSGPACK_MAGIC:8/integer, (msgpack:pack(Bin, [{format, jsx}]))/binary>>.
 
 sub_decode(<<?ERLT2B_MAGIC:8/binary, Bin>>) ->
-    binary_to_term(Bin).
+    binary_to_term(Bin);
 sub_decode(<<?MSGPACK_MAGIC:8/binary, Bin>>) ->
     {ok, Unpacked} = msgpack:unpack(Bin, [{format, jsx}]),
     Unpacked;

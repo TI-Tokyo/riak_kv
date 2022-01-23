@@ -552,19 +552,6 @@ validate_update_dt_props(Existing, New) ->
                     ?DT_PROPS_CHECK_CREATE),
     {Unvalidated, Valid, Errors}.
 
-%% @private check that allow_mult is correct
--spec validate_update_dt_props(props(), props(), errors()) -> {props(), props(), errors()}.
-validate_update_dt_props(New, Valid, Invalid) ->
-    Unvalidated = lists:keydelete(allow_mult, 1, New),
-    case allow_mult(New) of
-        undefined ->
-            {Unvalidated, Valid, Invalid};
-        true ->
-            {Unvalidated, [{allow_mult, true} | Valid], Invalid};
-        _ ->
-            {Unvalidated, Valid, [{allow_mult, "Cannot change datatype bucket from allow_mult=true"} | Invalid]}
-end.
-
 %% @private
 %% precondition: Existing contains {write_once, true}
 -spec validate_update_w1c_props(boolean() | undefined, props()) ->
@@ -870,6 +857,19 @@ test_dt_hll_validation_update_default() ->
     {_Unvalidated, Validated, _Errors} = validate_update_dt_props([], [?HLL]),
     ?assertEqual(lists:sort([{datatype, hll}, {hll_precision, ?DEFAULT_P}]),
                  lists:sort(Validated)).
+
+%% @private check that allow_mult is correct
+-spec validate_update_dt_props(props(), props(), errors()) -> {props(), props(), errors()}.
+validate_update_dt_props(New, Valid, Invalid) ->
+    Unvalidated = lists:keydelete(allow_mult, 1, New),
+    case allow_mult(New) of
+        undefined ->
+            {Unvalidated, Valid, Invalid};
+        true ->
+            {Unvalidated, [{allow_mult, true} | Valid], Invalid};
+        _ ->
+            {Unvalidated, Valid, [{allow_mult, "Cannot change datatype bucket from allow_mult=true"} | Invalid]}
+    end.
 
 test_dt_hll_validation_update_valid_p() ->
     {_Unvalidated, Validated, _Errors} = validate_update_dt_props(

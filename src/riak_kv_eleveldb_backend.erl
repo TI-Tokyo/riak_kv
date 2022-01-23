@@ -1120,7 +1120,7 @@ orig_from_object_key(LKey) ->
 %% tuple) to be any number.
 from_object_key(<<16,0,0,0,3, %% 3-tuple - outer
                   12,183,128,8, %% o-atom
-                  Rest/binary>> = Bin) ->
+                  Rest/binary>>) ->
     {Bucket, Rest1} = sext:decode_next(Rest), % grabs the two-tuple of bucket type/name
     case Rest1 of
         <<16,0,0,0,_NTupleElements,_TSKeyElements/binary>> = TSKey ->

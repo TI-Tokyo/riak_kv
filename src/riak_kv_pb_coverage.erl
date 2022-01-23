@@ -39,7 +39,6 @@
 -include_lib("riak_pb/include/riak_kv_pb.hrl").
 
 -behaviour(riak_api_pb_service).
--compile(export_all).
 -export([init/0,
          decode/2,
          encode/1,

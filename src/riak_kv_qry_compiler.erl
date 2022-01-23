@@ -309,8 +309,8 @@ get_col_names2(_, Name) ->
 
 %%
 -spec select_column_clause_folder(?DDL{}, riak_ql_ddl:selection(),
-                                  {set(), #riak_sel_clause_v1{}}) ->
-                {set(), #riak_sel_clause_v1{}}.
+                                  {sets:set(), #riak_sel_clause_v1{}}) ->
+                {sets:set(), #riak_sel_clause_v1{}}.
 select_column_clause_folder(DDL, ColAST1,
                             {TypeSet1, #riak_sel_clause_v1{ finalisers = Finalisers } = SelClause}) ->
     %% extract the stateful functions then treat them as separate select columns
@@ -647,7 +647,7 @@ find_quantum_field_index_in_key2([#hash_fn_v1{ mod = riak_ql_quanta,
 find_quantum_field_index_in_key2([_|Tail], Index) ->
     find_quantum_field_index_in_key2(Tail, Index+1).
 
-hash_timestamp_to_quanta(QField, QSize, QUnit, QIndex, MaxSubQueries, Where1) ->
+hash_timestamp_to_quanta(QField, QSize, QUnit, QIndex, Where1) ->
     GetMaxMinFun = fun({startkey, List}, {_S, E}) ->
                            {element(3, lists:nth(QIndex, List)), E};
                       ({endkey,   List}, {S, _E}) ->
@@ -793,10 +793,10 @@ check_if_timeseries(?DDL{table = T, partition_key = PK, local_key = LK0} = DDL,
     catch
         error:{Reason, Description} = E when is_atom(Reason), is_binary(Description) ->
             {error, E};
-        error:Reason ->
+        error:Reason:ST ->
             %% if it is not a known error then return the stack trace for
             %% debugging
-            {error, {where_not_timeseries, Reason, erlang:get_stacktrace()}}
+            {error, {where_not_timeseries, Reason, ST}}
     end;
 check_if_timeseries(?DDL{}, []) ->
     {error, {no_where_clause, ?E_NO_WHERE_CLAUSE}}.

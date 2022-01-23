@@ -208,7 +208,7 @@
                  | vclock_request()
                  | head_request()
                  | aaefold_request()
-                 | hotbackup_request().
+                 | hotbackup_request()
                  | sql_select_request().
 
 -type request_type() :: kv_put_request
@@ -247,7 +247,6 @@ request_type(#riak_kv_vclock_req_v1{})-> kv_vclock_request;
 request_type(#riak_kv_head_req_v1{}) -> kv_head_request;
 request_type(#riak_kv_aaefold_req_v1{}) -> kv_aaefold_request;
 request_type(#riak_kv_hotbackup_req_v1{}) -> kv_hotbackup_request;
-request_type(#riak_kv_listkeys_ts_req_v1{}) -> kv_listkeys_ts;
 request_type(#riak_kv_sql_select_req_v1{})-> kv_sql_select_request;
 request_type(_) -> unknown.
 
@@ -388,7 +387,6 @@ get_item_filter(#riak_kv_index_req_v2{item_filter = ItemFilter}) ->
 
 -spec get_ack_backpressure(listkeys_request()|index_request())
                             -> UseAckBackpressure::boolean().
--spec get_ack_backpressure(listkeys_request()) -> UseAckBackpressure::boolean().
 get_ack_backpressure(#riak_kv_listkeys_req_v3{}) ->
     false;
 get_ack_backpressure(#riak_kv_listkeys_req_v4{}) ->

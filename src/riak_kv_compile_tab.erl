@@ -178,21 +178,6 @@ get_ddl(BucketType, Version) when is_binary(BucketType), is_atom(Version) ->
             notfound
     end.
 
-log_v2_to_v3_ddl_migration(BucketType) ->
-    lager:info("Moving table ~ts from compile tab v2 to v3 as part of upgrade.",
-        [BucketType]).
-
--spec get_all_table_names_v2() -> [binary()].
-get_all_table_names_v2() ->
-    Matches = dets:match(?TABLE2, {'$1', '_', '_', '_', '_'}),
-    Tables = [Table || [Table] <- Matches],
-    lists:usort(Tables).
-
-get_ddl_v2(BucketType) when is_binary(BucketType) ->
-    case dets:lookup(?TABLE2, BucketType) of
-        [{_,_,#ddl_v1{} = DDL,_,_}] ->
-            {ok, DDL};
-
 %% Get the list of {TableName, Status} pairs, no matter what status they are in.
 -spec get_table_status_pairs() ->[{binary(), binary()}].
 get_table_status_pairs() ->

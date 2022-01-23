@@ -69,7 +69,7 @@ api_call_from_sql_type(describe)          -> describe_table;
 api_call_from_sql_type(show_create_table) -> show_create_table;
 api_call_from_sql_type(show_tables)       -> show_tables;
 api_call_from_sql_type(insert)            -> query_insert;
-api_call_from_sql_type(delete)      -> query_delete.
+api_call_from_sql_type(delete)            -> query_delete;
 api_call_from_sql_type(explain)           -> query_explain.
 
 -spec api_call_to_perm(api_call()) -> string().
@@ -291,7 +291,7 @@ put_data_to_partitions(Data, Bucket, BucketProps, DDL, Mod) ->
                      BucketProps :: proplists:proplist(),
                      DDL :: ?DDL{},
                      Mod :: module()) ->
-                            list(tuple(chash:index(), list(term()))).
+                            [{chash:index(), list(term())}].
 partition_data(Data, Bucket, BucketProps, DDL, Mod) ->
     PartitionTuples =
         [ { riak_core_util:chash_key(

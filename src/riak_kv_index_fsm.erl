@@ -56,17 +56,11 @@
 -type from() :: {atom(), req_id(), pid()}.
 -type req_id() :: non_neg_integer().
 
--ifdef(namespaced_types).
--type riak_kv_index_fsm_dict() :: dict:dict().
--else.
--type riak_kv_index_fsm_dict() :: dict().
--endif.
-
 -record(state, {from :: from(),
                 pagination_sort :: boolean(),
                 merge_sort_buffer = undefined :: sms:sms() | undefined,
                 max_results :: all | pos_integer(),
-                results_per_vnode = dict:new() :: riak_kv_index_fsm_dict(),
+                results_per_vnode = dict:new() :: dict:dict(),
                 results_sent = 0 :: non_neg_integer()}).
 
 %% @doc Returns `true' if the new ack-based backpressure index
@@ -78,7 +72,7 @@ use_ack_backpressure() ->
     riak_core_capability:get({riak_kv, index_backpressure}, false) == true.
 
 %% @doc Construct the correct index command record.
--spec req(binary()|tuple(binary()), term(), term()) -> term().
+-spec req(binary()|tuple(), term(), term()) -> term().
 req(Bucket, ItemFilter, Query) ->
     case riak_kv_select:is_sql_select_record(Query) of
         true ->

@@ -49,6 +49,7 @@
          overload_reply/1,
          get_backend_config/3,
          is_modfun_allowed/2]).
+-export([report_hashtree_tokens/0, reset_hashtree_tokens/2]).
 
 -include_lib("riak_kv_vnode.hrl").
 
@@ -207,7 +208,7 @@ get_write_once(Bucket) ->
 -spec report_hashtree_tokens() -> {non_neg_integer(), non_neg_integer()}.
 report_hashtree_tokens() ->
     OnlinePrimaries = riak_core_apl:active_owners(riak_kv),
-    ReportTokenFun = 
+    ReportTokenFun =
         fun({{P, N}, _T}, {Min, Max}) ->
             HT =
                 riak_core_vnode_master:sync_command({P, N},
@@ -223,7 +224,7 @@ report_hashtree_tokens() ->
 -spec reset_hashtree_tokens(non_neg_integer(), non_neg_integer()) -> ok.
 reset_hashtree_tokens(MinToken, MaxToken) when MaxToken >= MinToken ->
     OnlinePrimaries = riak_core_apl:active_owners(riak_kv),
-    ResetTokenFun = 
+    ResetTokenFun =
         fun({{P, N}, _T}) ->
             ok =
                 riak_core_vnode_master:sync_command({P, N},

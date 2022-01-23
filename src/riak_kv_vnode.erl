@@ -1,4 +1,4 @@
->%% -------------------------------------------------------------------
+%% -------------------------------------------------------------------
 %%
 %% riak_kv_vnode: VNode Implementation
 %%
@@ -23,7 +23,7 @@
 -behaviour(riak_core_vnode).
 
 -compile({nowarn_deprecated_function,
-            [{gen_fsm, send_event, 2}]}).
+          [{gen_fsm, send_event, 2}]}).
 
 %% API
 -export([test_vnode/1, put/7]).
@@ -99,6 +99,17 @@
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("riak_core/include/riak_core_bg_manager.hrl").
 -export([put_merge/6]). %% For fsm_eqc_vnode
+-endif.
+
+-ifdef(TEST).
+%% Use values so that test compile doesn't give 'unused vars' warning.
+-define(INDEX(A,B,C), _=element(1,{{_A1, _A2} = A,B,C}), ok).
+-define(INDEX_BIN(A,B,C,D,E), _=element(1,{A,B,C,D,E}), ok).
+-define(IS_SEARCH_ENABLED_FOR_BUCKET(BProps), _=element(1, {BProps}), false).
+-else.
+-define(INDEX(Objects, Reason, Partition), yz_kv:index(Objects, Reason, Partition)).
+-define(INDEX_BIN(Bucket, Key, Obj, Reason, Partition), yz_kv:index_binary(Bucket, Key, Obj, Reason, Partition)).
+-define(IS_SEARCH_ENABLED_FOR_BUCKET(BProps), yz_kv:is_search_enabled_for_bucket(BProps)).
 -endif.
 
 -record(mrjob, {cachekey :: term(),
@@ -940,7 +951,8 @@ handle_command({aae, AAERequest, IndexNs, Colour}, Sender, State) ->
     end,
     {noreply, State};
 handle_command(#riak_kv_listkeys_req_v2{bucket=Input, req_id=ReqId, caller=Caller}, _Sender,
-               State=#state{key_buf_size=BufferSize,
+               State=#state{async_folding=AsyncFolding,
+                            key_buf_size=BufferSize,
                             mod=Mod,
                             modstate=ModState,
                             idx=Idx}) ->
@@ -1668,14 +1680,7 @@ handle_coverage_request(kv_hotbackup_request, Req, _FilterVnodes, Sender,
             end;
         false ->
             {reply, riak_kv_hotbackup_fsm:not_supported(), State}
-    end;
-handle_coverage_request(kv_sql_select_req,
-                        #riak_kv_sql_select_req_v1{bucket=Bucket,
-                                                   qry=Query},
-                        FilterVNodes, Sender, State) ->
-    ItemFilter = none,
-    handle_range_scan(Bucket, ItemFilter, Query,
-                      FilterVNodes, Sender, State, fun range_scan_result_fun_ack/2).
+    end.
 
 
 %% @doc Handle a coverage request.
@@ -1757,23 +1762,6 @@ handle_range_scan(Bucket, ItemFilter, Query,
         false ->
             {reply, {error, {indexes_not_supported, Mod}}, State}
     end.
-
-
-prepare_index_query(#riak_kv_index_v3{term_regex=RE} = Q) when
-        RE =/= undefined ->
-    {ok, CompiledRE} = re:compile(RE),
-    Q#riak_kv_index_v3{term_regex=CompiledRE};
-prepare_index_query(Q) ->
-    Q.
-
-%% @doc Batch size for results is set to 2i max_results if that is less
-%% than the default size. Without this the vnode may send back to the FSM
-%% more items than could ever be sent back to the client.
-buffer_size_for_index_query(#riak_kv_index_v3{max_results=N}, DefaultSize)
-  when is_integer(N), N < DefaultSize ->
-    N;
-buffer_size_for_index_query(_Q, DefaultSize) ->
-    DefaultSize.
 
 
 %% @doc
@@ -2252,26 +2240,6 @@ power10(Number, Count) ->
             Count
     end.
 
-handle_coverage_index(Bucket, ItemFilter, Query,
-                      FilterVNodes, Sender,
-                      State=#state{mod=Mod,
-                                   key_buf_size=DefaultBufSz,
-                                   modstate=ModState},
-                      ResultFun) ->
-    {ok, Capabilities} = Mod:capabilities(Bucket, ModState),
-    IndexBackend = lists:member(indexes, Capabilities),
-    case IndexBackend of
-        true ->
-            ok = riak_kv_stat:update(vnode_index_read),
-
-            BufSize = buffer_size_for_index_query(Query, DefaultBufSz),
-            Opts = [{index, Bucket, Query}, {bucket, Bucket}, {buffer_size, BufSize}],
-            FoldType = fold_type_for_query(Query),
-            handle_coverage_fold(FoldType, Bucket, ItemFilter, ResultFun,
-                                    FilterVNodes, Sender, Opts, State);
-        false ->
-            {reply, {error, {indexes_not_supported, Mod}}, State}
-    end.
 
 %% @doc
 %% Convenience for handling both v3 and v4 coverage-based key fold operations
@@ -2283,8 +2251,8 @@ handle_coverage_index(Bucket, ItemFilter, Query,
 %% will revert to standard async (and the core node_worker_pool will not be
 %% used).  Not supporting snap_prefold maintains legacy behaviour.
 handle_coverage_snapkeyfold(Bucket, ItemFilter, ResultFun,
-                      FilterVNodes, Sender, Opts,
-                      State) ->
+                            FilterVNodes, Sender, Opts,
+                            State) ->
     Opts0 = [request_snap_prefold|Opts],
     handle_coverage_fold(fold_keys, Bucket, ItemFilter, ResultFun,
                             FilterVNodes, Sender, Opts0, State).
@@ -2296,12 +2264,12 @@ handle_coverage_snapkeyfold(Bucket, ItemFilter, ResultFun,
 %% index operations, allow the ModFun for folding to be declared
 %% to support index operations that can return objects
 handle_coverage_fold(FoldType, Bucket, ItemFilter, ResultFun,
-                        FilterVNodes, Sender, Opts0,
-                        State=#state{async_folding=AsyncFolding,
-                                     idx=Index,
-                                     key_buf_size=DefaultBufSz,
-                                     mod=Mod,
-                                     modstate=ModState}) ->
+                     FilterVNodes, Sender, Opts0,
+                     State=#state{async_folding=AsyncFolding,
+                                  idx=Index,
+                                  key_buf_size=DefaultBufSz,
+                                  mod=Mod,
+                                  modstate=ModState}) ->
     %% Construct the filter function
     FilterVNode = proplists:get_value(Index, FilterVNodes),
     KeyConvFn =
@@ -2806,7 +2774,6 @@ do_put(Sender, {Bucket, _Key}=BKey, RObj, ReqID, StartTime, Options, State) ->
                 end,
     Coord = proplists:get_value(coord, Options, false),
     CRDTOp = proplists:get_value(counter_op, Options, proplists:get_value(crdt_op, Options, undefined)),
-    WriteOnce = proplists:get_value(write_once, Options, not_write_once),
     PutArgs = #putargs{returnbody=proplists:get_value(returnbody,Options,false) orelse Coord,
                        coord=Coord,
                        lww=proplists:get_value(last_write_wins, BProps, false),
@@ -2817,8 +2784,7 @@ do_put(Sender, {Bucket, _Key}=BKey, RObj, ReqID, StartTime, Options, State) ->
                        starttime=StartTime,
                        readrepair = ReadRepair,
                        prunetime=PruneTime,
-                       crdt_op = CRDTOp,
-                       write_once = WriteOnce},
+                       crdt_op = CRDTOp},
     {PrepPutRes, UpdPutArgs, State2} = prepare_put(State, PutArgs),
     {Reply, UpdState} = perform_put(PrepPutRes, State2, UpdPutArgs),
     riak_core_vnode:reply(Sender, Reply),
@@ -2895,7 +2861,6 @@ prepare_put(State=#state{vnodeid = VId,
                              lww = LWW,
                              coord = Coord,
                              robj = RObj,
-                             starttime = StartTime,
                              bprops = BProps,
                              starttime = StartTime}) ->
 
@@ -3561,7 +3526,7 @@ result_fun_ack(Bucket, Sender) ->
     end.
 
 %% ------------------------------------------------------------
-%% Specialization of result_fun_ack for range scans.  
+%% Specialization of result_fun_ack for range scans.
 %%
 %% This version checks the cluster capabilities for {riak_kv,
 %% decode_query_results_at_vnode}.
@@ -3582,7 +3547,7 @@ result_fun_ack(Bucket, Sender) ->
 
 range_scan_result_fun_ack(Bucket, Sender) ->
     fun(Items) ->
-	    range_scan_result_fun_ack(Bucket, Sender, Items)
+            range_scan_result_fun_ack(Bucket, Sender, Items)
     end.
 
 range_scan_result_fun_ack(Bucket, Sender, Items) ->
@@ -3591,34 +3556,34 @@ range_scan_result_fun_ack(Bucket, Sender, Items) ->
     %% Check capabilities.  If upgraded, decode the results
     %% here.  If mixed, delegate decoding to the coordinator,
     %% as before
-    
+
     case riak_core_capability:get({riak_kv, decode_query_results_at_vnode}) of
-	true ->
-	    DecodedItems = riak_kv_qry_worker:decode_results(lists:flatten(Items)),
-	    
-	    %% Instead of simply sending DecodedItems as the
-	    %% payload, we send a tuple indicating that the
-	    %% items have already been decoded.  This allows
-	    %% the receiver to distinguish between results
-	    %% that have already been decoded by the vnode
-	    %% (new behavior indicated by {riak_kv,
-	    %% sql_select_decode_results} capability), and
-	    %% results that have not (TS behavior prior to
-	    %% this change)
-	    
-	    riak_core_vnode:reply(Sender, {{self(), Monitor}, Bucket, {decoded, DecodedItems}});
-	_ ->
-	    riak_core_vnode:reply(Sender, {{self(), Monitor}, Bucket, Items})
+        true ->
+            DecodedItems = riak_kv_qry_worker:decode_results(lists:flatten(Items)),
+
+            %% Instead of simply sending DecodedItems as the
+            %% payload, we send a tuple indicating that the
+            %% items have already been decoded.  This allows
+            %% the receiver to distinguish between results
+            %% that have already been decoded by the vnode
+            %% (new behavior indicated by {riak_kv,
+            %% sql_select_decode_results} capability), and
+            %% results that have not (TS behavior prior to
+            %% this change)
+
+            riak_core_vnode:reply(Sender, {{self(), Monitor}, Bucket, {decoded, DecodedItems}});
+        _ ->
+            riak_core_vnode:reply(Sender, {{self(), Monitor}, Bucket, Items})
     end,
-    
+
     receive
-	{Monitor, ok} ->
-	    erlang:demonitor(Monitor, [flush]);
-	{Monitor, stop_fold} ->
-	    erlang:demonitor(Monitor, [flush]),
-	    throw(stop_fold);
-	{'DOWN', Monitor, process, _Pid, _Reason} ->
-	    throw(receiver_down)
+        {Monitor, ok} ->
+            erlang:demonitor(Monitor, [flush]);
+        {Monitor, stop_fold} ->
+            erlang:demonitor(Monitor, [flush]),
+            throw(stop_fold);
+        {'DOWN', Monitor, process, _Pid, _Reason} ->
+            throw(receiver_down)
     end.
 
 %% @doc If a listkeys request sends a result of `{From, Bucket,
@@ -3720,15 +3685,6 @@ maybe_use_fold_heads(Capabilities, Opts, Mod) ->
             end;
         false ->
             fun Mod:fold_objects/4
-    end.
-
-fold_type_for_query(Query) ->
-    %% @HACK
-    %% Really this should be decided in the backend
-    %% if there was a index_query fun.
-    case riak_index:return_body(Query) of
-        true -> fold_objects;
-        false -> fold_keys
     end.
 
 -spec maybe_enable_async_fold(boolean(), list(), list()) -> list().
@@ -4028,23 +3984,29 @@ maybe_old_object(unknown_no_old_object) ->
 maybe_old_object(OldObject) ->
     OldObject.
 
-
--spec update_hashtree(binary(), binary(), riak_object:riak_object(), pid(),
-                        boolean()) -> ok.
+-spec update_hashtree(binary(), binary(),
+                      riak_object:riak_object() | binary(),
+                      state()) -> ok.
 %% @doc
 %% Update hashtree based AAE when enabled.
 %% Note that this requires an object copy - the object has been converted from
 %% a binary before being sent to another pid.  Also, all information on the
 %% object is ignored other than that necessary to hash the object.  There is
 %% scope for greater efficiency here, even without moving to Tictac AAE
-update_hashtree(Bucket, Key, RObj, Trees, Async) ->
+update_hashtree(_Bucket, _Key, _RObj, #state{hashtrees=undefined}) ->
+    ok;
+update_hashtree(Bucket, Key, BinObj, State) when is_binary(BinObj) ->
+    RObj = riak_object:from_binary(Bucket, Key, BinObj),
+    update_hashtree(Bucket, Key, RObj, State);
+update_hashtree(Bucket, Key, RObj, #state{hashtrees=Trees}) ->
     Items = [{object, {Bucket, Key}, RObj}],
-    case Async of
+    case get_hashtree_token() of
         true ->
             riak_kv_index_hashtree:async_insert(Items, [], Trees),
             ok;
         false ->
             riak_kv_index_hashtree:insert(Items, [], Trees),
+            put(hashtree_tokens, max_hashtree_tokens()),
             ok
     end.
 

@@ -57,7 +57,7 @@
 %% accumulators for different types of query results.
 -type rows_acc()      :: [{non_neg_integer(), list()}].
 -type aggregate_acc() :: [{binary(), term()}].
--type group_by_acc()  :: {group_by, InitialState::term(), Groups::dict()}.
+-type group_by_acc()  :: {group_by, InitialState::term(), Groups::dict:dict()}.
 
 -record(state, {
           qry           = none                :: none | ?SQL_SELECT{},

@@ -272,8 +272,8 @@ to_json(RD, #ctx{api_call = get, object = Object, mod = Mod} = Ctx) ->
             riak_kv_wm_ts_util:handle_error({riak_error, Reason}, RD, Ctx)
     end.
 
--spec row_to_json_compat(list(tuple(binary(), term())), atom()) ->
-                                list(tuple(binary(), term())).
+-spec row_to_json_compat(list({binary(), term()}), atom()) ->
+                                list({binary(), term()}).
 row_to_json_compat(Row, Mod) ->
     lists:map(fun(R) -> field_to_json_compat(R, Mod) end, Row).
 

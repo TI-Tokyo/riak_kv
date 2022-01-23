@@ -91,36 +91,15 @@ validate_query(Req) ->
             Query
     end.
 
+
 ensure_compiled_re(TermRe) ->
     case TermRe of
         undefined ->
             {undefined, undefined};
         _ ->
             re:compile(TermRe)
-    end,
-
-    IsSystemIndex = riak_index:is_system_index(Index),
-
-    if
-        QType == eq andalso not is_binary(SKey) ->
-            {error, {format, "Invalid equality query ~p", [SKey]}};
-        QType == range andalso not(is_binary(Min) andalso is_binary(Max)) ->
-            {error, {format, "Invalid range query: ~p -> ~p", [Min, Max]}};
-        ValRe =:= error ->
-            {error, {format, "Invalid term regular expression ~p : ~p",
-                     [TermRe, ValErr]}};
-        RB andalso not IsSystemIndex ->
-            {error, {format, "For return_body=true index must be one of ~p", [riak_index:system_index_list()]}};
-        true ->
-            Query = riak_index:to_index_query(query_params(Req)),
-            case Query of
-                {ok, ?KV_INDEX_Q{start_term=Start, term_regex=Re}} when is_integer(Start)
-                       andalso Re =/= undefined ->
-                    {error, "Can not use term regular expression in integer query"};
-                _ ->
-                    Query
-            end
     end.
+
 
 %% @doc process/2 callback. Handles an incoming request message.
 process(#rpbindexreq{stream = S} = Req, State) ->

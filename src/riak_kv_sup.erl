@@ -126,10 +126,6 @@ init([]) ->
         HotBackupAAEFsmSup,
         [EnsemblesKV || riak_core_sup:ensembles_enabled()],
 	QrySup,
-        JSSup,
-        MapJSPool,
-        ReduceJSPool,
-        HookJSPool,
         HTTPCache
     ]),
 
