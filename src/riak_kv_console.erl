@@ -42,6 +42,7 @@
          bucket_type_status/1,
          bucket_type_activate/1,
          bucket_type_create/1,
+         bucket_type_create_from_file/1,
          bucket_type_update/1,
          bucket_type_reset/1,
          bucket_type_list/1]).
@@ -496,6 +497,14 @@ bucket_type_print_activate_result(Type, {error, undefined}, _IsFirst) ->
 bucket_type_print_activate_result(Type, {error, not_ready}, _IsFirst) ->
     bucket_type_print_status(Type, created).
 
+bucket_type_create_from_file([TypeStr, Filename]) ->
+    case file:read_file(Filename) of
+        {ok, Props} ->
+            bucket_type_create([TypeStr, Props]);
+        {error, Reason} ->
+            io:format("Failed to read bucket properties from ~s: ~p\n", [Filename, Reason])
+    end.
+
 bucket_type_create([TypeStr, PropsStr]) ->
     Type = unicode:characters_to_binary(TypeStr, utf8, utf8),
     CreateTypeFn =
@@ -503,7 +512,10 @@ bucket_type_create([TypeStr, PropsStr]) ->
             Result = riak_core_bucket_type:create(Type, Props),
             bucket_type_print_create_result(Type, Result)
         end,
-    bucket_type_create(CreateTypeFn, Type, decode_json_props(PropsStr)).
+    bucket_type_create(CreateTypeFn, Type, decode_json_props(PropsStr));
+bucket_type_create([TypeStr | PropsStrSplit]) ->
+    PropsStr = lists:flatten(lists:join(" ", PropsStrSplit)),
+    bucket_type_create([TypeStr, PropsStr]).
 
 %% Attempt to decode the json to string or provide defaults if empty.
 %% mochijson2 has no types exported so returning any.
