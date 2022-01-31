@@ -31,6 +31,7 @@
          fallback/4,
          expand_value/3,
          expand_rw_value/4,
+         expand_sync_on_write/2,
          normalize_rw_value/2,
          make_request/2,
          get_index_n/1,
@@ -48,7 +49,8 @@
          get_write_once/1,
          overload_reply/1,
          get_backend_config/3,
-         is_modfun_allowed/2]).
+         is_modfun_allowed/2,
+         shuffle_list/1]).
 -export([report_hashtree_tokens/0, reset_hashtree_tokens/2]).
 
 -include_lib("riak_kv_vnode.hrl").
@@ -159,6 +161,20 @@ expand_value(Type, default, BucketProps) ->
     get_bucket_option(Type, BucketProps);
 expand_value(_Type, Value, _BucketProps) ->
     Value.
+
+expand_sync_on_write(default, BucketProps) ->
+    normalize_value(get_bucket_option(sync_on_write, BucketProps));
+expand_sync_on_write(Value, _BucketProps) ->
+    Value.
+
+normalize_value(Val) when is_atom(Val) ->
+    Val;
+normalize_value(Val) when is_binary(Val) ->
+    try
+        binary_to_existing_atom(Val, utf8)
+    catch _:badarg ->
+        error
+    end.
 
 expand_rw_value(Type, default, BucketProps, N) ->
     normalize_rw_value(get_bucket_option(Type, BucketProps), N);
@@ -274,7 +290,7 @@ preflist_siblings(Index, N, Ring) ->
     lists:reverse(Pred) ++ Succ.
 
 -spec responsible_preflists(index()) -> [index_n()].
-responsible_preflists(Index) when is_integer(Index) ->
+responsible_preflists(Index) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     responsible_preflists(Index, Ring).
 
@@ -482,6 +498,12 @@ is_modfun_allowed(Mod, _Fun) ->
         _ ->
             true
     end.
+
+
+-spec shuffle_list(list()) -> list().
+shuffle_list(L) ->
+    lists:map(fun({_R, X0}) -> X0 end,
+        lists:keysort(1, lists:map(fun(X) -> {rand:uniform(), X} end, L))).
 
 
 %% ===================================================================
