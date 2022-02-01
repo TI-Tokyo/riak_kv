@@ -1621,12 +1621,12 @@ decode_maybe_binary(<<_Other:8, Bin/binary>>) ->
 sub_encode(Bin, erlang) ->
     <<?ERLT2B_MAGIC:8/integer, (term_to_binary(Bin))/binary>>;
 sub_encode(Bin, msgpack) ->
-    <<?MSGPACK_MAGIC:8/integer, (msgpack:pack(Bin, [{format, jsx}]))/binary>>.
+    <<?MSGPACK_MAGIC:8/integer, (msgpack:pack(Bin))/binary>>.
 
 sub_decode(<<?ERLT2B_MAGIC:8/integer, Bin>>) ->
     binary_to_term(Bin);
 sub_decode(<<?MSGPACK_MAGIC:8/integer, Bin>>) ->
-    {ok, Unpacked} = msgpack:unpack(Bin, [{format, jsx}]),
+    {ok, Unpacked} = msgpack:unpack(Bin),
     Unpacked;
 sub_decode(Bin) ->
     try
