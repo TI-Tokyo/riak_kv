@@ -27,7 +27,8 @@
                   recon,
                   riakc,
                   riakhttpc,
-                  riak_ql
+                  riak_ql,
+                  msgpack
                  ]},
   {registered, []},
   {mod, {riak_kv_app, []}},
