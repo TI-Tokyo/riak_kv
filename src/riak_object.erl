@@ -1620,9 +1620,9 @@ sub_encode(Bin, erlang) ->
 sub_encode(Bin, msgpack) ->
     <<?MSGPACK_MAGIC:8/integer, (msgpack:pack(Bin))/binary>>.
 
-sub_decode(<<?ERLT2B_MAGIC:8/integer, Bin>>) ->
+sub_decode(<<?ERLT2B_MAGIC:8/integer, Bin/binary>>) ->
     binary_to_term(Bin);
-sub_decode(<<?MSGPACK_MAGIC:8/integer, Bin>>) ->
+sub_decode(<<?MSGPACK_MAGIC:8/integer, Bin/binary>>) ->
     {ok, Unpacked} = msgpack:unpack(Bin),
     Unpacked;
 sub_decode(Bin) ->
