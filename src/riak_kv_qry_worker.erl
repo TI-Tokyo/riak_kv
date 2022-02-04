@@ -204,8 +204,7 @@ decode_results([{_,V}|Tail]) when is_binary(V) ->
             %% record was deleted
             decode_results(Tail);
         FullRecord ->
-            Values = [CellValue || {_, CellValue} <- FullRecord],
-            [Values | decode_results(Tail)]
+            [FullRecord | decode_results(Tail)]
     end.
 
 %% Send a message to this process to get the next query.
