@@ -3954,32 +3954,6 @@ maybe_old_object(unknown_no_old_object) ->
 maybe_old_object(OldObject) ->
     OldObject.
 
--spec update_hashtree(binary(), binary(),
-                      riak_object:riak_object() | binary(),
-                      state()) -> ok.
-%% @doc
-%% Update hashtree based AAE when enabled.
-%% Note that this requires an object copy - the object has been converted from
-%% a binary before being sent to another pid.  Also, all information on the
-%% object is ignored other than that necessary to hash the object.  There is
-%% scope for greater efficiency here, even without moving to Tictac AAE
-update_hashtree(_Bucket, _Key, _RObj, #state{hashtrees=undefined}) ->
-    ok;
-update_hashtree(Bucket, Key, BinObj, State) when is_binary(BinObj) ->
-    RObj = riak_object:from_binary(Bucket, Key, BinObj),
-    update_hashtree(Bucket, Key, RObj, State);
-update_hashtree(Bucket, Key, RObj, #state{hashtrees=Trees}) ->
-    Items = [{object, {Bucket, Key}, RObj}],
-    case get_hashtree_token() of
-        true ->
-            riak_kv_index_hashtree:async_insert(Items, [], Trees),
-            ok;
-        false ->
-            riak_kv_index_hashtree:insert(Items, [], Trees),
-            put(hashtree_tokens, max_hashtree_tokens()),
-            ok
-    end.
-
 -spec update_hashtree_for_aae(binary(), binary(), riak_object:riak_object(), pid(),
                               boolean()) -> ok.
 %% @doc
