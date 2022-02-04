@@ -289,9 +289,9 @@ sub_tsputreq(Mod, _DDL, #tsputreq{table = Table, rows = Rows},
 
 %% NB: since this method deals with PB and TTB messages, the message must be fully
 %% decoded before sub_tsgetreq is called
-sub_tsgetreq(Mod, _DDL, #tsgetreq{table = Table,
-                                  key    = CompoundKey,
-                                  timeout = Timeout},
+sub_tsgetreq(Mod, DDL, #tsgetreq{table = Table,
+                                 key    = CompoundKey,
+                                 timeout = Timeout},
              State) ->
     Options =
         if Timeout == undefined -> [];
