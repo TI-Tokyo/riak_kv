@@ -101,17 +101,6 @@
 -export([put_merge/6]). %% For fsm_eqc_vnode
 -endif.
 
--ifdef(TEST).
-%% Use values so that test compile doesn't give 'unused vars' warning.
--define(INDEX(A,B,C), _=element(1,{{_A1, _A2} = A,B,C}), ok).
--define(INDEX_BIN(A,B,C,D,E), _=element(1,{A,B,C,D,E}), ok).
--define(IS_SEARCH_ENABLED_FOR_BUCKET(BProps), _=element(1, {BProps}), false).
--else.
--define(INDEX(Objects, Reason, Partition), yz_kv:index(Objects, Reason, Partition)).
--define(INDEX_BIN(Bucket, Key, Obj, Reason, Partition), yz_kv:index_binary(Bucket, Key, Obj, Reason, Partition)).
--define(IS_SEARCH_ENABLED_FOR_BUCKET(BProps), yz_kv:is_search_enabled_for_bucket(BProps)).
--endif.
-
 -record(mrjob, {cachekey :: term(),
                 bkey :: term(),
                 reqid :: term(),
@@ -1519,15 +1508,12 @@ handle_request(kv_w1c_put_request, Req, Sender, State=#state{async_put=true}) ->
     ReplicaType = riak_kv_requests:get_replica_type(Req),
     Mod = State#state.mod,
     ModState = State#state.modstate,
-    Idx = State#state.idx,
     StartTS = os:timestamp(),
     Context = {w1c_async_put, Sender, ReplicaType, Bucket, Key, EncodedVal, StartTS},
     %% NOTE: sync_put is TS-only, async_put is KV default
-    case Mod:sync_put(Context, Bucket, Key, EncodedVal, ModState) of
+    case Mod:async_put(Context, Bucket, Key, EncodedVal, ModState) of
         {ok, UpModState} ->
-            update_hashtree(Bucket, Key, EncodedVal, State),
-            ?INDEX_BIN(Bucket, Key, EncodedVal, put, Idx),
-            {reply, ?KV_W1C_PUT_REPLY{reply=ok, type=ReplicaType}, State#state{modstate=UpModState}};
+            {noreply, State#state{modstate=UpModState}};
         {error, Reason, UpModState} ->
             {reply, ?KV_W1C_PUT_REPLY{reply={error, Reason}, type=ReplicaType}, State#state{modstate=UpModState}}
     end;

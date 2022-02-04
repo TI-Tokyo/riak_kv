@@ -303,11 +303,9 @@ sub_tsgetreq(Mod, _DDL, #tsgetreq{table = Table,
     case riak_kv_ts_api:get_data(
            CompoundKey, Table, Mod, Options) of
         {ok, Record} ->
-            {ColumnNames, Row} = lists:unzip(Record),
-            %% the columns stored in riak_object are just
-            %% names; we need names with types, so:
-            ColumnTypes = riak_kv_ts_util:get_column_types(ColumnNames, Mod),
-            {reply, make_tsgetresp(ColumnNames, ColumnTypes, [list_to_tuple(Row)]), State};
+            ColumnNames = [CN || #riak_field_v1{name = CN} <- DDL?DDL.fields],
+            ColumnTypes = [CT || #riak_field_v1{type = CT} <- DDL?DDL.fields],
+            {reply, make_tsgetresp(ColumnNames, ColumnTypes, [list_to_tuple(Record)]), State};
         {error, no_type} ->
             {reply, make_table_not_activated_resp(Table), State};
         {error, {bad_key_length, Got, Need}} ->
