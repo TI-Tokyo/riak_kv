@@ -29,7 +29,7 @@
 -export([run_select/2, run_select/3]).
 
 -ifdef(TEST).
--compile(export_all).
+-compile([nowarn_export_all, export_all]).
 -endif.
 
 -type compiled_select() :: fun((_,_) -> riak_pb_ts_codec:ldbvalue()).
@@ -1564,7 +1564,7 @@ simple_spanning_boundary_precision_test() ->
         test_data_where_clause(<<"Scotland">>, <<"user_1">>, [{3000, 15000}, {15000, 30000}]),
     _PK = get_standard_pk(),
     _LK = get_standard_lk(),
-    {ok, [Select1, Select2]} = compile(DDL, Q, 5),
+    {ok, [Select1, Select2]} = compile(DDL, Q),
     ?assertEqual(
         [Where1, Where2],
         [Select1?SQL_SELECT.'WHERE', Select2?SQL_SELECT.'WHERE']
@@ -2367,7 +2367,7 @@ no_quantum_in_query_1_test() ->
         "PRIMARY KEY  ((a,b), a,b))"),
     {ok, Q} = get_query(
           "SELECT * FROM tab1 WHERE a = 1 AND b = 1"),
-    {ok, [?SQL_SELECT{ 'WHERE' = Where }]} = compile(DDL, Q, 100),
+    {ok, [?SQL_SELECT{ 'WHERE' = Where }]} = compile(DDL, Q),
     ?assertEqual(
         [{startkey,[{<<"a">>,timestamp,1},{<<"b">>,varchar,1}]},
          {endkey,  [{<<"a">>,timestamp,1},{<<"b">>,varchar,1}]},
@@ -2444,7 +2444,7 @@ eqality_filter_on_quantum_specifies_start_and_end_range_test() ->
         "PRIMARY KEY  ((quantum(a, 15, 's')), a))"),
     {ok, Q} = get_query(
           "SELECT * FROM tab1 WHERE a = 1000"),
-    {ok, [Select]} = compile(DDL, Q, 100),
+    {ok, [Select]} = compile(DDL, Q),
     ?assertEqual(
         [{startkey,[{<<"a">>,timestamp,1000}]},
          {endkey,[{<<"a">>,timestamp,1000}]},
@@ -2487,7 +2487,7 @@ cannot_have_two_equality_filters_on_quantum_without_range_test() ->
     ?assertEqual(
         {error, {cannot_have_two_equality_filters_on_quantum_without_range,
                  ?E_CANNOT_HAVE_TWO_EQUALITY_FILTERS_ON_QUANTUM_WITHOUT_RANGE}},
-        compile(DDL, Q, 100)
+        compile(DDL, Q)
     ).
 
 two_element_key_range_cannot_match_test() ->
@@ -2638,7 +2638,7 @@ query_desc_order_on_quantum_at_quanta_boundaries_test() ->
     {ok, Q} = get_query(
           "SELECT * FROM table1 "
           "WHERE a = 1 AND b = 1 AND c >= 4000 AND c <= 5000"),
-    {ok, SubQueries} = compile(helper_desc_order_on_quantum_ddl(), Q, 100),
+    {ok, SubQueries} = compile(helper_desc_order_on_quantum_ddl(), Q),
     SubQueryWheres = [S?SQL_SELECT.'WHERE' || S <- SubQueries],
     ?assertEqual(
         [
@@ -2661,7 +2661,7 @@ fix_subquery_order_test() ->
     {ok, Q} = get_query(
           "SELECT * FROM table1 "
           "WHERE a = 1 AND b = 1 AND c >= 4000 AND c <= 5000"),
-    {ok, SubQueries} = compile(helper_desc_order_on_quantum_ddl(), Q, 100),
+    {ok, SubQueries} = compile(helper_desc_order_on_quantum_ddl(), Q),
     ?assertEqual(
         [
             [{startkey,[{<<"a">>,sint64,1},{<<"b">>,sint64,1},{<<"c">>,timestamp,5000}]},
@@ -2683,7 +2683,7 @@ query_desc_order_on_quantum_at_quantum_across_quanta_test() ->
     {ok, Q} = get_query(
           "SELECT * FROM table1 "
           "WHERE a = 1 AND b = 1 AND c >= 3500 AND c <= 5500"),
-    {ok, SubQueries} = compile(helper_desc_order_on_quantum_ddl(), Q, 100),
+    {ok, SubQueries} = compile(helper_desc_order_on_quantum_ddl(), Q),
     SubQueryWheres = [S?SQL_SELECT.'WHERE' || S <- SubQueries],
     ?assertEqual(
         [

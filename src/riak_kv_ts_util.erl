@@ -51,7 +51,7 @@
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
--compile(export_all).
+-compile([nowarn_export_all, export_all]).
 -endif.
 
 -define(TABLE_ACTIVATE_WAIT, 30). %%<< make TABLE_ACTIVATE_WAIT configurable in tsqueryreq
@@ -974,12 +974,6 @@ timestamp_parsing_test() ->
 
 
 
-%%
-helper_sql_to_module(SQL) ->
-    Lexed = riak_ql_lexer:get_tokens(SQL),
-    {ddl, DDL, _Props} = riak_ql_parser:ql_parse(Lexed),
-    {module, _Module} = riak_ql_ddl_compiler:compile_and_load_from_tmp(DDL).
-
 check_table_feature_supported_error_test() ->
     ?assertEqual(
         {error, myerror},
@@ -1054,66 +1048,9 @@ rm_rf_test() ->
 
 
 
-%%
 helper_sql_to_module(SQL) ->
     Lexed = riak_ql_lexer:get_tokens(SQL),
     {ddl, DDL, _Props} = riak_ql_parser:ql_parse(Lexed),
     {module, _Module} = riak_ql_ddl_compiler:compile_and_load_from_tmp(DDL).
 
-check_table_feature_supported_error_test() ->
-    ?assertEqual(
-        {error, myerror},
-        check_table_feature_supported(v2, {error, myerror})
-    ).
-
-check_table_feature_supported_is_supported_v1_test() ->
-    Table =
-        "CREATE TABLE check_table_feature_supported_is_supported_v1_test ("
-        " a varchar not null,"
-        " b varchar not null,"
-        " c timestamp not null,"
-        " primary key ((a, b, quantum(c, 1, 'm')), a, b, c))",
-    {module, _Mod} = helper_sql_to_module(Table),
-    DecodedReq = {ok, req, {"perm", <<"check_table_feature_supported_is_supported_v1_test">>}},
-    ?assertEqual(
-       DecodedReq,
-       check_table_feature_supported(v1, DecodedReq)
-    ).
-
-check_table_feature_supported_is_supported_v2_test() ->
-    Table =
-        "CREATE TABLE check_table_feature_supported_is_supported_v2_test ("
-        " a varchar not null,"
-        " b varchar not null,"
-        " c timestamp not null,"
-        " primary key ((a, b, quantum(c, 1, 'm')), a, b, c))",
-    {module, _Mod} = helper_sql_to_module(Table),
-    DecodedReq = {ok, req, {"perm", <<"check_table_feature_supported_is_supported_v2_test">>}},
-    ?assertEqual(
-       DecodedReq,
-       check_table_feature_supported(v2, DecodedReq)
-    ).
-
-check_table_feature_supported_not_supported_test() ->
-    Table =
-        "CREATE TABLE check_table_feature_supported_not_supported_test ("
-        " a varchar not null,"
-        " b varchar not null,"
-        " c timestamp not null,"
-        " primary key ((a, b, quantum(c, 1, 'm')), a, b, c DESC))",
-    {module, _Mod} = helper_sql_to_module(Table),
-    DecodedReq = {ok, req, {"perm", <<"check_table_feature_supported_not_supported_test">>}},
-    ?assertMatch(
-        {error, _},
-        check_table_feature_supported(v1, DecodedReq)
-    ).
-
-check_table_feature_supported_when_table_is_disabled_test() ->
-    Table = <<"check_table_feature_supported_when_table_is_disabled_test">>,
-    {module, _Mod} = riak_ql_ddl_compiler:compile_and_load_disabled_module_from_tmp(Table),
-    DecodedReq = {ok, req, {"perm", Table}},
-    ?assertMatch(
-        {error, _},
-        check_table_feature_supported(v2, DecodedReq)
-    ).
 -endif.

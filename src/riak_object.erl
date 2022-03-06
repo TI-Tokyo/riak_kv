@@ -1797,7 +1797,7 @@ get_binary_type_tag_and_metadata_from_full_binary(Binary) ->
     <<ValLen:32/integer, ValBin:ValLen/binary, MetaLen:32/integer, MetaBinRest:MetaLen/binary>> = SibsBin,
     <<_LMMega:32/integer, _LMSecs:32/integer, _LMMicro:32/integer, VTagLen:8/integer, _VTag:VTagLen/binary, _Deleted:1/binary-unit:8, MetaBin/binary>> = MetaBinRest,
     <<FirstBinaryByte:8, _Rest/binary>> = ValBin,
-    {FirstBinaryByte, dict:from_list(meta_of_binary(MetaBin, [], erlang))}.
+    {FirstBinaryByte, dict:from_list(meta_of_binary(MetaBin, []))}.
 
 
 convert_object_to_headonly(B, K, Object) ->

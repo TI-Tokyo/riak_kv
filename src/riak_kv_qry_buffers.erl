@@ -700,7 +700,7 @@ fmt(F, A) ->
 %%%===================================================================
 
 -ifdef(TEST).
--compile(export_all).
+-compile([nowarn_export_all, export_all]).
 -include_lib("eunit/include/eunit.hrl").
 
 make_qbuf_id_test() ->

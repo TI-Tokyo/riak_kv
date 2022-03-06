@@ -580,7 +580,7 @@ sql_select_group_by(?SQL_SELECT{ group_by = GroupBy }) ->
 %%%===================================================================
 
 -ifdef(TEST).
--compile(export_all).
+-compile([nowarn_export_all, export_all]).
 -include_lib("eunit/include/eunit.hrl").
 
 prepare_final_results_test() ->

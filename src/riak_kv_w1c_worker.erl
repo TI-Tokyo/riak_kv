@@ -24,7 +24,7 @@
           [{gen_fsm, send_event, 2}]}).
 
 -ifdef(TEST).
--compile(export_all).
+-compile([nowarn_export_all, export_all]).
 -endif.
 
 %% API
