@@ -2257,9 +2257,8 @@ vclock_codec_test() ->
     [ ?assertEqual({Method, VC}, {Method, decode_vclock(encode_vclock(Method, VC))})
      || VC <- VCs, Method <- [encode_raw, encode_zlib]].
 
-packObj_test() ->
-    io:format("packObj_test~n"),
-    Obj = riak_object:new(<<"bucket">>, <<"key">>, [{<<"field1">>, 1}, {<<"field2">>, 2.123}]),
+pack_obj_test() ->
+    Obj = riak_object:new(<<"bucket">>, <<"key">>, [1, 2.123]),
     PackedErl = riak_object:to_binary(v1, Obj, erlang),
     PackedMsg = riak_object:to_binary(v1, Obj, msgpack),
     ObjErl = riak_object:from_binary(<<"bucket">>, <<"key">>, PackedErl),
