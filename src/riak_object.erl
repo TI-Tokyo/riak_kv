@@ -57,7 +57,7 @@
           key :: key(),
           contents :: list(r_content()),
           vclock = vclock:fresh() :: vclock:vclock(),
-          updatemetadata=dict:from_list([{clean, true}]) :: riak_object_dict(),
+          updatemetadata = new_clean_metadata() :: riak_object_dict(),
           updatevalue :: term()
          }).
 -record(p_object, {
@@ -143,7 +143,7 @@ new(B, K, V, MD) when is_binary(B), is_binary(K) ->
     new_int(B, K, V, MD).
 
 newts(B, K, V, MD) ->
-    new_int2(B, K, V, MD).
+    new_int(B, K, V, MD).
 
 -spec is_ts(riak_object()) -> {'true', pos_integer()} | 'false'.
 is_ts(RObj) ->
@@ -167,16 +167,22 @@ new_int(B, K, V, MD) ->
         false ->
             case MD of
                 no_initial_metadata ->
-                    new_int2(B, K, V, dict:new());
+                    Contents = [#r_content{metadata=dict:new(), value=V}],
+                    #r_object{bucket=B, key=K,
+                              contents=Contents,
+                              vclock=vclock:fresh()};
                 _ ->
-                    new_int2(B, K, V, MD)
+                    Contents = [#r_content{metadata=MD, value=V}],
+                    #r_object{bucket=B, key=K,
+                              updatemetadata=MD,
+                              contents=Contents,
+                              vclock=vclock:fresh()}
             end
     end.
 
-new_int2(B, K, V, MD) ->
-    Contents = [#r_content{metadata=MD, value=V}],
-    #r_object{bucket=B,key=K,updatemetadata=MD,
-              contents=Contents,vclock=vclock:fresh()}.
+
+new_clean_metadata() ->
+    dict:store(clean, true, dict:new()).
 
 -spec is_robject(any()) -> boolean()|proxy.
 %% Is this a recognised riak object
@@ -470,8 +476,8 @@ merge(OldObject=#r_object{}, NewObject=#r_object{}) ->
             OldObject#r_object{contents=Contents,
                 vclock=vclock:merge([OldObject#r_object.vclock,
                     NewObj1#r_object.vclock]),
-                updatemetadata=dict:store(clean, true, dict:new()),
-                updatevalue=undefined}
+                updatemetadata = new_clean_metadata(),
+                updatevalue = undefined}
     end.
 
 %% @doc Special case write_once merge, in the case where the write_once property is
