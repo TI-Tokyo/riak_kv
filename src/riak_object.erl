@@ -163,7 +163,7 @@ check_for_ddl(_) ->
 new_int(B, K, V, MD) ->
     case size(K) > ?MAX_KEY_SIZE of
         true ->
-            throw({error,key_too_large});
+            throw({error, key_too_large});
         false ->
             case MD of
                 no_initial_metadata ->
@@ -243,7 +243,7 @@ ancestors(Objects) ->
 %% @see vclock:dominates/2
 -spec strict_descendant(riak_object(), riak_object()) -> boolean().
 strict_descendant(O1, O2) ->
-    vclock:dominates(riak_object:vclock(O1), riak_object:vclock(O2)).
+    vclock:dominates(vclock(O1), vclock(O2)).
 
 %% @doc  Reconcile a list of riak objects.  If AllowMultiple is true,
 %%       the riak_object returned may contain multiple values if Objects
@@ -690,7 +690,7 @@ get_drop_candidate(Dot, Dict) ->
 %% types it should really only ever contain one or the other (and the
 %% accumulated CRDTs should have a single value), but it is better to
 %% be safe.
--spec merge_acc_to_contents(riak_object:bucket(), merge_acc())
+-spec merge_acc_to_contents(bucket(), merge_acc())
                            -> list(r_content()).
 merge_acc_to_contents(Bucket, MergeAcc) ->
     #merge_acc{keep=Keep, crdt=CRDTs} = MergeAcc,
@@ -900,7 +900,7 @@ hash(_Bucket, _Key, RObj=#r_object{}, Version) ->
 hash(_Bucket, _Key, PObj=#p_object{}, Version) ->
     hash(PObj#p_object.r_object, Version);
 hash(Bucket, Key, ObjBin, Version) when is_binary(ObjBin) ->
-    hash(Bucket, Key, riak_object:from_binary(Bucket, Key, ObjBin), Version).
+    hash(Bucket, Key, from_binary(Bucket, Key, ObjBin), Version).
 
 
 %% @doc calculates the canonical hash of a riak object depending on version
@@ -915,7 +915,7 @@ hash(Obj=#r_object{}, _Version) ->
 legacy_hash(Obj=#r_object{}) ->
     % Blow up if we ever try performing a legacy hash on a proxy
     % object.
-    UpdObj = riak_object:set_vclock(Obj, lists:sort(vclock(Obj))),
+    UpdObj = set_vclock(Obj, lists:sort(vclock(Obj))),
     Hash = erlang:phash2(to_binary(v0, UpdObj)),
     term_to_binary(Hash).
 
@@ -1088,7 +1088,7 @@ set_contents(Object=#r_object{}, MVs) when is_list(MVs) ->
 %% @doc Transform the Erlang representation of the document's vclock
 %%      into something suitable for an HTTP header
 vclock_header(Doc) ->
-    VClock = riak_object:vclock(Doc),
+    VClock = vclock(Doc),
     EncodedVClock = binary_to_list(base64:encode(encode_vclock(VClock))),
     {?HEAD_VCLOCK, EncodedVClock}.
 
@@ -1231,8 +1231,8 @@ binary_version(<<?MAGIC:8/integer, 1:8/integer, _/binary>>) -> v1.
 %% @doc Encode for nextgen_repl
 -spec nextgenrepl_encode(repl_v1, riak_object(), boolean()) -> binary().
 nextgenrepl_encode(repl_v1, RObj, ToCompress) ->
-    B = riak_object:bucket(RObj),
-    K = riak_object:key(RObj),
+    B = bucket(RObj),
+    K = key(RObj),
     KS = byte_size(K),
     ObjBK =
         case B of
@@ -1250,10 +1250,10 @@ nextgenrepl_encode(repl_v1, RObj, ToCompress) ->
         case ToCompress of
             true ->
                 {<<1:4/integer, 1:1/integer, 0:3/integer>>,
-                    zlib:compress(riak_object:to_binary(v1, RObj))};
+                    zlib:compress(to_binary(v1, RObj))};
             false ->
                 {<<1:4/integer, 0:1/integer, 0:3/integer>>,
-                    riak_object:to_binary(v1, RObj)}
+                    to_binary(v1, RObj)}
         end,
     <<Version/binary, ObjBK/binary, ObjBin/binary>>.
 
@@ -1273,7 +1273,7 @@ nextgenrepl_decode(<<1:4/integer, C:1/integer, _:3/integer,
 nextgenrepl_decode(B, K, true, ObjBin) ->
     nextgenrepl_decode(B, K, false, zlib:uncompress(ObjBin));
 nextgenrepl_decode(B, K, false, ObjBin) ->
-    riak_object:from_binary(B, K, ObjBin).
+    from_binary(B, K, ObjBin).
 
 
 %% @doc Convert binary object to riak object
@@ -1648,7 +1648,7 @@ update_last_modified(RObj) ->
 %% Update X-Riak-VTag and X-Riak-Last-Modified in the object's metadata, if
 %% necessary with an external timestamp passed in.
 update_last_modified(RObj, TS) ->
-    MD0 = case dict:find(clean, riak_object:get_update_metadata(RObj)) of
+    MD0 = case dict:find(clean, get_update_metadata(RObj)) of
               {ok, true} ->
                   %% There have been no changes to updatemetadata. If we stash the
                   %% last modified in this dict, it will cause us to lose existing
@@ -1656,14 +1656,14 @@ update_last_modified(RObj, TS) ->
                   %% we can safely update that one, but in the case of multiple siblings,
                   %% it's hard to know which one to use. In that situation, use the update
                   %% metadata as is.
-                  case riak_object:get_metadatas(RObj) of
+                  case get_metadatas(RObj) of
                       [MD] ->
                           MD;
                       _ ->
-                          riak_object:get_update_metadata(RObj)
+                          get_update_metadata(RObj)
                   end;
                _ ->
-                  riak_object:get_update_metadata(RObj)
+                  get_update_metadata(RObj)
           end,
     %% Post-0.14.2 changed vtags to be generated from node/now rather the vclocks.
     %% The vclock has not been updated at this point.  Vtags/etags should really
@@ -1675,7 +1675,7 @@ update_last_modified(RObj, TS) ->
     %% the same second.  It can be revisited post-1.0.0.
     NewMD = dict:store(?MD_VTAG, riak_kv_util:make_vtag(TS),
                        dict:store(?MD_LASTMOD, TS, MD0)),
-    riak_object:update_metadata(RObj, NewMD).
+    update_metadata(RObj, NewMD).
 
 %% Get the last modified date from the metadata
 get_last_modified(MD) ->
@@ -1756,20 +1756,20 @@ object_test() ->
     B = <<"buckets_are_binaries">>,
     K = <<"keys are binaries">>,
     V = <<"values are anything">>,
-    O = riak_object:new(B, K, V),
-    B = riak_object:bucket(O),
-    K = riak_object:key(O),
-    V = riak_object:get_value(O),
-    1 = riak_object:value_count(O),
-    1 = length(riak_object:get_values(O)),
-    1 = length(riak_object:get_metadatas(O)),
+    O = new(B, K, V),
+    B = bucket(O),
+    K = key(O),
+    V = get_value(O),
+    1 = value_count(O),
+    1 = length(get_values(O)),
+    1 = length(get_metadatas(O)),
     O.
 
 val_encoding_term_test() ->
     B = <<"buckets are binaries">>,
     K = <<"keys are binaries">>,
     V = {a, tuple, is, a, valid, value},
-    Object = riak_object:new(B, K, V),
+    Object = new(B, K, V),
     Binary = to_binary(v1, Object),
     {FirstBinaryByte, _Meta} = get_binary_type_tag_and_metadata_from_full_binary(Binary),
     %% term_to_binary format is 0
@@ -1779,7 +1779,7 @@ val_encoding_bin_test() ->
     B = <<"buckets are binaries">>,
     K = <<"keys are binaries">>,
     V = <<"Some Binary Data">>,
-    Object = riak_object:new(B, K, V),
+    Object = new(B, K, V),
     Binary = to_binary(v1, Object),
     {FirstBinaryByte, _Meta} = get_binary_type_tag_and_metadata_from_full_binary(Binary),
     %% arbitrary binary format is 1
@@ -1789,7 +1789,7 @@ val_encoding_with_metadata_test() ->
     B = <<"buckets are binaries">>,
     K = <<"keys are binaries">>,
     V = <<"Some Binary Data">>,
-    Object = riak_object:new(B, K, V, dict:from_list([{?MD_VAL_ENCODING, 2}, {<<"X-Foo_MetaData">>, "Foo"}])),
+    Object = new(B, K, V, dict:from_list([{?MD_VAL_ENCODING, 2}, {<<"X-Foo_MetaData">>, "Foo"}])),
     Binary = to_binary(v1, Object),
     {FirstBinaryByte, Meta} = get_binary_type_tag_and_metadata_from_full_binary(Binary),
     %% When specified in metadata, use the val_encoding version
@@ -1835,9 +1835,9 @@ val_decoding_headresponse_test() ->
     B = <<"buckets are binaries">>,
     K = <<"keys are binaries">>,
     V = <<"Some value">>,
-    InObject = riak_object:new(B, K, V,
-                                dict:from_list([{?MD_VAL_ENCODING, 2},
-                                {<<"X-Foo_MetaData">>, "Foo"}])),
+    InObject = new(B, K, V,
+                   dict:from_list([{?MD_VAL_ENCODING, 2},
+                                   {<<"X-Foo_MetaData">>, "Foo"}])),
     OutObject = convert_object_to_headonly(B, K, InObject),
     C0 = lists:nth(1, OutObject#r_object.contents),
     ?assertMatch(head_only, C0#r_content.value).
@@ -1847,9 +1847,9 @@ find_bestobject_equal_test() ->
     B = <<"buckets are binaries">>,
     K = <<"keys are binaries">>,
     V = <<"Some value">>,
-    InObject = riak_object:new(B, K, V,
-                                dict:from_list([{?MD_VAL_ENCODING, 2},
-                                {<<"X-Foo_MetaData">>, "Foo"}])),
+    InObject = new(B, K, V,
+                   dict:from_list([{?MD_VAL_ENCODING, 2},
+                                   {<<"X-Foo_MetaData">>, "Foo"}])),
     Obj1 = InObject,
     Obj2 = InObject,
     Obj3 = convert_object_to_headonly(B, K, InObject),
@@ -1893,8 +1893,8 @@ find_bestobject_reconcile() ->
     B = <<"buckets_are_binaries">>,
     K = <<"keys are binaries">>,
     {Obj1, UpdO} = update_test(),
-    Obj2 = riak_object:increment_vclock(UpdO, one_pid),
-    Obj3 = riak_object:increment_vclock(UpdO, alt_pid),
+    Obj2 = increment_vclock(UpdO, one_pid),
+    Obj3 = increment_vclock(UpdO, alt_pid),
     Obj4 = convert_object_to_headonly(B, K, Obj2),
     Obj5 = convert_object_to_headonly(B, K, Obj1),
     ?assertMatch({[{2, {ok, Obj2}},
@@ -1926,7 +1926,7 @@ find_bestobject_reconcile() ->
                                         {3, {ok, Obj3}},
                                         {5, {ok, Obj5}}])),
 
-    Obj6 = riak_object:increment_vclock(Obj2, two_pid),
+    Obj6 = increment_vclock(Obj2, two_pid),
     Hdr6 = convert_object_to_headonly(B, K, Obj6),
 
     ?assertMatch({[{3, {ok, Obj3}}, {6, {ok, Obj6}}], []},
@@ -1967,9 +1967,9 @@ find_bestobject_reconcile() ->
 update_test() ->
     O = object_test(),
     V2 = <<"testvalue2">>,
-    O1 = riak_object:update_value(O, V2),
-    O2 = riak_object:apply_updates(O1),
-    V2 = riak_object:get_value(O2),
+    O1 = update_value(O, V2),
+    O2 = apply_updates(O1),
+    V2 = get_value(O2),
     {O,O2}.
 
 bucket_prop_needers_test_() ->
@@ -2008,9 +2008,9 @@ bucket_prop_needers_test_() ->
 ancestor() ->
     Actor = self(),
     {O,O2} = update_test(),
-    O3 = riak_object:increment_vclock(O2, Actor),
-    [O] = riak_object:ancestors([O,O3]),
-    MD = riak_object:get_metadata(O3),
+    O3 = increment_vclock(O2, Actor),
+    [O] = ancestors([O,O3]),
+    MD = get_metadata(O3),
     ?assertMatch({Actor, {1, _}}, dict:fetch(?DOT, MD)),
     {O,O3}.
 
@@ -2018,8 +2018,8 @@ ancestor_weird_clocks() ->
     %% make objects with dots / clocks that are causally the same but
     %% with different timestamps (backup - restore, riak_kv#679)
     {B, K} = {<<"b">>, <<"k">>},
-    A = riak_object:increment_vclock(riak_object:new(B, K, <<"a">>), a, 100),
-    AWat = riak_object:increment_vclock(riak_object:new(B, K, <<"b">>), a, 1000),
+    A = increment_vclock(new(B, K, <<"a">>), a, 100),
+    AWat = increment_vclock(new(B, K, <<"b">>), a, 1000),
     %% reconcile should neither as neither dominates the other (even
     %% though they're not equal)
     Ancestors = ancestors([A, AWat]),
@@ -2027,39 +2027,39 @@ ancestor_weird_clocks() ->
 
 reconcile() ->
     {O,O3} = ancestor(),
-    O3 = riak_object:reconcile([O,O3],true),
-    O3 = riak_object:reconcile([O,O3],false),
+    O3 = reconcile([O,O3],true),
+    O3 = reconcile([O,O3],false),
     {O,O3}.
 
 merge1() ->
     {O,O3} = reconcile(),
-    O3 = riak_object:syntactic_merge(O,O3),
+    O3 = syntactic_merge(O,O3),
     {O,O3}.
 
 merge2() ->
     B = <<"buckets_are_binaries">>,
     K = <<"keys are binaries">>,
     V = <<"testvalue2">>,
-    O1 = riak_object:increment_vclock(object_test(), node1),
-    O2 = riak_object:increment_vclock(riak_object:new(B,K,V), node2),
-    O3 = riak_object:syntactic_merge(O1, O2),
-    [node1, node2] = [N || {N,_} <- riak_object:vclock(O3)],
-    2 = riak_object:value_count(O3).
+    O1 = increment_vclock(object_test(), node1),
+    O2 = increment_vclock(new(B,K,V), node2),
+    O3 = syntactic_merge(O1, O2),
+    [node1, node2] = [N || {N,_} <- vclock(O3)],
+    2 = value_count(O3).
 
 merge3() ->
-    O0 = riak_object:new(<<"test">>, <<"test">>, hi),
-    O1 = riak_object:increment_vclock(O0, x),
-    ?assertEqual(O1, riak_object:syntactic_merge(O1, O1)).
+    O0 = new(<<"test">>, <<"test">>, hi),
+    O1 = increment_vclock(O0, x),
+    ?assertEqual(O1, syntactic_merge(O1, O1)).
 
 merge4() ->
-    O0 = riak_object:new(<<"test">>, <<"test">>, hi),
-    O1 = riak_object:increment_vclock(
-           riak_object:update_value(O0, bye), x),
-    OM = riak_object:syntactic_merge(O0, O1),
+    O0 = new(<<"test">>, <<"test">>, hi),
+    O1 = increment_vclock(
+           update_value(O0, bye), x),
+    OM = syntactic_merge(O0, O1),
     ?assertNot(O0 =:= OM),
     ?assertNot(O1 =:= OM), %% vclock should have updated
-    ?assertEqual(bye, riak_object:get_value(OM)),
-    OMp = riak_object:syntactic_merge(O1, O0),
+    ?assertEqual(bye, get_value(OM)),
+    OMp = syntactic_merge(O1, O0),
     ?assertEqual(OM, OMp), %% merge should be symmetric here
     {O0, O1}.
 
@@ -2067,72 +2067,72 @@ merge5() ->
     B = <<"buckets_are_binaries">>,
     K = <<"keys are binaries">>,
     V = <<"testvalue2">>,
-    O1 = riak_object:increment_vclock(object_test(), node1),
-    O2 = riak_object:increment_vclock(riak_object:new(B,K,V), node2),
-    ?assertEqual(riak_object:syntactic_merge(O1, O2),
-                 riak_object:syntactic_merge(O2, O1)).
+    O1 = increment_vclock(object_test(), node1),
+    O2 = increment_vclock(new(B,K,V), node2),
+    ?assertEqual(syntactic_merge(O1, O2),
+                 syntactic_merge(O2, O1)).
 
 inequality1() ->
     MD0 = dict:new(),
     MD = dict:store("X-Riak-Test", "value", MD0),
-    O1 = riak_object:new(<<"test">>, <<"a">>, "value"),
-    O2 = riak_object:new(<<"test">>, <<"a">>, "value"),
-    O3 = riak_object:increment_vclock(O1, self()),
-    O4 = riak_object:increment_vclock(O2, self()),
-    O5 = riak_object:update_metadata(O3, MD),
-    O6 = riak_object:update_metadata(O4, MD),
-    true = riak_object:equal(O5, O6).
+    O1 = new(<<"test">>, <<"a">>, "value"),
+    O2 = new(<<"test">>, <<"a">>, "value"),
+    O3 = increment_vclock(O1, self()),
+    O4 = increment_vclock(O2, self()),
+    O5 = update_metadata(O3, MD),
+    O6 = update_metadata(O4, MD),
+    true = equal(O5, O6).
 
 inequality_value_test() ->
-    O1 = riak_object:new(<<"test">>, <<"a">>, "value"),
-    O2 = riak_object:new(<<"test">>, <<"a">>, "value1"),
-    false = riak_object:equal(O1, O2).
+    O1 = new(<<"test">>, <<"a">>, "value"),
+    O2 = new(<<"test">>, <<"a">>, "value1"),
+    false = equal(O1, O2).
 
 inequality_multivalue_test() ->
-    O1 = riak_object:new(<<"test">>, <<"a">>, "value"),
-    [C] = riak_object:get_contents(O1),
-    O1p = riak_object:set_contents(O1, [C,C]),
-    false = riak_object:equal(O1, O1p),
-    false = riak_object:equal(O1p, O1).
+    O1 = new(<<"test">>, <<"a">>, "value"),
+    [C] = get_contents(O1),
+    O1p = set_contents(O1, [C,C]),
+    false = equal(O1, O1p),
+    false = equal(O1p, O1).
 
 inequality_metadata_test() ->
-    O1 = riak_object:new(<<"test">>, <<"a">>, "value"),
-    O2 = riak_object:new(<<"test">>, <<"a">>, "value"),
-    O1p = riak_object:apply_updates(
-            riak_object:update_metadata(
+    O1 = new(<<"test">>, <<"a">>, "value"),
+    O2 = new(<<"test">>, <<"a">>, "value"),
+    O1p = apply_updates(
+            update_metadata(
               O1, dict:store(<<"X-Riak-Test">>, "value",
-                             riak_object:get_metadata(O1)))),
-    false = riak_object:equal(O1p, O2).
+                             get_metadata(O1)))),
+    false = equal(O1p, O2).
 
 inequality_key_test() ->
-    O1 = riak_object:new(<<"test">>, <<"a">>, "value"),
-    O2 = riak_object:new(<<"test">>, <<"b">>, "value"),
-    false = riak_object:equal(O1, O2).
+    O1 = new(<<"test">>, <<"a">>, "value"),
+    O2 = new(<<"test">>, <<"b">>, "value"),
+    false = equal(O1, O2).
 
 inequality_vclock() ->
-    O1 = riak_object:new(<<"test">>, <<"a">>, "value"),
-    false = riak_object:equal(O1, riak_object:increment_vclock(O1, foo)).
+    O1 = new(<<"test">>, <<"a">>, "value"),
+    false = equal(O1, increment_vclock(O1, foo)).
 
 inequality_bucket_test() ->
-    O1 = riak_object:new(<<"test1">>, <<"a">>, "value"),
-    O2 = riak_object:new(<<"test">>, <<"a">>, "value"),
-    false = riak_object:equal(O1, O2).
+    O1 = new(<<"test1">>, <<"a">>, "value"),
+    O2 = new(<<"test">>, <<"a">>, "value"),
+    false = equal(O1, O2).
 
 inequality_updatecontents_test() ->
     MD1 = dict:new(),
     MD2 = dict:store("X-Riak-Test", "value", MD1),
     MD3 = dict:store("X-Riak-Test", "value1", MD1),
-    O1 = riak_object:new(<<"test">>, <<"a">>, "value"),
-    O2 = riak_object:new(<<"test">>, <<"a">>, "value"),
-    O3 = riak_object:update_metadata(O1, MD2),
-    false = riak_object:equal(O3, riak_object:update_metadata(O2, MD3)),
-    O5 = riak_object:update_value(O1, "value1"),
-    false = riak_object:equal(O5, riak_object:update_value(O2, "value2")).
+    O1 = new(<<"test">>, <<"a">>, "value"),
+    O2 = new(<<"test">>, <<"a">>, "value"),
+    O3 = update_metadata(O1, MD2),
+    false = equal(O3, update_metadata(O2, MD3)),
+    O5 = update_value(O1, "value1"),
+    false = equal(O5, update_value(O2, "value2")).
 
 largekey_test() ->
     TooLargeKey = <<0:(65537*8)>>,
     try
-        riak_object:new(<<"a">>, TooLargeKey, <<>>)
+        new(<<"a">>, TooLargeKey, <<>>)
     catch throw:{error, key_too_large} ->
             ok
     end.
@@ -2143,7 +2143,7 @@ date_reconcile() ->
           httpd_util:convert_request_date(
             httpd_util:rfc1123_date())),
     O2 = apply_updates(
-           riak_object:update_metadata(
+           update_metadata(
              increment_vclock(O, date),
              dict:store(
                <<"X-Riak-Last-Modified">>,
@@ -2151,57 +2151,57 @@ date_reconcile() ->
                  calendar:gregorian_seconds_to_datetime(D)),
                get_metadata(O)))),
     O4 = apply_updates(
-           riak_object:update_metadata(
+           update_metadata(
              O3,
              dict:store(
                <<"X-Riak-Last-Modified">>,
                httpd_util:rfc1123_date(
                  calendar:gregorian_seconds_to_datetime(D+1)),
                get_metadata(O3)))),
-    O5 = riak_object:reconcile([O2,O4], false),
-    false = riak_object:equal(O2, O5),
-    false = riak_object:equal(O4, O5).
+    O5 = reconcile([O2,O4], false),
+    false = equal(O2, O5),
+    false = equal(O4, O5).
 
 get_update_value_test() ->
-    O = riak_object:new(<<"test">>, <<"test">>, old_val),
+    O = new(<<"test">>, <<"test">>, old_val),
     NewVal = new_val,
     ?assertEqual(NewVal,
-                 riak_object:get_update_value(
-                   riak_object:update_value(O, NewVal))).
+                 get_update_value(
+                   update_value(O, NewVal))).
 
 get_update_metadata_test() ->
-    O = riak_object:new(<<"test">>, <<"test">>, val),
-    OldMD = riak_object:get_metadata(O),
+    O = new(<<"test">>, <<"test">>, val),
+    OldMD = get_metadata(O),
     NewMD = dict:store(<<"X-Riak-Test">>, "testval", OldMD),
     ?assertNot(NewMD =:= OldMD),
     ?assertEqual(NewMD,
-                 riak_object:get_update_metadata(
-                   riak_object:update_metadata(O, NewMD))).
+                 get_update_metadata(
+                   update_metadata(O, NewMD))).
 
 is_updated_test() ->
-    O = riak_object:new(<<"test">>, <<"test">>, test),
+    O = new(<<"test">>, <<"test">>, test),
     ?assertNot(is_updated(O)),
-    OMu = riak_object:update_metadata(
+    OMu = update_metadata(
             O, dict:store(<<"X-Test-Update">>, "testupdate",
-                          riak_object:get_metadata(O))),
+                          get_metadata(O))),
     ?assert(is_updated(OMu)),
-    OVu = riak_object:update_value(O, testupdate),
+    OVu = update_value(O, testupdate),
     ?assert(is_updated(OVu)).
 
 new_with_ctype_test() ->
-    O = riak_object:new(<<"b">>, <<"k">>, <<"{\"a\":1}">>, "application/json"),
-    ?assertEqual("application/json", dict:fetch(?MD_CTYPE, riak_object:get_metadata(O))).
+    O = new(<<"b">>, <<"k">>, <<"{\"a\":1}">>, "application/json"),
+    ?assertEqual("application/json", dict:fetch(?MD_CTYPE, get_metadata(O))).
 
 new_with_md_test() ->
-    O = riak_object:new(<<"b">>, <<"k">>, <<"abc">>, dict:from_list([{?MD_CHARSET,"utf8"}])),
-    ?assertEqual("utf8", dict:fetch(?MD_CHARSET, riak_object:get_metadata(O))).
+    O = new(<<"b">>, <<"k">>, <<"abc">>, dict:from_list([{?MD_CHARSET,"utf8"}])),
+    ?assertEqual("utf8", dict:fetch(?MD_CHARSET, get_metadata(O))).
 
 check_most_recent({V1, T1, D1}, {V2, T2, D2}) ->
     MD1 = dict:store(<<"X-Riak-Last-Modified">>, T1, D1),
     MD2 = dict:store(<<"X-Riak-Last-Modified">>, T2, D2),
 
-    O1 = riak_object:new(<<"test">>, <<"a">>, V1, MD1),
-    O2 = riak_object:new(<<"test">>, <<"a">>, V2, MD2),
+    O1 = new(<<"test">>, <<"a">>, V1, MD1),
+    O2 = new(<<"test">>, <<"a">>, V2, MD2),
 
     C1 = hd(O1#r_object.contents),
     C2 = hd(O2#r_object.contents),
@@ -2258,27 +2258,27 @@ vclock_codec_test() ->
      || VC <- VCs, Method <- [encode_raw, encode_zlib]].
 
 pack_obj_test() ->
-    Obj = riak_object:new(<<"bucket">>, <<"key">>, [1, 2.123]),
-    PackedErl = riak_object:to_binary(v1, Obj, erlang),
-    PackedMsg = riak_object:to_binary(v1, Obj, msgpack),
-    ObjErl = riak_object:from_binary(<<"bucket">>, <<"key">>, PackedErl),
-    ObjMsg = riak_object:from_binary(<<"bucket">>, <<"key">>, PackedMsg),
+    Obj = new(<<"bucket">>, <<"key">>, [1, 2.123]),
+    PackedErl = to_binary(v1, Obj, erlang),
+    PackedMsg = to_binary(v1, Obj, msgpack),
+    ObjErl = from_binary(<<"bucket">>, <<"key">>, PackedErl),
+    ObjMsg = from_binary(<<"bucket">>, <<"key">>, PackedMsg),
     ?assertEqual(Obj, ObjErl),
     ?assertEqual(Obj, ObjMsg).
 
 dotted_values_reconcile() ->
     {B, K} = {<<"b">>, <<"k">>},
-    A = riak_object:increment_vclock(riak_object:new(B, K, <<"a">>), a),
-    C = riak_object:increment_vclock(riak_object:new(B, K, <<"c">>), c),
-    Z = riak_object:increment_vclock(riak_object:new(B, K, <<"z">>), z),
-    A1 = riak_object:increment_vclock(riak_object:apply_updates(riak_object:update_value(A, <<"a1">>)), a),
-    C1 = riak_object:increment_vclock(riak_object:apply_updates(riak_object:update_value(C, <<"c1">>)), c),
-    Z1 = riak_object:increment_vclock(riak_object:apply_updates(riak_object:update_value(Z, <<"z1">>)), z),
-    ACZ = riak_object:reconcile([A, C, Z, A1, C1, Z1], true),
-    ?assertEqual(3, riak_object:value_count(ACZ)),
-    Contents = lists:sort(riak_object:get_contents(ACZ)),
+    A = increment_vclock(new(B, K, <<"a">>), a),
+    C = increment_vclock(new(B, K, <<"c">>), c),
+    Z = increment_vclock(new(B, K, <<"z">>), z),
+    A1 = increment_vclock(apply_updates(update_value(A, <<"a1">>)), a),
+    C1 = increment_vclock(apply_updates(update_value(C, <<"c1">>)), c),
+    Z1 = increment_vclock(apply_updates(update_value(Z, <<"z1">>)), z),
+    ACZ = reconcile([A, C, Z, A1, C1, Z1], true),
+    ?assertEqual(3, value_count(ACZ)),
+    Contents = lists:sort(get_contents(ACZ)),
     verify_contents(Contents, [{{a, 2}, <<"a1">>}, {{c, 2}, <<"c1">>}, {{z, 2}, <<"z1">>}]),
-    Vclock = riak_object:vclock(ACZ),
+    Vclock = vclock(ACZ),
     ?assertEqual(2, vclock:get_counter(a, Vclock)),
     ?assertEqual(2, vclock:get_counter(c, Vclock)),
     ?assertEqual(2, vclock:get_counter(z, Vclock)),
@@ -2288,10 +2288,10 @@ weird_clocks_weird_dots() ->
     %% make objects with dots / clocks that are causally the same but
     %% with different timestamps (backup - restore, riak_kv#679)
     {B, K} = {<<"b">>, <<"k">>},
-    A = riak_object:increment_vclock(riak_object:new(B, K, <<"a">>), a, 100),
-    AWat = riak_object:increment_vclock(riak_object:new(B, K, <<"a">>), a, 1000),
-    O = riak_object:syntactic_merge(A, AWat),
-    ?assertEqual(2, riak_object:value_count(O)).
+    A = increment_vclock(new(B, K, <<"a">>), a, 100),
+    AWat = increment_vclock(new(B, K, <<"a">>), a, 1000),
+    O = syntactic_merge(A, AWat),
+    ?assertEqual(2, value_count(O)).
 
 %% Test the case where an object with undotted values is merged with
 %% an object with dotted values.
@@ -2299,34 +2299,34 @@ mixed_merge() ->
     {B, K} = {<<"b">>, <<"k">>},
     A_VC = vclock:fresh(a, 3),
     Z_VC = vclock:fresh(b, 2),
-    A = riak_object:set_vclock(riak_object:new(B, K, <<"a">>), A_VC),
-    C = riak_object:increment_vclock(riak_object:new(B, K, <<"c">>), c),
-    Z = riak_object:set_vclock(riak_object:new(B, K, <<"b">>), Z_VC),
-    ACZ = riak_object:reconcile([A, C, Z], true),
-    ?assertEqual(3, riak_object:value_count(ACZ)).
+    A = set_vclock(new(B, K, <<"a">>), A_VC),
+    C = increment_vclock(new(B, K, <<"c">>), c),
+    Z = set_vclock(new(B, K, <<"b">>), Z_VC),
+    ACZ = reconcile([A, C, Z], true),
+    ?assertEqual(3, value_count(ACZ)).
 
 mixed_merge2() ->
     {B, K} = {<<"b">>, <<"k">>},
-    A = riak_object:new(B, K, <<"a">>),
-    A1 = riak_object:increment_vclock(A, a),
-    Z = riak_object:increment_vclock(A, z),
-    AZ = riak_object:merge(A1, Z),
-    AZ2 = riak_object:merge(AZ, AZ),
+    A = new(B, K, <<"a">>),
+    A1 = increment_vclock(A, a),
+    Z = increment_vclock(A, z),
+    AZ = merge(A1, Z),
+    AZ2 = merge(AZ, AZ),
     ?assertEqual(AZ2, AZ),
-    ?assertEqual(2, riak_object:value_count(AZ2)),
-    AZ3 = riak_object:set_contents(AZ2, [{dict:new(), <<"undotted">>} | riak_object:get_contents(AZ2)]),
-    AZ4 = riak_object:syntactic_merge(AZ3, AZ2),
-    ?assertEqual(3, riak_object:value_count(AZ4)),
+    ?assertEqual(2, value_count(AZ2)),
+    AZ3 = set_contents(AZ2, [{dict:new(), <<"undotted">>} | get_contents(AZ2)]),
+    AZ4 = syntactic_merge(AZ3, AZ2),
+    ?assertEqual(3, value_count(AZ4)),
     ?assert(equal(AZ3, AZ4)).
 
 nextgenrepl() ->
     {B, K} = {<<"b">>, <<"k">>},
     A_VC = vclock:fresh(a, 3),
     Z_VC = vclock:fresh(b, 2),
-    A = riak_object:set_vclock(riak_object:new(B, K, <<"a">>), A_VC),
-    C = riak_object:increment_vclock(riak_object:new(B, K, <<"c">>), c),
-    Z = riak_object:set_vclock(riak_object:new(B, K, <<"b">>), Z_VC),
-    ACZ = riak_object:reconcile([A, C, Z], true),
+    A = set_vclock(new(B, K, <<"a">>), A_VC),
+    C = increment_vclock(new(B, K, <<"c">>), c),
+    Z = set_vclock(new(B, K, <<"b">>), Z_VC),
+    ACZ = reconcile([A, C, Z], true),
     ACZ0 = nextgenrepl_decode(nextgenrepl_encode(repl_v1, ACZ, false)),
     ACZ0 = nextgenrepl_decode(nextgenrepl_encode(repl_v1, ACZ, true)),
     ?assertEqual(ACZ0, ACZ).
@@ -2376,17 +2376,17 @@ from_binary_headonly_test() ->
     VC1 = term_to_binary(vclock:fresh(a, 3)),
 
     RObjBin = head_binary(VC1, false),
-    RObj = riak_object:from_binary(Bucket, Key, RObjBin),
+    RObj = from_binary(Bucket, Key, RObjBin),
 
     ?assertMatch(true, is_robject(RObj)),
-    ?assertMatch(VC1, term_to_binary(riak_object:vclock(RObj))),
+    ?assertMatch(VC1, term_to_binary(vclock(RObj))),
     ?assertMatch(true, is_head(RObj)),
     ?assertMatch(false, riak_kv_util:is_x_deleted(RObj)),
 
     RObjBinD = head_binary(VC1, true),
-    RObjD = riak_object:from_binary(Bucket, Key, RObjBinD),
+    RObjD = from_binary(Bucket, Key, RObjBinD),
     ?assertMatch(true, is_robject(RObjD)),
-    ?assertMatch(VC1, term_to_binary(riak_object:vclock(RObjD))),
+    ?assertMatch(VC1, term_to_binary(vclock(RObjD))),
     ?assertMatch(true, is_head(RObjD)),
     ?assertMatch(true, riak_kv_util:is_x_deleted(RObjD)).
 
@@ -2406,9 +2406,9 @@ from_binary_foldheads_test() ->
             {proxy_object, MDBin, 100,
                 {fun fetch_value/2, clone, "JournalKey"}}),
 
-    RObj = riak_object:from_binary(Bucket, Key, HeadObj),
+    RObj = from_binary(Bucket, Key, HeadObj),
     ?assertMatch(proxy, is_robject(RObj)),
-    ?assertMatch(VC1, term_to_binary(riak_object:vclock(RObj))),
+    ?assertMatch(VC1, term_to_binary(vclock(RObj))),
     ?assertMatch(true, is_head(RObj)),
     ?assertMatch("V1", get_value(RObj)),
     ?assertMatch(["V1"], get_values(RObj)),
@@ -2434,8 +2434,8 @@ summary_binary_extract() ->
     B = <<"buckets are binaries">>,
     K = <<"keys are binaries">>,
     V = <<"Some Binary Data">>,
-    ObjectA0 = riak_object:new(B, K, V),
-    ObjectA = riak_object:increment_vclock(ObjectA0, a),
+    ObjectA0 = new(B, K, V),
+    ObjectA = increment_vclock(ObjectA0, a),
     Binary = to_binary(v1, ObjectA),
     {Clock, Size, SibCount, LMD, SibBin} = summary_from_binary(Binary),
     ?assertMatch(1, SibCount),
@@ -2443,8 +2443,8 @@ summary_binary_extract() ->
     ?assertMatch(true, Size > 0),
     {Clock, Size, SibCount, LMD, SibBin} = summary_from_binary(ObjectA),
     DeletedM = dict:store(<<"X-Riak-Deleted">>, true, dict:new()),
-    ObjectB0 = riak_object:new(B, K, V, DeletedM),
-    ObjectB = riak_object:increment_vclock(ObjectB0, b),
+    ObjectB0 = new(B, K, V, DeletedM),
+    ObjectB = increment_vclock(ObjectB0, b),
     {_ClockB, _SizeB, 1, _LMDB, SibBinB} = summary_from_binary(ObjectB),
     DeletedMDLB = aae_fold_metabin(SibBinB, []),
     ?assertMatch({true, undefined},
@@ -2454,8 +2454,8 @@ summary_binary_extract() ->
     DeletedMDLC = aae_fold_metabin(SibBinC, []),
     ?assertMatch({false, undefined},
                     is_aae_object_deleted(DeletedMDLC, false)),
-    ObjectD0 = riak_object:new(B, K, V, DeletedM),
-    ObjectD = riak_object:increment_vclock(ObjectD0, d),
+    ObjectD0 = new(B, K, V, DeletedM),
+    ObjectD = increment_vclock(ObjectD0, d),
     ObjectE = merge(ObjectB, ObjectD),
     {_ClockE, _SizeE, 2, _LMDE, SibBinE} = summary_from_binary(ObjectE),
     DeletedMDLE = aae_fold_metabin(SibBinE, []),
