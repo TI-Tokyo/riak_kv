@@ -1292,7 +1292,7 @@ from_binary(B, K, <<131, _Rest/binary>>=ObjTerm) ->
 from_binary(B, K, <<?MAGIC:8/integer, 1:8/integer, Rest/binary>> = _ObjBin) ->
     %% Version 1 of binary riak object
     case Rest of
-        <<VclockLen:32/integer, VclockBin:VclockLen/binary, SibCount:32/integer, SibsBin/binary>> ->
+        <<VclockLen:32/integer, VclockBin:VclockLen/binary, _EncMagic:8/integer, SibCount:32/integer, SibsBin/binary>> ->
             Vclock = binary_to_term(VclockBin),
             Contents = sibs_of_binary(SibCount, SibsBin),
             #r_object{bucket=B, key=K, contents=Contents, vclock=Vclock};
@@ -1543,7 +1543,8 @@ new_v1(Vclock, Siblings, Enc) ->
     VclockLen = byte_size(VclockBin),
     SibCount = length(Siblings),
     SibsBin = bin_contents(Siblings, Enc),
-    <<?MAGIC:8/integer, ?V1_VERS:8/integer, VclockLen:32/integer, VclockBin/binary, SibCount:32/integer, SibsBin/binary>>.
+    <<?MAGIC:8/integer, ?V1_VERS:8/integer,
+      VclockLen:32/integer, VclockBin/binary, (enc_magic(Enc)):8/integer, SibCount:32/integer, SibsBin/binary>>.
 
 bin_content(#r_content{metadata=Meta0, value=Val}, Enc) ->
     {TypeTag, Meta} = determine_binary_type(Val, Meta0),
@@ -1558,6 +1559,10 @@ bin_contents(Contents, Enc) ->
                 <<Acc/binary, (bin_content(Content, Enc))/binary>>
         end,
     lists:foldl(F, <<>>, Contents).
+
+enc_magic(erlang) -> ?ERLT2B_MAGIC;
+enc_magic(msgpack) -> ?MSGPACK_MAGIC.
+
 
 meta_bin(MD, Enc) ->
     {{VTagVal, Deleted, LastModVal, _}, RestBin} =
@@ -1624,12 +1629,12 @@ decode_maybe_binary(<<_Other:8, Bin/binary>>) ->
 sub_encode(Bin, erlang) ->
     <<?ERLT2B_MAGIC:8/integer, (term_to_binary(Bin))/binary>>;
 sub_encode(Bin, msgpack) ->
-    <<?MSGPACK_MAGIC:8/integer, (msgpack:pack(Bin, [{map_format, jsx}]))/binary>>.
+    <<?MSGPACK_MAGIC:8/integer, (msgpack:pack(Bin, [{format, jsx}]))/binary>>.
 
 sub_decode(<<?ERLT2B_MAGIC:8/integer, Bin/binary>>) ->
     binary_to_term(Bin);
 sub_decode(<<?MSGPACK_MAGIC:8/integer, Bin/binary>>) ->
-    {ok, Unpacked} = msgpack:unpack(Bin, [{map_format, jsx}]),
+    {ok, Unpacked} = msgpack:unpack(Bin, [{format, jsx}]),
     Unpacked;
 sub_decode(Bin) ->
     try
