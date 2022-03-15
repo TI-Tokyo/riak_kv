@@ -28,6 +28,7 @@
                   riakc,
                   riakhttpc,
                   riak_ql,
+                  jam,
                   msgpack
                  ]},
   {registered, []},
