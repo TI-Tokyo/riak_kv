@@ -545,8 +545,8 @@ range_scan(FoldIndexFun, Buffer, Opts, #state{fold_opts=_FoldOpts,
     Options = [
                {start_key,   StartKey2},
                {end_key,     EndKey2},
-               {encoding, msgpack},
-               {fold_method, streaming} | range_scan_additional_options(W)
+               {encoding,    msgpack},
+               {fold_method, streaming} | range_scan_additional_options(W, Mod)
               ],
     KeyFolder = fun() ->
                         Vals = eleveldb:fold(Ref, FoldFun, [], Options),
@@ -555,13 +555,13 @@ range_scan(FoldIndexFun, Buffer, Opts, #state{fold_opts=_FoldOpts,
     {async, KeyFolder}.
 
 %% Apply ordering to the key values.
-key_to_storage_format_key(_,[]) ->
+key_to_storage_format_key(_, []) ->
     [];
 key_to_storage_format_key([Order|OrderTail], [{_Name,_Type,Value}|KeyTail]) ->
     [riak_ql_ddl:apply_ordering(Value, Order) | key_to_storage_format_key(OrderTail, KeyTail)].
 
 %%
-range_scan_additional_options(Where) ->
+range_scan_additional_options(Where, Mod) ->
     Options1 =
         case proplists:lookup(start_inclusive, Where) of
              none   -> [];
@@ -574,8 +574,21 @@ range_scan_additional_options(Where) ->
         end,
     case proplists:lookup(filter, Where) of
         {filter, []} -> Options2;
-        {filter, Filter} -> [{range_filter, Filter} | Options2]
+        {filter, Filter} -> [{range_filter, replace_fields_with_indexes(Filter, Mod)} | Options2]
     end.
+
+replace_fields_with_indexes({Op, A, B}, Mod) ->
+    {Op, replace_field_with_index(A, Mod), replace_field_with_index(B, Mod)}.
+replace_field_with_index({field, F, _T} = Spec, Mod) ->
+    case Mod:get_field_position([F]) of
+        undefined ->
+            Spec;
+        N ->
+            {field, integer_to_binary(N), _T}  %% too much code to rewrite in eleveldb C++ code
+    end;
+replace_field_with_index(ConstSpec, _) ->
+    ConstSpec.
+
 
 %%
 key_prefix({TableName,_}, PK2, LocalKeyLen) ->

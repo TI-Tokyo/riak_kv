@@ -29,6 +29,7 @@
 %% For dialyzer types
 -include_lib("riak_ql/include/riak_ql_ddl.hrl").
 
+-define(SQL_SELECT_CLAUSE, #riak_sel_clause_v1).
 -define(SQL_SELECT, #riak_select_v3).
 -define(SQL_SELECT_RECORD_NAME, riak_select_v3).
 
