@@ -574,20 +574,28 @@ range_scan_additional_options(Where, Mod) ->
         end,
     case proplists:lookup(filter, Where) of
         {filter, []} -> Options2;
-        {filter, Filter} -> [{range_filter, replace_fields_with_indexes(Filter, Mod)} | Options2]
+        {filter, Filter} ->
+            FieldTypes = [Mod:get_field_type(F) || {F, _} <- Mod:get_field_positions()],
+            [{range_filter, replace_fields_with_indexes(Filter, Mod)},
+             {field_types, FieldTypes} | Options2]
     end.
 
-replace_fields_with_indexes({Op, A, B}, Mod) ->
-    {Op, replace_field_with_index(A, Mod), replace_field_with_index(B, Mod)}.
-replace_field_with_index({field, F, _T} = Spec, Mod) ->
+%% Replacing fields with their positions allows us to avoid storing
+%% field names with each record in TS. It would even be better to send
+%% integers instead; I'm just being lazy to do this (in
+%% eleveldb/filter_parser.cc)
+replace_fields_with_indexes({field, F, _T} = Spec, Mod) ->
     case Mod:get_field_position([F]) of
         undefined ->
             Spec;
         N ->
-            {field, integer_to_binary(N), _T}  %% too much code to rewrite in eleveldb C++ code
+            {field, integer_to_binary(N)}  %% too much code to rewrite in eleveldb C++ code
     end;
-replace_field_with_index(ConstSpec, _) ->
-    ConstSpec.
+replace_fields_with_indexes({const, _} = ConstSpec, _) ->
+    ConstSpec;
+replace_fields_with_indexes({Op, A, B}, Mod) ->
+    {Op, replace_fields_with_indexes(A, Mod), replace_fields_with_indexes(B, Mod)}.
+
 
 
 %%
