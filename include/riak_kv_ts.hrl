@@ -119,6 +119,12 @@
             'SHOW_CREATE_TABLE' = <<>> :: binary()
         }).
 
+-record(riak_sql_alter_table_v1,
+        {
+         'ALTER_TABLE' = <<>> :: binary(),
+         with = [] :: proplists:proplist()
+        }).
+
 -record(riak_sql_insert_v1,
         {
           'INSERT'      = <<>>  :: binary(),

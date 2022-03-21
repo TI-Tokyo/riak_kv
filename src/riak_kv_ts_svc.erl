@@ -107,6 +107,11 @@ decode_query(#tsinterpolation{base = BaseQuery}, Options) ->
         {ok, {DDL = ?DDL{}, WithProperties}} ->
             %% CREATE TABLE, so don't check if the table exists
             {ok, {ddl, {DDL, WithProperties}}};
+        {ok, {alter_table, Table, _, Props}} ->
+            lager:info("", []),
+            {ok, {alter, #riak_sql_alter_table_v1{'ALTER_TABLE' = Table,
+                                                  with = Props
+                                                 }}};
         {ok, [{type, QryType}|SQL]} ->
             Table = extract_table_name(SQL),
             case is_table_query_ready(QryType, Table) of
@@ -199,6 +204,9 @@ process(M = #riak_sql_explain_query_v1{'EXPLAIN' = ?SQL_SELECT{'FROM' = Table}},
     check_table_and_call(Table, fun sub_tsqueryreq/4, M, State);
 
 process(M = #riak_sql_show_create_table_v1{'SHOW_CREATE_TABLE' = Table}, State) ->
+    check_table_and_call(Table, fun sub_tsqueryreq/4, M, State);
+
+process(M = #riak_sql_alter_table_v1{'ALTER_TABLE' = Table}, State) ->
     check_table_and_call(Table, fun sub_tsqueryreq/4, M, State).
 
 %% There is no two-tuple variants of process_stream for tslistkeysresp

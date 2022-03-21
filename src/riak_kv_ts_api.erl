@@ -30,6 +30,7 @@
          api_call_to_perm/1,
          api_calls/0,
          create_table/3,
+         alter_table/2,
          put_data/2, put_data/3,
          get_data/2, get_data/3, get_data/4,
          delete_data/2, delete_data/3, delete_data/4, delete_data/5,
@@ -58,19 +59,29 @@
 -define(TABLE_ACTIVATE_WAIT_RETRY_DELAY, 100).
 
 %% external API calls enumerated
--type query_api_call() :: create_table | query_select | describe_table | query_insert | query_explain | show_tables | query_delete.
--type api_call() :: get | put | delete | list_keys | coverage | query_api_call().
+-type query_api_call() :: query_create_table | query_alter_table | query_describe_table | query_show_create_table
+                        | query_select | query_insert | query_delete
+                        | query_explain | query_show_tables.
+
+%% some calls are effectively duplicate (e.g., query_delete and
+%% delete), so we spell them out in full, omitting 'query_':
+-type api_call() :: get | put | delete | list_keys | coverage
+                  | create_table | alter_table | describe_table
+                  | select | insert
+                  | explain | show_tables.
+
 -export_type([query_api_call/0, api_call/0]).
 
 -spec api_call_from_sql_type(riak_kv_qry:query_type()) -> query_api_call().
-api_call_from_sql_type(ddl)               -> create_table;
+api_call_from_sql_type(ddl)               -> query_create_table;
 api_call_from_sql_type(select)            -> query_select;
-api_call_from_sql_type(describe)          -> describe_table;
-api_call_from_sql_type(show_create_table) -> show_create_table;
-api_call_from_sql_type(show_tables)       -> show_tables;
+api_call_from_sql_type(describe)          -> query_describe_table;
+api_call_from_sql_type(show_create_table) -> query_show_create_table;
+api_call_from_sql_type(show_tables)       -> query_show_tables;
 api_call_from_sql_type(insert)            -> query_insert;
 api_call_from_sql_type(delete)            -> query_delete;
-api_call_from_sql_type(explain)           -> query_explain.
+api_call_from_sql_type(explain)           -> query_explain;
+api_call_from_sql_type(alter)             -> query_alter_table.
 
 -spec api_call_to_perm(api_call()) -> string().
 api_call_to_perm(get) ->
@@ -83,53 +94,55 @@ api_call_to_perm(list_keys) ->
     "riak_ts.list_keys";
 api_call_to_perm(coverage) ->
     "riak_ts.coverage";
-api_call_to_perm(create_table) ->
+api_call_to_perm(query_create_table) ->
     "riak_ts.create_table";
+api_call_to_perm(query_alter_table) ->
+    "riak_ts.alter_table";
 api_call_to_perm(query_select) ->
-    "riak_ts.query_select";
+    "riak_ts.select";
 api_call_to_perm(query_explain) ->
-    "riak_ts.query_explain";
-api_call_to_perm(describe_table) ->
+    "riak_ts.explain";
+api_call_to_perm(query_describe_table) ->
     "riak_ts.describe_table";
 %% SHOW CREATE TABLE is an extended version of DESCRIBE
-api_call_to_perm(show_create_table) ->
-    api_call_to_perm(describe_table);
-api_call_to_perm(query_delete) ->
-    "riak_ts.query_delete";
+api_call_to_perm(query_show_create_table) ->
+    api_call_to_perm(query_describe_table);
+api_call_to_perm(query_query_delete) ->
+    "riak_ts.delete";
 %% INSERT query is a put, so let's call it that
 api_call_to_perm(query_insert) ->
     api_call_to_perm(put);
-api_call_to_perm(show_tables) ->
+api_call_to_perm(query_show_tables) ->
     "riak_ts.show_tables".
 
 %%
 -spec api_calls() -> [api_call()].
 api_calls() ->
-    [create_table, query_select, describe_table, query_insert,
-     show_tables, show_create_table, get, put, delete, list_keys, coverage].
-
+    [get, put, delete, list_keys, coverage,
+     create_table, alter_table, describe_table,
+     select, insert,
+     explain, show_tables].
 
 -spec create_table(module(), ?DDL{}, proplists:proplist()) -> ok|{error,term()}.
-create_table(SvcMod, ?DDL{table = Table}=DDL1, WithProps) ->
+create_table(SvcMod, ?DDL{table = Table} = DDL1, WithProps) ->
     DDLRecCap = riak_core_capability:get({riak_kv, riak_ql_ddl_rec_version}),
     DDL2 = convert_ddl_to_cluster_supported_version(DDLRecCap, DDL1),
     CompilerVersion = riak_ql_ddl_compiler:get_compiler_version(),
-    {ok, Props1} = riak_kv_ts_util:apply_timeseries_bucket_props(DDL2,
-                                                                 CompilerVersion,
-                                                                 WithProps),
+    {ok, Props1} = riak_kv_ts_util:apply_timeseries_bucket_props(
+                     DDL2, CompilerVersion, WithProps),
     case catch [riak_kv_wm_utils:erlify_bucket_prop(P) || P <- Props1] of
         {bad_linkfun_modfun, {M, F}} ->
-            {error, SvcMod:make_table_create_fail_resp(Table,
-                                                       flat_format(
-                                                         "Invalid link mod or fun in bucket type properties: ~p:~p\n", [M, F]))};
+            {error, SvcMod:make_table_create_fail_resp(
+                      Table, flat_format("Invalid link mod or fun in bucket type properties: ~p:~p\n",
+                                         [M, F]))};
         {bad_linkfun_bkey, {B, K}} ->
-            {error, SvcMod:make_table_create_fail_resp(Table,
-                                                       flat_format(
-                                                         "Malformed bucket/key for anon link fun in bucket type properties: ~p/~p\n", [B, K]))};
+            {error, SvcMod:make_table_create_fail_resp(
+                      Table, flat_format("Malformed bucket/key for anon link fun in bucket type properties: ~p/~p\n",
+                                         [B, K]))};
         {bad_chash_keyfun, {M, F}} ->
-            {error, SvcMod:make_table_create_fail_resp(Table,
-                                                       flat_format(
-                                                         "Invalid chash mod or fun in bucket type properties: ~p:~p\n", [M, F]))};
+            {error, SvcMod:make_table_create_fail_resp(
+                      Table, flat_format("Invalid chash mod or fun in bucket type properties: ~p:~p\n",
+                                         [M, F]))};
         Props2 ->
             create_table1(SvcMod, Table, Props2, DDL2, DDLRecCap, ?TABLE_ACTIVATE_WAIT)
     end.
@@ -198,6 +211,19 @@ convert_ddl_to_cluster_supported_version(DDLRecCap, DDL) when is_atom(DDLRecCap)
 
 ddl_comparator(A, B) ->
     riak_ql_ddl:is_version_greater(element(1,A), element(1,B)) == true.
+
+
+-spec alter_table(binary(), proplists:proplist()) -> ok | {error, bad_property}.
+alter_table(Table, Props1) ->
+    Props2 = [riak_kv_wm_utils:erlify_bucket_prop(P) || P <- Props1],
+    case riak_core_bucket_type:update(Table, Props2) of
+        ok ->
+            ok;
+        {error, EE} ->
+            lager:warning("unsanitized bucket properties of TS bucket ~s: ~p", [Table, EE]),
+            {error, bad_property}
+    end.
+
 
 -spec query(string() | riak_kv_qry:sql_query_type_record(), ?DDL{}) ->
                    {ok, riak_kv_qry:query_tabular_result()} |
