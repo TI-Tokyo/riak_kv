@@ -44,6 +44,9 @@
 -include_lib("riak_kv_vnode.hrl").
 -include("riak_kv_ts.hrl").
 
+-define(SLOW_TIME, application:get_env(riak_kv, index_fsm_slow_timems, 200)).
+-define(FAST_TIME, application:get_env(riak_kv, index_fsm_fast_timems, 10)).
+
 -export([init/2,
          plan/2,
          process_results/3,
@@ -53,15 +56,35 @@
 -export([use_ack_backpressure/0,
          req/3]).
 
+-include_lib("kernel/include/logger.hrl").
+
 -type from() :: {atom(), req_id(), pid()}.
 -type req_id() :: non_neg_integer().
+
+-type riak_kv_index_fsm_dict() :: dict:dict().
+
+-record(timings,
+            {start_time = os:timestamp() :: os:timestamp(),
+                max = 0 :: non_neg_integer(),
+                min = infinity :: non_neg_integer()|infinity,
+                count = 0 :: non_neg_integer(),
+                sum = 0 :: non_neg_integer(),
+                slow_count = 0 :: non_neg_integer(),
+                fast_count = 0 :: non_neg_integer(),
+                slow_time = ?SLOW_TIME,
+                fast_time = ?FAST_TIME}).
+-type timings() :: #timings{}.
+
 
 -record(state, {from :: from(),
                 pagination_sort :: boolean(),
                 merge_sort_buffer = undefined :: sms:sms() | undefined,
                 max_results :: all | pos_integer(),
-                results_per_vnode = dict:new() :: dict:dict(),
+                results_per_vnode = dict:new() :: riak_kv_index_fsm_dict(),
+                timings = #timings{} :: timings(),
+                bucket :: riak_object:bucket() | undefined,
                 results_sent = 0 :: non_neg_integer()}).
+
 
 %% @doc Returns `true' if the new ack-based backpressure index
 %% protocol should be used.  This decision is based on the
@@ -114,10 +137,14 @@ init(From={_, _, _}, [Bucket, ItemFilter, Query, Timeout, MaxResults, PgSort0, V
 %% The KeyConvFn is needed to infer the PK from LK in TS keys, and use
 %% that to correctly create the coverage plan.  For details, see
 %% github/riak_kv/pulls/1404
-init(From={_, _, _}, [Bucket, ItemFilter, Query, Timeout, MaxResults, PgSort0, VNodeTarget, PlannerMod, KeyConvFn]) ->
+init(From={_, _, _}, [Bucket, ItemFilter, Query, Timeout, MaxResults0, PgSort0, VNodeTarget, PlannerMod, KeyConvFn]) ->
     %% Get the bucket n_val for use in creating a coverage plan
     BucketProps = riak_core_bucket:get_bucket(Bucket),
     NVal = proplists:get_value(n_val, BucketProps),
+    MaxResults =
+        case is_integer(MaxResults0) of true -> MaxResults0; false -> all end,
+        % Force MaxResults to only be the expected all/integer() - and not
+        % undefined
     Paginating = is_integer(MaxResults) andalso MaxResults > 0,
     PgSort = case {Paginating, PgSort0} of
         {true, _} ->
@@ -131,14 +158,16 @@ init(From={_, _, _}, [Bucket, ItemFilter, Query, Timeout, MaxResults, PgSort0, V
     Req = req(Bucket, ItemFilter, Query),
 
     %% Note riak_core_coverage_fsm now expects a plan function, not a mod, to be returned
-
     CreatePlanFn =
         fun(Target, NValArg, PVC, ReqId, Service, Request) ->
                 create_plan(PlannerMod, Target, NValArg, PVC, ReqId, Service, Request, KeyConvFn)
         end,
 
     {Req, VNodeTarget, NVal, 1, riak_kv, riak_kv_vnode_master, Timeout, CreatePlanFn,
-     #state{from=From, max_results=MaxResults, pagination_sort=PgSort}}.
+     #state{from = From,
+            max_results = MaxResults,
+            pagination_sort = PgSort,
+            bucket = Bucket}}.
 
 create_plan(PlannerMod, Target, NVal, PVC, ReqId, Service, Request, KeyConvFn) ->
     CoveragePlan = PlannerMod:create_plan(Target, NVal, PVC, ReqId, Service, Request),
@@ -163,14 +192,13 @@ process_results(VNode, {From, Bucket, Results}, State) ->
     case process_results(VNode, {Bucket, Results}, State) of
         {ok, State2 = #state{pagination_sort=true}} ->
             #state{results_per_vnode=PerNode, max_results=MaxResults} = State2,
-            VNodeCount = dict:fetch(VNode, PerNode),
-            case VNodeCount < MaxResults of
-                true ->
-                    _ = riak_kv_vnode:ack_keys(From),
-                    {ok, State2};
-                false ->
+            case {dict:fetch(VNode, PerNode), MaxResults} of
+                {VnodeCount, MR} when is_integer(MR), VnodeCount >= MR ->
                     riak_kv_vnode:stop_fold(From),
-                    {done, State2}
+                    {done, State2};
+                _ ->
+                    _ = riak_kv_vnode:ack_keys(From),
+                    {ok, State2}
             end;
         {ok, State2} ->
             _ = riak_kv_vnode:ack_keys(From),
@@ -196,11 +224,16 @@ process_results(VNode, done, State = #state{pagination_sort=true}) ->
     %% tell the sms buffer about the done vnode
     #state{merge_sort_buffer=MergeSortBuffer} = State,
     BufferWithNewResults = sms:add_results(VNode, done, MergeSortBuffer),
-    {done, State#state{merge_sort_buffer=BufferWithNewResults}};
+    UpdTimings = update_timings(State#state.timings),
+    {done,
+        State#state{merge_sort_buffer=BufferWithNewResults,
+                    timings=UpdTimings}};
 process_results(_VNode, {_Bucket, Results}, State) ->
     #state{from={raw, ReqId, ClientPid}} = State,
     send_results(ClientPid, ReqId, Results),
-    {ok, State};
+    ResultsSent = length(Results) + State#state.results_sent,
+    UpdTimings = update_timings(State#state.timings),
+    {ok, State#state{timings = UpdTimings, results_sent = ResultsSent}};
 process_results(_VNode, done, State) ->
     {done, State}.
 
@@ -239,30 +272,37 @@ process_results({Bucket, Results},
 process_results(done, StateData) ->
     {done, StateData}.
 
-finish({error, Error},
-       StateData=#state{from={raw, ReqId, ClientPid}}) ->
+finish({error, Error}, State=#state{from={raw, ReqId, ClientPid}}) ->
     %% Notify the requesting client that an error
     %% occurred or the timeout has elapsed.
     ClientPid ! {ReqId, {error, Error}},
-    {stop, normal, StateData};
+    {stop, normal, State};
 finish(clean,
-       StateData=#state{from={raw, ReqId, ClientPid}, merge_sort_buffer=undefined}) ->
+       State=#state{from={raw, ReqId, ClientPid},
+                    merge_sort_buffer=undefined}) ->
     ClientPid ! {ReqId, done},
-    {stop, normal, StateData};
+    log_timings(State#state.timings,
+                State#state.bucket,
+                State#state.results_sent),
+    {stop, normal, State};
 finish(clean,
        State=#state{from={raw, ReqId, ClientPid},
                     merge_sort_buffer=MergeSortBuffer,
                     results_sent=ResultsSent,
                     max_results=MaxResults}) ->
     LastResults = sms:done(MergeSortBuffer),
-    DownTheWire = case (ResultsSent + length(LastResults)) > MaxResults of
-                      true ->
-                          lists:sublist(LastResults, MaxResults - ResultsSent);
-                      false ->
-                          LastResults
-                  end,
+    DownTheWire =
+        case MaxResults of
+            all ->
+                LastResults;
+            _ ->
+                lists:sublist(LastResults, MaxResults - ResultsSent)
+        end,
     ClientPid ! {ReqId, {results, DownTheWire}},
     ClientPid ! {ReqId, done},
+    log_timings(State#state.timings,
+                State#state.bucket,
+                ResultsSent + length(DownTheWire)),
     {stop, normal, State}.
 
 %% ===================================================================
@@ -271,3 +311,50 @@ finish(clean,
 
 process_query_results(_Bucket, Results, ReqId, ClientPid) ->
     ClientPid ! {ReqId, {results, Results}}.
+
+-spec update_timings(timings()) -> timings().
+update_timings(Timings) ->
+    MS = timer:now_diff(os:timestamp(), Timings#timings.start_time) div 1000,
+    SlowCount =
+        case MS > Timings#timings.slow_time of
+            true ->
+                Timings#timings.slow_count + 1;
+            false ->
+                Timings#timings.slow_count
+        end,
+    FastCount =
+        case MS < Timings#timings.fast_time of
+            true ->
+                Timings#timings.fast_count + 1;
+            false ->
+                Timings#timings.fast_count
+        end,
+    Timings#timings{
+        max = max(Timings#timings.max, MS),
+        min = min(Timings#timings.min, MS),
+        count = Timings#timings.count + 1,
+        sum = Timings#timings.sum + MS,
+        slow_count = SlowCount,
+        fast_count = FastCount
+    }.
+
+-spec log_timings(timings(), riak_object:bucket(), non_neg_integer()) -> ok.
+log_timings(Timings, Bucket, ResultCount) ->
+    Duration = timer:now_diff(os:timestamp(), Timings#timings.start_time),
+    ok = riak_kv_stat:update({index_fsm_time, Duration, ResultCount}),
+    log_timings(Timings,
+                Bucket,
+                ResultCount,
+                application:get_env(riak_kv, log_index_fsm, false)).
+
+log_timings(_Timings, _Bucket, _ResultCount, false) ->
+    ok;
+log_timings(Timings, Bucket, ResultCount, true) ->
+    ?LOG_INFO("Index query on bucket=~p " ++
+                "max_vnodeq=~w min_vnodeq=~w sum_vnodeq=~w count_vnodeq=~w " ++
+                "slow_count_vnodeq=~w fast_count_vnodeq=~w result_count=~w",
+                [Bucket,
+                    Timings#timings.max, Timings#timings.min,
+                    Timings#timings.sum, Timings#timings.count,
+                    Timings#timings.slow_count, Timings#timings.fast_count,
+                    ResultCount]).

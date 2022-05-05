@@ -48,6 +48,8 @@
 
 -export([repl_fetcher/1]).
 
+-include_lib("kernel/include/logger.hrl").
+
 -define(LOG_TIMER_SECONDS, 60).
 -define(ZERO_STATS,
         {{success, 0},
@@ -497,8 +499,7 @@ map_peer_to_wi_fun({QueueName, Iteration, PeerInfo}) ->
     GenClientFun = 
         case Protocol of
             http ->
-                InitClientFun =
-                    fun() -> rhc:create(Host, Port, "riak", []) end,
+                InitClientFun = client_start(http, Host, Port, []),
                 fun() ->
                     HTC = InitClientFun(),
                     fun(Request) ->
@@ -513,7 +514,7 @@ map_peer_to_wi_fun({QueueName, Iteration, PeerInfo}) ->
             pb ->
                 CaCertificateFilename =
                     app_helper:get_env(riak_kv, repl_cacert_filename),
-                CertfiicateFilename =
+                CertificateFilename =
                     app_helper:get_env(riak_kv, repl_cert_filename),
                 KeyFilename =
                     app_helper:get_env(riak_kv, repl_key_filename),
@@ -527,21 +528,10 @@ map_peer_to_wi_fun({QueueName, Iteration, PeerInfo}) ->
                             [{silence_terminate_crash, true},
                                 {credentials, SecuritySitename, ""},
                                 {cacertfile, CaCert},
-                                {certfile, CertfiicateFilename},
+                                {certfile, CertificateFilename},
                                 {keyfile, KeyFilename}]
                     end,
-                InitClientFun =
-                    fun() ->
-                        case riakc_pb_socket:start(Host, Port, Opts) of
-                            {ok, PBpid} ->
-                                PBpid;
-                            _ ->
-                                lager:info("No client initialised -"
-                                                ++ " not reachable ~s ~w",
-                                            [Host, Port]),
-                                no_pid
-                        end
-                    end,
+                InitClientFun = client_start(pb, Host, Port, Opts),
                 fun() ->
                     PBC = InitClientFun(),
                     fun(Request) ->
@@ -562,6 +552,22 @@ map_peer_to_wi_fun({QueueName, Iteration, PeerInfo}) ->
         end,
     {{QueueName, Iteration, PeerID},
         LocalClient, GenClientFun(), GenClientFun}.
+
+-spec client_start(pb|http, string(), pos_integer(), list()) 
+                    -> fun(() -> rhc:rhc()|pid()|no_pid).
+client_start(pb, Host, Port, Opts) ->
+    fun() ->
+        case riakc_pb_socket:start(Host, Port, Opts) of
+            {ok, PBpid} ->
+                PBpid;
+            _ ->
+                ?LOG_INFO("No client initialised -" ++ " not reachable ~s ~w",
+                            [Host, Port]),
+                no_pid
+        end
+    end;
+client_start(http, Host, Port, Opts) ->
+    fun() -> rhc:create(Host, Port, "riak", Opts) end.
 
 check_pbc_client(no_pid) ->
     false;
@@ -651,13 +657,13 @@ repl_fetcher(WorkItem) ->
                 ok = riak_kv_stat:update(ngrrepl_error),
                 done_work(UpdWorkItem, false, {error, error, no_client});
             {error, {conn_failed, {error, econnrefused}}} ->
-                lager:info("Snk worker connection refused to peer ~w", [Peer]),
+                ?LOG_INFO("Snk worker connection refused to peer ~w", [Peer]),
                 RemoteFun(close),
                 UpdWorkItem = setelement(3, WorkItem, RenewClientFun()),
                 ok = riak_kv_stat:update(ngrrepl_error),
                 done_work(UpdWorkItem, false, {error, error, econnrefused});
             {error, Bin} when is_binary(Bin) ->
-                lager:warning("Snk worker for peer ~w " ++
+                ?LOG_WARNING("Snk worker for peer ~w " ++
                                     "failed due to remote exception ~p",
                                 [Peer, binary_to_list(Bin)]),
                 RemoteFun(close),
@@ -667,7 +673,7 @@ repl_fetcher(WorkItem) ->
         end
     catch
         Type:Exception ->
-            lager:warning("Snk worker failed at Peer ~w due to ~w error ~w",
+            ?LOG_WARNING("Snk worker failed at Peer ~w due to ~w error ~w",
                             [Peer, Type, Exception]),
             RemoteFun(close),
             UpdWorkItem0 = setelement(3, WorkItem, RenewClientFun()),
@@ -782,7 +788,7 @@ log_mapfun({QueueName, Iteration, SinkWork}) ->
         {replmod_time, RT},
         {modified_time, MTS, MTM, MTH, MTD, MTL}}
         = SinkWork#sink_work.queue_stats,
-    lager:info("Queue=~w success_count=~w error_count=~w" ++
+    ?LOG_INFO("Queue=~w success_count=~w error_count=~w" ++
                 " mean_fetchtime_ms=~s" ++
                 " mean_pushtime_ms=~s" ++
                 " mean_repltime_ms=~s" ++
@@ -796,7 +802,7 @@ log_mapfun({QueueName, Iteration, SinkWork}) ->
         end,
     PeerDelays =
         lists:foldl(FoldPeerInfoFun, "", SinkWork#sink_work.peer_list),
-    lager:info("Queue=~w has peer delays of~s", [QueueName, PeerDelays]),
+    ?LOG_INFO("Queue=~w has peer delays of~s", [QueueName, PeerDelays]),
     {QueueName, Iteration, SinkWork#sink_work{queue_stats = ?ZERO_STATS}}.
 
 

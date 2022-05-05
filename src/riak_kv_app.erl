@@ -26,6 +26,8 @@
 -export([start/2, prep_stop/1, stop/1]).
 -export([check_kv_health/1]).
 
+-include_lib("kernel/include/logger.hrl").
+
 -include_lib("riak_kv_types.hrl").
 
 -define(SERVICES, [{riak_kv_pb_object, 3, 6}, %% ClientID stuff
@@ -39,7 +41,7 @@
                    {riak_kv_pb_coverage, 70, 71}, %% coverage requests
                    {riak_kv_pb_crdt, 80, 83}, %% CRDT requests
                    {riak_kv_pb_aaefold, 210, 231}, %% AAE Fold requests
-                   {riak_kv_pb_object, 202, 203}, %% Object Fetch Request
+                   {riak_kv_pb_object, 202, 205}, %% Object Fetch Request
                    {riak_kv_pb_ts, 90, 103}, %% time series PB requests
                    {riak_kv_ttb_ts, 104, 104} %% time series TTB requests
                   ]).
@@ -129,18 +131,9 @@ start(_Type, _StartArgs) ->
     %% Check the storage backend
     StorageBackend = app_helper:get_env(riak_kv, storage_backend),
     case code:ensure_loaded(StorageBackend) of
-        {error, embedded} ->
-            case code:load_file(StorageBackend) of
-                {error, LoadReason} ->
-                    lager:critical("storage_backend ~p is non-loadable: ~p.",
-                                   [StorageBackend, LoadReason]),
-                    throw({error, invalid_storage_backend});
-                {module, _} ->
-                    ok
-            end;
-        {error, EnsureReason} ->
-            lager:critical("storage_backend ~p is non-loadable: ~p.",
-                           [StorageBackend, EnsureReason]),
+        {error,nofile} ->
+            ?LOG_CRITICAL("storage_backend ~p is non-loadable.",
+                           [StorageBackend]),
             throw({error, invalid_storage_backend});
         {module, _} ->
             ok
@@ -249,6 +242,10 @@ start(_Type, _StartArgs) ->
             riak_core_capability:register({riak_kv, put_soft_limit},
                                           [true, false],
                                           false),
+            
+            riak_core_capability:register({riak_kv, tictacaae_prompted_repairs},
+                                            [true, false],
+                                            false),
 
             riak_core_capability:register({riak_kv, riak_ql_ddl_rec_version},
                                            [v2,v1],
@@ -305,32 +302,33 @@ prep_stop(_State) ->
     try %% wrap with a try/catch - application carries on regardless,
         %% no error message or logging about the failure otherwise.
 
-        lager:info("Stopping application riak_kv - marked service down.\n", []),
+        ?LOG_INFO("Stopping application riak_kv - marked service down.\n", []),
         riak_core_node_watcher:service_down(riak_kv),
 
         ok = riak_api_pb_service:deregister(?SERVICES),
-        lager:info("Unregistered pb services"),
+        ?LOG_INFO("Unregistered pb services"),
 
         %% Gracefully unregister riak_kv webmachine endpoints.
         [ webmachine_router:remove_route(R) || R <-
             riak_kv_web:dispatch_table() ],
-        lager:info("unregistered webmachine routes"),
+        ?LOG_INFO("unregistered webmachine routes"),
         wait_for_put_fsms(),
-        lager:info("all active put FSMs completed"),
+        ?LOG_INFO("all active put FSMs completed"),
 
         ok = riak_kv_qry_buffers:kill_all_qbufs(),
-        lager:info("cleaned up query buffers"),
+        ?LOG_INFO("cleaned up query buffers"),
         ok
+
     catch
         Type:Reason ->
-            lager:error("Stopping application riak_api - ~p:~p.\n", [Type, Reason])
+            ?LOG_ERROR("Stopping application riak_api - ~p:~p.\n", [Type, Reason])
     end,
     stopping.
 
 %% @spec stop(State :: term()) -> ok
 %% @doc The application:stop callback for riak.
 stop(_State) ->
-    lager:info("Stopped  application riak_kv.\n", []),
+    ?LOG_INFO("Stopped  application riak_kv.\n", []),
     ok.
 
 %% 719528 days from Jan 1, 0 to Jan 1, 1970
@@ -353,7 +351,7 @@ check_epoch() ->
             ok;
         N ->
             Epoch = calendar:gregorian_seconds_to_datetime(N),
-            lager:error("Riak expects your system's epoch to be Jan 1, 1970,"
+            ?LOG_ERROR("Riak expects your system's epoch to be Jan 1, 1970,"
                         "but your system says the epoch is ~p", [Epoch]),
             ok
     end.
@@ -382,10 +380,10 @@ check_kv_health(_Pid) ->
 
     case {Passed, Mode} of
         {false, enabled} ->
-            lager:info("Disabling riak_kv due to large message queues. "
+            ?LOG_INFO("Disabling riak_kv due to large message queues. "
                        "Offending vnodes: ~p", [SlowVNs]);
         {true, disabled} ->
-            lager:info("Re-enabling riak_kv after successful health check");
+            ?LOG_INFO("Re-enabling riak_kv after successful health check");
         _ ->
             ok
     end,
@@ -397,12 +395,12 @@ wait_for_put_fsms(N) ->
         Count ->
             case N of
                 0 ->
-                    lager:warning("Timed out waiting for put FSMs to flush"),
+                    ?LOG_WARNING("Timed out waiting for put FSMs to flush"),
                     ok;
-                _ -> lager:info("Waiting for ~p put FSMs to complete",
-                                [Count]),
-                     timer:sleep(1000),
-                     wait_for_put_fsms(N-1)
+                _ -> 
+                    ?LOG_INFO("Waiting for ~p put FSMs to complete", [Count]),
+                    timer:sleep(1000),
+                    wait_for_put_fsms(N-1)
             end
     end.
 
@@ -420,7 +418,7 @@ find_fsm_limit() ->
         Limit when is_integer(Limit) ->
             Limit;
         BadValue ->
-            lager:critical("Bad value provided for riak_kv.fsm_limit: ~p. "
+            ?LOG_CRITICAL("Bad value provided for riak_kv.fsm_limit: ~p. "
                            "Must be an integer or 'undefined'", [BadValue]),
             throw({error, bad_fsm_limit})
     end.

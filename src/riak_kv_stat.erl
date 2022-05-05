@@ -52,6 +52,8 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3, monitor_loop/1]).
 
+-include_lib("kernel/include/logger.hrl").
+
 -record(state, {repair_mon, monitors}).
 
 -define(SERVER, ?MODULE).
@@ -92,7 +94,7 @@ maybe_dispatch_to_sidejob(false, Arg) ->
     ok.
 
 stat_update_error(Arg, Class, Error) ->
-    lager:debug("Failed to update stat ~p due to (~p) ~p.", [Arg, Class, Error]).
+    ?LOG_DEBUG("Failed to update stat ~p due to (~p) ~p.", [Arg, Class, Error]).
 
 %% @doc
 %% Callback used by a {@link riak_kv_stat_worker} to perform actual update
@@ -154,7 +156,7 @@ handle_cast({monitor, Type, Pid}, State) ->
     case proplists:get_value(Type, State#state.monitors) of
         Monitor when is_pid(Monitor) ->
             Monitor ! {add_pid, Pid};
-        _ -> lager:error("Couldn't find process for ~p to add monitor", [Type])
+        _ -> ?LOG_ERROR("Couldn't find process for ~p to add monitor", [Type])
     end,
     {noreply, State};
 handle_cast(stop, State) ->
@@ -263,9 +265,18 @@ do_update({put_fsm_time, Bucket,  Microsecs, Stages, PerBucket, CRDTMod}) ->
     ok = create_or_update([P, ?APP, node, puts, Type, time], Microsecs, histogram),
     ok = do_stages([P, ?APP, node, puts, Type, time], Stages),
     do_put_bucket(PerBucket, {Bucket, Microsecs, Stages, Type});
+do_update({index_fsm_time, Microsecs, ResultCount}) ->
+    P = ?PFX,
+    ok = exometer:update([P, ?APP, index, fsm, complete], 1),
+    ok = exometer:update([P, ?APP, index, fsm, results], ResultCount),
+    ok = exometer:update([P, ?APP, index, fsm, time], Microsecs);
 do_update({read_repairs, Indices, Preflist}) ->
     ok = exometer:update([?PFX, ?APP, node, gets, read_repairs], 1),
     do_repairs(Indices, Preflist);
+do_update({tictac_aae, ExchangeState}) ->
+    ok = exometer:update([?PFX, ?APP, node, tictacaae, ExchangeState], 1);
+do_update({tictac_aae, ExchangeType, RepairCount}) ->
+    ok = exometer:update([?PFX, ?APP, node, tictacaae, ExchangeType], RepairCount);
 do_update(ngrfetch_nofetch) ->
     ok = exometer:update([?PFX, ?APP, node, gets, ngrfetch_nofetch], 1);
 do_update(ngrfetch_prefetch) ->
@@ -577,6 +588,24 @@ stats() ->
                                                {count, read_repairs_total}]},
      {[node, gets, skipped_read_repairs], spiral, [], [{one, skipped_read_repairs},
                                                        {count, skipped_read_repairs_total}]},
+     {[node, tictacaae, root_compare], spiral, [],
+        [{one, tictacaae_root_compare}, {count, tictacaae_root_compare_total}]},
+     {[node, tictacaae, branch_compare], spiral, [],
+        [{one, tictacaae_branch_compare}, {count, tictacaae_branch_compare_total}]},
+     {[node, tictacaae, clock_compare], spiral, [],
+        [{one, tictacaae_clock_compare}, {count, tictacaae_clock_compare_total}]},
+     {[node, tictacaae, not_supported], spiral, [],
+        [{one, tictacaae_not_supported}, {count, tictacaae_not_supported_total}]},
+     {[node, tictacaae, error], spiral, [],
+        [{one, tictacaae_error}, {count, tictacaae_error_total}]},
+     {[node, tictacaae, timeout], spiral, [],
+        [{one, tictacaae_timeout}, {count, tictacaae_timeout_total}]},
+     {[node, tictacaae, bucket], spiral, [], 
+        [{one, tictacaae_bucket}, {count, tictacaae_bucket_total}]},
+     {[node, tictacaae, modtime], spiral, [], 
+        [{one, tictacaae_modtime}, {count, tictacaae_modtime_total}]},
+     {[node, tictacaae, exchange], spiral, [], 
+        [{one, tictacaae_exchange}, {count, tictacaae_exchange_total}]},
      {[node, gets, ngrfetch_nofetch], spiral, [], [{one, ngrfetch_nofetch},
                                                     {count, ngrfetch_nofetch_total}]},
      {[node, gets, ngrfetch_prefetch], spiral, [], [{one, ngrfetch_prefetch},
@@ -729,6 +758,18 @@ stats() ->
      {[index, fsm, create], spiral, [], [{one, index_fsm_create}]},
      {[index, fsm, create, error], spiral, [], [{one, index_fsm_create_error}]},
      {[index, fsm, active], counter, [], [{value, index_fsm_active}]},
+     {[index, fsm, complete], spiral, [], [{one, index_fsm_complete}]},
+     {[index, fsm, results], histogram, [], [{mean, index_fsm_results_mean},
+                                                {median, index_fsm_results_median},
+                                                {95    , index_fsm_results_95},
+                                                {99    , index_fsm_results_99},
+                                                {max   , index_fsm_results_100}]},
+     {[index, fsm, time], histogram, [], [{mean , index_fsm_time_mean},
+                                               {median, index_fsm_time_median},
+                                               {95    , index_fsm_time_95},
+                                               {99    , index_fsm_time_99},
+                                               {max   , index_fsm_time_100}]},
+
      {[list, fsm, create], spiral, [], [{one  , list_fsm_create},
 					{count, list_fsm_create_total}]},
      {[list, fsm, create, error], spiral, [], [{one  , list_fsm_create_error},
@@ -1050,7 +1091,7 @@ create_or_update_histogram_test() ->
         ok = repeat_create_or_update(Metric, 1, histogram, 100),
         ?assertNotEqual(exometer:get_value(Metric), 0),
         Stats = get_stats(),
-        %%lager:info("stats prop list ~s", [Stats]),
+        ?LOG_INFO("stats prop list ~s", [Stats]),
         ?assertNotEqual(proplists:get_value({node_put_fsm_counter_time_mean}, Stats), 0)
     after
         ok = stop_exometer_test_env()

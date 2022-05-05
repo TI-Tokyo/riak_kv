@@ -30,10 +30,9 @@
          start/2,
          stop/1,
          get/3,
-         batch_put/4,
+         flush_put/5,
          put/5,
          async_put/5,
-         sync_put/5,
          delete/4,
          drop/1,
          fix_index/3,
@@ -58,6 +57,8 @@
 %% around for debugging/comparison.
 -export([orig_to_object_key/2, orig_from_object_key/1]).
 
+-include_lib("kernel/include/logger.hrl").
+
 -include("riak_kv_index.hrl").
 -include("riak_kv_ts.hrl").
 
@@ -75,8 +76,9 @@
 -endif.
 
 -define(API_VERSION, 1).
--define(CAPABILITIES, [async_fold, indexes, index_reformat, size,
-        iterator_refresh, snap_prefold]).
+-define(CAPABILITIES,
+        [async_fold, indexes, index_reformat, size,
+            iterator_refresh, snap_prefold, flush_put]).
 -define(FIXED_INDEXES_KEY, fixed_indexes).
 
 -record(state, {ref :: eleveldb:db_ref() | undefined,
@@ -182,13 +184,41 @@ get(Bucket, Key, #state{read_opts=ReadOpts,
             {error, Reason, State}
     end.
 
+-type index_spec() :: {add, Index, SecondaryKey} | {remove, Index, SecondaryKey}.
 
-%% Create a list of backend put-related updates for this object
-put_operations(Bucket, PrimaryKey, IndexSpecs, Val, #state{legacy_indexes=WriteLegacy,
-                                                           fixed_indexes=FixedIndexes}) ->
+%% @doc Normal put, use existing option, do not modify write options
+-spec put(riak_object:bucket(), riak_object:key(), [index_spec()], binary(), state()) ->
+                 {ok, state()} |
+                 {error, term(), state()}.
+put(Bucket, PrimaryKey, IndexSpecs, Val, State) ->
+    do_put(Bucket, PrimaryKey, IndexSpecs, Val, false, State).
+
+%% @doc put_flush capability - do a put with a flush to disk
+-spec flush_put(riak_object:bucket(), riak_object:key(), [index_spec()], binary(), state()) ->
+                 {ok, state()} |
+                 {error, term(), state()}.
+flush_put(Bucket, PrimaryKey, IndexSpecs, Val, State) ->
+    do_put(Bucket, PrimaryKey, IndexSpecs, Val, true, State).
+
+%% @doc Insert an object into the eleveldb backend.
+-spec do_put(riak_object:bucket(), riak_object:key(), [index_spec()], binary(), boolean(), state()) ->
+                 {ok, state()} |
+                 {error, term(), state()}.
+do_put(Bucket, PrimaryKey, IndexSpecs, Val, Sync, #state{ref=Ref,
+                                                         write_opts=WriteOpts,
+                                                         legacy_indexes=WriteLegacy,
+                                                         fixed_indexes=FixedIndexes} = State) ->
     %% Create the KV update...
     StorageKey = to_object_key(Bucket, PrimaryKey),
     Updates1 = [{put, StorageKey, Val} || Val /= undefined],
+
+    %% Setup write options...
+    WriteOpts2 = case Sync of
+        true ->
+            lists:keyreplace(sync,1,WriteOpts, {sync,Sync});
+        _ ->
+            WriteOpts
+    end,
 
     %% Convert IndexSpecs to index updates...
     F = fun({add, Field, Value}) ->
@@ -202,38 +232,9 @@ put_operations(Bucket, PrimaryKey, IndexSpecs, Val, #state{legacy_indexes=WriteL
                 index_deletes(FixedIndexes, Bucket, PrimaryKey, Field, Value)
         end,
     Updates2 = lists:flatmap(F, IndexSpecs),
-    Updates1 ++ Updates2.
-
-%% @doc Insert an object into the eleveldb backend.
--type index_spec() :: {add, Index, SecondaryKey} | {remove, Index, SecondaryKey}.
--spec put(riak_object:bucket(), riak_object:key(), [index_spec()], binary(), state()) ->
-                 {ok, state()} |
-                 {error, term(), state()}.
-put(Bucket, PrimaryKey, IndexSpecs, Val, #state{ref=Ref,
-                                                write_opts=WriteOpts}=State) ->
-    Operations = put_operations(Bucket, PrimaryKey, IndexSpecs, Val, State),
 
     %% Perform the write...
-    case eleveldb:write(Ref, Operations, WriteOpts) of
-        ok ->
-            {ok, State};
-        {error, Reason} ->
-            {error, Reason, State}
-    end.
-
-%% @doc Insert a batch of objects (must contain the same index values) into the eleveldb backend.
--spec batch_put(term(), [{{riak_object:bucket(), riak_object:key()}, binary()}], [index_spec()], state()) ->
-                 {ok, state()} |
-                 {error, term(), state()}.
-batch_put(Context, Values, IndexSpecs, #state{ref=Ref,
-                                              write_opts=WriteOpts}=State) ->
-    Operations = lists:flatmap(fun({{Bucket, Key}, Val}) ->
-                                       put_operations(Bucket, Key, IndexSpecs, Val, State)
-                               end,
-                               Values),
-
-    %% Perform the write...
-    case eleveldb:sync_write(Context, Ref, Operations, WriteOpts) of
+    case eleveldb:write(Ref, Updates1 ++ Updates2, WriteOpts2) of
         ok ->
             {ok, State};
         {error, Reason} ->
@@ -247,15 +248,6 @@ async_put(Context, Bucket, PrimaryKey, Val, #state{ref=Ref, write_opts=WriteOpts
     StorageKey = to_object_key(Bucket, PrimaryKey),
     eleveldb:async_put(Ref, Context, StorageKey, Val, WriteOpts),
     {ok, State}.
-
-sync_put(Context, Bucket, PrimaryKey, Val, #state{ref=Ref, write_opts=WriteOpts}=State) ->
-    StorageKey = to_object_key(Bucket, PrimaryKey),
-    case eleveldb:sync_put(Ref, Context, StorageKey, Val, WriteOpts) of
-        ok ->
-            {ok, State};
-        {error, Reason}  ->
-            {error, Reason, State}
-    end.
 
 indexes_fixed(#state{ref=Ref,read_opts=ReadOpts}) ->
     case eleveldb:get(Ref, to_md_key(?FIXED_INDEXES_KEY), ReadOpts) of
@@ -283,16 +275,16 @@ fix_index(IndexKeys, ForUpgrade, #state{ref=Ref,
   when is_list(IndexKeys) ->
     FoldFun =
         fun(ok, {Success, Ignore, Error}) ->
-                {Success+1, Ignore, Error};
+               {Success+1, Ignore, Error};
            (ignore, {Success, Ignore, Error}) ->
-                {Success, Ignore+1, Error};
+               {Success, Ignore+1, Error};
            ({error, _}, {Success, Ignore, Error}) ->
-                {Success, Ignore, Error+1}
+               {Success, Ignore, Error+1}
         end,
     Totals =
         lists:foldl(FoldFun, {0,0,0},
                     [fix_index(IndexKey, ForUpgrade, Ref, ReadOpts, WriteOpts)
-                     || {_Bucket, IndexKey} <- IndexKeys]),
+                        || {_Bucket, IndexKey} <- IndexKeys]),
     {reply, Totals, State};
 fix_index(IndexKey, ForUpgrade, #state{ref=Ref,
                                        read_opts=ReadOpts,
@@ -353,6 +345,7 @@ set_legacy_indexes(State, WriteLegacy) ->
 -spec fixed_index_status(state()) -> boolean().
 fixed_index_status(#state{fixed_indexes=Fixed}) ->
     Fixed.
+
 
 %% @doc Delete an object from the eleveldb backend
 -spec delete(riak_object:bucket(), riak_object:key(), [index_spec()], state()) ->
@@ -436,7 +429,7 @@ fold_keys(FoldKeysFun, Acc, Opts, #state{fold_opts=FoldOpts,
     Itr =
         case lists:member(snap_prefold, Opts) of
             true ->
-                lager:info("Snapping database for deferred query"),
+                ?LOG_INFO("Snapping database for deferred query"),
                 {ok, Itr0} = eleveldb:iterator(Ref, FoldOpts1, keys_only),
                 Itr0;
             false ->
@@ -451,7 +444,7 @@ fold_keys(FoldKeysFun, Acc, Opts, #state{fold_opts=FoldOpts,
                         not_snapped ->
                             eleveldb:fold_keys(Ref, FoldFun, Acc, FoldOpts1);
                         _ ->
-                            lager:info("Deferred fold initiated on previous snap"),
+                            ?LOG_INFO("Deferred fold initiated on previous snap"),
                             eleveldb:do_fold(Itr, FoldFun, Acc, FoldOpts1)
                     end
                 catch
@@ -780,7 +773,7 @@ init_state(DataRoot, Config) ->
     BS = proplists:get_value(block_size, OpenOpts, false),
     case BS /= false andalso SSTBS == false of
         true ->
-            lager:warning("eleveldb block_size has been renamed sst_block_size "
+            ?LOG_WARNING("eleveldb block_size has been renamed sst_block_size "
                           "and the current setting of ~p is being ignored.  "
                           "Changing sst_block_size is strongly cautioned "
                           "against unless you know what you are doing.  Remove "
@@ -791,7 +784,7 @@ init_state(DataRoot, Config) ->
     end,
 
     %% Generate a debug message with the options we'll use for each operation
-    lager:debug("Datadir ~s options for LevelDB: ~p\n",
+    ?LOG_DEBUG("Datadir ~s options for LevelDB: ~p\n",
                 [DataRoot, [{open, OpenOpts}, {read, ReadOpts}, {write, WriteOpts}, {fold, FoldOpts}]]),
     #state { data_root = DataRoot,
              open_opts = OpenOpts,
@@ -819,7 +812,7 @@ open_db(State0, RetriesLeft, _) ->
             case lists:prefix("IO error: lock ", OpenErr) of
                 true ->
                     SleepFor = app_helper:get_env(riak_kv, eleveldb_open_retry_delay, 2000),
-                    lager:debug("Leveldb backend retrying ~p in ~p ms after error ~s\n",
+                    ?LOG_DEBUG("Leveldb backend retrying ~p in ~p ms after error ~s\n",
                                 [State0#state.data_root, SleepFor, OpenErr]),
                     timer:sleep(SleepFor),
                     open_db(State0, RetriesLeft - 1, Reason);
@@ -1120,7 +1113,7 @@ to_object_key(Bucket, Key) -> %% Riak 1.0 keys
 orig_from_object_key(LKey) ->
     case (catch sext:decode(LKey)) of
         {'EXIT', _} ->
-            lager:warning("Corrupted object key, discarding"),
+            ?LOG_WARNING("Corrupted object key, discarding"),
             ignore;
         {o, Bucket, Key} ->
             {Bucket, Key};
@@ -1162,7 +1155,7 @@ to_legacy_index_key(Bucket, Key, Field, Term) -> %% encode with legacy bignum en
 from_index_key(LKey) ->
     case (catch sext:decode(LKey)) of
         {'EXIT', _} ->
-            lager:warning("Corrupted index key, discarding"),
+            ?LOG_WARNING("Corrupted index key, discarding"),
             ignore;
         {i, Bucket, Field, Term, Key} ->
             {Bucket, Key, Field, Term};

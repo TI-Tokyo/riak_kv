@@ -88,6 +88,8 @@
 -export([handoff_data_encoding_method/0]).
 -export([set_vnode_forwarding/2]).
 
+-include_lib("kernel/include/logger.hrl").
+
 -include_lib("riak_kv_vnode.hrl").
 -include_lib("riak_kv_index.hrl").
 -include_lib("riak_kv_map_phase.hrl").
@@ -215,7 +217,7 @@
     %% Queue time in ms to prompt a sync ping.
 -define(AAE_SKIP_COUNT, 10).
 -define(AAE_LOADING_WAIT, 5000).
--define(EXCHANGE_PAUSE_MS, 1000).
+-define(AAE_REPAIR_LOOPS, 8).
 
 -define(AF1_QUEUE, riak_core_node_worker_pool:af1()).
     %% Assured Forwarding - pool 1
@@ -252,7 +254,8 @@
                   readrepair=false :: boolean(),
                   is_index=false :: boolean(), %% set if the b/end supports indexes
                   crdt_op = undefined :: undefined | term(), %% if set this is a crdt operation
-                  hash_ops = no_hash_ops
+                  hash_ops = no_hash_ops,
+                  sync_on_write = undefined :: undefined | atom()
                  }).
 -type putargs() :: #putargs{}.
 
@@ -282,7 +285,7 @@ maybe_create_hashtrees(true, State=#state{idx=Index, upgrade_hashtree=Upgrade,
                     monitor(process, Trees),
                     State#state{hashtrees=Trees, upgrade_hashtree=false};
                 Error ->
-                    lager:info("riak_kv/~p: unable to start index_hashtree: ~p",
+                    ?LOG_INFO("riak_kv/~p: unable to start index_hashtree: ~p",
                                [Index, Error]),
                     erlang:send_after(1000, self(), retry_create_hashtree),
                     State#state{hashtrees=undefined}
@@ -340,7 +343,7 @@ maybe_start_aaecontroller(active, State=#state{mod=Mod,
                                     Preflists,
                                     RootPath,
                                     ObjSplitFun),
-    lager:info("AAE Controller started with pid=~w", [AAECntrl]),
+    ?LOG_INFO("AAE Controller started with pid=~w", [AAECntrl]),
 
     InitD = erlang:phash2(Partition, 256),
     % Space out the initial poke to avoid over-coordination between vnodes,
@@ -385,7 +388,8 @@ determine_aaedata_root(Partition) ->
 preflistfun(Bucket, Key) -> riak_kv_util:get_index_n({Bucket, Key}).
 
 
--spec tictac_returnfun(partition(), store|trees|exchange) -> fun().
+-spec tictac_returnfun(partition(), store|trees|exchange) ->
+                    fun((term()) -> ok).
 %% @doc
 %% Function to be passed to return a response once an operation is complete
 tictac_returnfun(Partition, exchange) ->
@@ -428,7 +432,7 @@ queue_tictactreerebuild(AAECntrl, Partition, OnlyIfBroken, State) ->
     ReturnFun = tictac_returnfun(Partition, trees),
     FoldFun =
         fun() ->
-            lager:info("Starting tree rebuild for partition=~w", [Partition]),
+            ?LOG_INFO("Starting tree rebuild for partition=~w", [Partition]),
             SW = os:timestamp(),
             case when_loading_complete(AAECntrl,
                                         Preflists,
@@ -439,11 +443,11 @@ queue_tictactreerebuild(AAECntrl, Partition, OnlyIfBroken, State) ->
                     FinishFun(Output),
                     Duration =
                         timer:now_diff(os:timestamp(), SW) div (1000 * 1000),
-                    lager:info("Tree rebuild complete for partition=~w" ++
+                    ?LOG_INFO("Tree rebuild complete for partition=~w" ++
                                 " in duration=~w seconds",
                                 [Partition, Duration]);
                 skipped ->
-                    lager:info("Tree rebuild skipped for partition=~w",
+                    ?LOG_INFO("Tree rebuild skipped for partition=~w",
                                 [Partition])
             end,
             ok
@@ -795,11 +799,11 @@ init([Index]) ->
         case MDCacheSize of
             N when is_integer(N),
                    N > 0 ->
-                lager:debug("Initializing metadata cache with size limit: ~p bytes",
+                ?LOG_DEBUG("Initializing metadata cache with size limit: ~p bytes",
                            [MDCacheSize]),
                 new_md_cache(VId);
             _ ->
-                lager:debug("No metadata cache size defined, not starting"),
+                ?LOG_DEBUG("No metadata cache size defined, not starting"),
                 undefined
         end,
     EnableTictacAAE =
@@ -858,12 +862,12 @@ init([Index]) ->
                     {ok, State}
             end;
         {error, Reason} ->
-            lager:error("Failed to start ~p backend for index ~p error: ~p",
+            ?LOG_ERROR("Failed to start ~p backend for index ~p error: ~p",
                         [Mod, Index, Reason]),
             riak:stop("backend module failed to start."),
             {error, Reason};
         {'EXIT', Reason1} ->
-            lager:error("Failed to start ~p backend for index ~p crash: ~p",
+            ?LOG_ERROR("Failed to start ~p backend for index ~p crash: ~p",
                         [Mod, Index, Reason1]),
             riak:stop("backend module failed to start."),
             {error, Reason1}
@@ -935,7 +939,32 @@ handle_command({aae, AAERequest, IndexNs, Colour}, Sender, State) ->
                                                     IndexNs,
                                                     SegmentIDs,
                                                     ReturnFun,
+                                                    IndexNFun);
+                {fetch_clocks, SegmentIDs, MR} ->
+                    IndexNFun =
+                        fun(B, K) -> riak_kv_util:get_index_n({B, K}) end,
+                    ModifiedLimiter = aaefold_setmodifiedlimiter(MR),
+                    aae_controller:aae_fetchclocks(Cntrl,
+                                                    IndexNs,
+                                                    all,
+                                                    SegmentIDs,
+                                                    ModifiedLimiter,
+                                                    ReturnFun,
+                                                    IndexNFun);
+                {fetch_clocks_range, Bucket, KR, SF, MR} ->
+                    IndexNFun =
+                        fun(B, K) -> riak_kv_util:get_index_n({B, K}) end,
+                    RangeLimiter = aaefold_setrangelimiter(Bucket, KR),
+                    ModifiedLimiter = aaefold_setmodifiedlimiter(MR),
+                    SegmentIDs = element(2, SF),
+                    aae_controller:aae_fetchclocks(Cntrl,
+                                                    IndexNs,
+                                                    RangeLimiter,
+                                                    SegmentIDs,
+                                                    ModifiedLimiter,
+                                                    ReturnFun,
                                                     IndexNFun)
+
             end
     end,
     {noreply, State};
@@ -1052,6 +1081,7 @@ handle_command({refresh_index_data, BKey, OldIdxData}, Sender,
                         {false, undefined, [], UpModState}
                 end,
             IndexSpecs = riak_object:diff_index_data(OldIdxData, IdxData),
+
             {Reply, ModState3} =
             case Mod:put(Bucket, Key, IndexSpecs, undefined, ModState2) of
                 {ok, UpModState2} ->
@@ -1092,13 +1122,13 @@ handle_command({rebuild_complete, store, ST}, _Sender, State) ->
     %% If store rebuild complete - then need to rebuild trees
     AAECntrl = State#state.aae_controller,
     Partition = State#state.idx,
-    lager:info("AAE pid=~w partition=~w rebuild store complete " ++
+    ?LOG_INFO("AAE pid=~w partition=~w rebuild store complete " ++
                 "in duration=~w seconds",
                 [AAECntrl,
                     Partition,
                     timer:now_diff(os:timestamp(), ST) div (1000 * 1000)]),
     queue_tictactreerebuild(AAECntrl, Partition, false, State),
-    lager:info("AAE pid=~w rebuild trees queued", [AAECntrl]),
+    ?LOG_INFO("AAE pid=~w rebuild trees queued", [AAECntrl]),
     {noreply, State};
 
 handle_command({rebuild_complete, trees, _ST}, _Sender, State) ->
@@ -1107,33 +1137,28 @@ handle_command({rebuild_complete, trees, _ST}, _Sender, State) ->
     Partition = State#state.idx,
     case State#state.tictac_rebuilding of
         false ->
-            lager:warning("Rebuild complete for Partition=~w but not expected",
+            ?LOG_WARNING("Rebuild complete for Partition=~w but not expected",
                             [Partition]),
             {noreply, State};
         TS ->
             ProcessTime = timer:now_diff(os:timestamp(), TS) div (1000 * 1000),
-            lager:info("Rebuild process for partition=~w complete in " ++
+            ?LOG_INFO("Rebuild process for partition=~w complete in " ++
                         "duration=~w seconds", [Partition, ProcessTime]),
             {noreply, State#state{tictac_rebuilding = false}}
     end;
 
-handle_command({exchange_complete, {EndState, DeltaCount}, ST},
+handle_command({exchange_complete, ExchangeResult, ST},
                                                     _Sender, State) ->
     %% Record how many deltas were seen in the exchange
     %% Revert the skip_count to 0 so that exchanges can be made at the next
     %% prompt.
     XC = State#state.tictac_exchangecount + 1,
-    DC = State#state.tictac_deltacount + DeltaCount,
+    DC = State#state.tictac_deltacount + element(2, ExchangeResult),
     XT = State#state.tictac_exchangetime + timer:now_diff(os:timestamp(), ST),
-    case EndState of
-        PositiveState
-            when PositiveState == root_compare;
-                 PositiveState == branch_compare ->
-            ok;
-        UnwelcomeState ->
-            lager:info("Tictac AAE exchange for partition=~w pending_state=~w",
-                        [State#state.idx, UnwelcomeState])
-    end,
+    riak_kv_tictacaae_repairs:log_tictac_result(ExchangeResult,
+                                                exchange,
+                                                initial,
+                                                State#state.idx),
     {noreply, State#state{tictac_exchangecount = XC,
                             tictac_deltacount = DC,
                             tictac_exchangetime = XT,
@@ -1152,7 +1177,7 @@ handle_command({upgrade_hashtree, Node}, _, State=#state{hashtrees=HT}) ->
                         {legacy, legacy} ->
                             {reply, ok, State};
                         {legacy, _} ->
-                            lager:notice("Destroying and upgrading index_hashtree for Index: ~p", [State#state.idx]),
+                            ?LOG_NOTICE("Destroying and upgrading index_hashtree for Index: ~p", [State#state.idx]),
                             _ = riak_kv_index_hashtree:destroy(HT),
                             riak_kv_entropy_info:clear_tree_build(State#state.idx),
                             State1 = State#state{upgrade_hashtree=true,hashtrees=undefined},
@@ -1189,7 +1214,7 @@ handle_command(tictacaae_exchangepoke, _Sender, State) ->
             % This is normal.  On subsequent runs we expected to see expected
             % and complete to be aligned (and the loop duration with be about
             % expected * tictacaae_exchangetick).
-            lager:info("Tictac AAE loop completed for partition=~w with "
+            ?LOG_INFO("Tictac AAE loop completed for partition=~w with "
                             ++ "exchanges expected=~w "
                             ++ "exchanges completed=~w "
                             ++ "total deltas=~w "
@@ -1201,7 +1226,8 @@ handle_command(tictacaae_exchangepoke, _Sender, State) ->
                             State#state.tictac_deltacount,
                             State#state.tictac_exchangetime div (1000 * 1000),
                             LoopDuration div (1000 * 1000)]),
-            {noreply, State#state{tictac_exchangequeue = Exchanges,
+            {noreply, State#state{tictac_exchangequeue =
+                                        riak_kv_util:shuffle_list(Exchanges),
                                     tictac_exchangecount = 0,
                                     tictac_deltacount = 0,
                                     tictac_exchangetime = 0,
@@ -1228,45 +1254,27 @@ handle_command(tictacaae_exchangepoke, _Sender, State) ->
                         lists:keyfind(Remote, 1, PL)} of
                     {{Local, LN}, {Remote, RN}} ->
                         IndexN = {DocIdx, N},
-                        BlueList =
-                            [{riak_kv_vnode:aae_send({Local, LN}), [IndexN]}],
-                        PinkList =
-                            [{riak_kv_vnode:aae_send({Remote, RN}), [IndexN]}],
-                        RepairFun =
-                            riak_kv_get_fsm:prompt_readrepair([{Local, LN},
-                                                                {Remote, RN}]),
-                        ReplyFun = tictac_returnfun(Idx, exchange),
                         ScanTimeout = ?AAE_SKIP_COUNT * XTick,
-                        ExchangePause =
-                            app_helper:get_env(riak_kv,
-                                                tictacaae_exchangepause,
-                                                ?EXCHANGE_PAUSE_MS),
-                        BaseOptions =
-                            [{scan_timeout, ScanTimeout},
-                                {transition_pause_ms, ExchangePause},
-                                {purpose, kv_aae}],
-                        ExchangeOptions =
+                        LoopCount =
                             case app_helper:get_env(riak_kv,
-                                                    tictacaae_maxresults) of
-                                MR when is_integer(MR) ->
-                                    BaseOptions ++ [{max_results, MR}];
+                                                    tictacaae_repairloops) of
+                                LC when is_integer(LC) ->
+                                    LC;
                                 _ ->
-                                    BaseOptions
+                                    ?AAE_REPAIR_LOOPS
                             end,
-                        aae_exchange:start(full,
-                                            BlueList,
-                                            PinkList,
-                                            RepairFun,
-                                            ReplyFun,
-                                            none,
-                                            ExchangeOptions),
+                        ReplyFun = tictac_returnfun(Idx, exchange),
+                        riak_kv_tictacaae_repairs:prompt_tictac_exchange(
+                                {Local, LN}, {Remote, RN}, IndexN,
+                                ScanTimeout, LoopCount, ReplyFun, none),
+
                         ?AAE_SKIP_COUNT;
                     _ ->
-                        lager:warning("Proposed exchange between ~w and ~w " ++
-                                        "not currently supported within " ++
-                                        "preflist for IndexN=~w possibly " ++
-                                        "due to node failure",
-                                        [Local, Remote, {DocIdx, N}]),
+                        ?LOG_WARNING("Proposed exchange between ~w and ~w "
+                                     "not currently supported within "
+                                     "preflist for IndexN=~w possibly "
+                                     "due to node failure",
+                                     [Local, Remote, {DocIdx, N}]),
                             0
                 end,
             ok = aae_controller:aae_ping(State#state.aae_controller,
@@ -1275,7 +1283,7 @@ handle_command(tictacaae_exchangepoke, _Sender, State) ->
             {noreply, State#state{tictac_exchangequeue = Rest,
                                     tictac_skiptick = SkipCount}};
         {_, SkipCount} ->
-            lager:warning("Skipping a tick due to non_zero " ++
+            ?LOG_WARNING("Skipping a tick due to non_zero " ++
                             "skip_count=~w", [SkipCount]),
             {noreply, State#state{tictac_skiptick = max(0, SkipCount - 1)}}
     end;
@@ -1304,7 +1312,7 @@ handle_command(tictacaae_rebuildpoke, Sender, State) ->
 
     case {TimeToRebuild < 0, RebuildPending} of
         {false, _} ->
-            lager:info("No rebuild as next_rebuild=~w seconds in the future",
+            ?LOG_INFO("No rebuild as next_rebuild=~w seconds in the future",
                         [TimeToRebuild / (1000 * 1000)]),
             {noreply, State};
         {true, true} ->
@@ -1313,24 +1321,24 @@ handle_command(tictacaae_rebuildpoke, Sender, State) ->
                     / (1000 * 1000),
             case HowLong > ?MAX_REBUILD_TIME of
                 true ->
-                    lager:warning("Pending rebuild time is now " ++
-                                    "~w seconds for partition ~w " ++
-                                    "... something isn't right",
-                                [HowLong, State#state.idx]);
+                    ?LOG_WARNING("Pending rebuild time is now "
+                                 "~w seconds for partition ~w "
+                                 "... something isn't right",
+                                 [HowLong, State#state.idx]);
                 false ->
-                    lager:info("Skip poke with rebuild pending duration=~w" ++
-                                " for partition ~w",
-                            [HowLong, State#state.idx])
+                    ?LOG_INFO("Skip poke with rebuild pending duration=~w" ++
+                                  " for partition ~w",
+                              [HowLong, State#state.idx])
             end,
             {noreply, State};
         {true, false} ->
             % Next Rebuild Time is in the past - prompt a rebuild
-            lager:info("Prompting tictac_aae rebuild for controller=~w",
-                        [State#state.aae_controller]),
+            ?LOG_INFO("Prompting tictac_aae rebuild for controller=~w",
+                      [State#state.aae_controller]),
             ReturnFun = tictac_returnfun(State#state.idx, store),
             State0 = State#state{tictac_rebuilding = os:timestamp()},
             case aae_controller:aae_rebuildstore(State#state.aae_controller,
-                                                    fun tictac_rebuild/3) of
+                                                 fun tictac_rebuild/3) of
                 ok ->
                     % This store is rebuilt already (i.e. it is native), so nothing to
                     % do here other than prompt the status change
@@ -1458,7 +1466,7 @@ handle_command({get_index_entries, Opts},
                     end
             end;
         false ->
-            lager:error("Backend ~p does not support incorrect index query", [Mod]),
+            ?LOG_ERROR("Backend ~p does not support incorrect index query", [Mod]),
             {reply, ignore, State}
     end;
 handle_command(report_hashtree_tokens, _Sender, State) ->
@@ -1776,7 +1784,7 @@ handle_coverage_aaefold(Query, InitAcc, Nval,
                     IndexNs, Filtered, ReturnFun, Cntrl, Sender,
                     State);
 handle_coverage_aaefold(_Q, InitAcc, _Nval, _Filter, Sender, State) ->
-    lager:warning("Attempt to aaefold on vnode with Tictac AAE disabled"),
+    ?LOG_WARNING("Attempt to aaefold on vnode with Tictac AAE disabled"),
     riak_core_vnode:reply(Sender, InitAcc),
     {noreply, State}.
 
@@ -1920,6 +1928,8 @@ handle_aaefold({repl_keys_range,
             {AccL, Count, QueueName, BatchSize} = Acc,
             case Count rem BatchSize of
                 0 ->
+                    % Reading in batch, then processing in batch assumed
+                    % to be more efficient
                     riak_kv_replrtq_src:replrtq_aaefold(QueueName, AccL),
                     {[RE], Count + 1, QueueName, BatchSize};
                 _ ->
@@ -1938,6 +1948,41 @@ handle_aaefold({repl_keys_range,
                                 WrappedFoldFun,
                                 InitAcc,
                                 [{clock, null}]),
+    {select_queue(?AF4_QUEUE, State), {fold, Folder, ReturnFun}, Sender, State};
+handle_aaefold({repair_keys_range,
+                        Bucket, KeyRange,
+                        ModifiedRange,
+                        all},
+                    InitAcc, _Nval,
+                    IndexNs, Filtered, ReturnFun, Cntrl, Sender,
+                    State) ->
+    {ok, C} = riak:local_client(),
+    FetchFun = riak_kv_clusteraae_fsm:repair_fun(C),
+    FoldFun =
+        fun(BF, KF, _EFs, Acc) ->
+            {AccL, Count, all, BatchSize} = Acc,
+            case Count rem BatchSize of
+                0 ->
+                    % Reading in batch, then processing in batch assumed
+                    % to be more efficient
+                    lists:foreach(FetchFun, AccL),
+                    {[{BF, KF}], Count + 1, all, BatchSize};
+                _ ->
+                    {[{BF, KF}|AccL], Count + 1, all, BatchSize}
+            end
+        end,
+    WrappedFoldFun = aaefold_withcoveragecheck(FoldFun, IndexNs, Filtered),
+    RangeLimiter = aaefold_setrangelimiter(Bucket, KeyRange),
+    ModifiedLimiter = aaefold_setmodifiedlimiter(ModifiedRange),
+    {async, Folder} =
+        aae_controller:aae_fold(Cntrl,
+                                RangeLimiter,
+                                all,
+                                ModifiedLimiter,
+                                false,
+                                WrappedFoldFun,
+                                InitAcc,
+                                []),
     {select_queue(?AF4_QUEUE, State), {fold, Folder, ReturnFun}, Sender, State};
 handle_aaefold({find_keys,
                         Bucket, KeyRange,
@@ -2185,11 +2230,17 @@ aaefold_setrangelimiter(Bucket, all) ->
 aaefold_setrangelimiter(Bucket, {StartKey, EndKey}) ->
     {key_range, Bucket, StartKey, EndKey}.
 
--spec aaefold_setmodifiedlimiter({date, pos_integer(), pos_integer()} | all)
+-spec aaefold_setmodifiedlimiter(
+        {date, pos_integer(), pos_integer()} |
+            all |
+            aae_keystore:modified_limiter())
                                     -> aae_keystore:modified_limiter().
 %% @doc
 %% Convert the format of the date limiter to one compatible with the aae store
 aaefold_setmodifiedlimiter({date, LowModDate, HighModDate})
+                        when is_integer(LowModDate), is_integer(HighModDate) ->
+    {LowModDate, HighModDate};
+aaefold_setmodifiedlimiter({LowModDate, HighModDate})
                         when is_integer(LowModDate), is_integer(HighModDate) ->
     {LowModDate, HighModDate};
 aaefold_setmodifiedlimiter(_) ->
@@ -2439,7 +2490,7 @@ handle_handoff_data(BinObj, State) ->
                 {reply, {error, Reason}, State2}
         end
     catch Error:Reason2 ->
-            lager:warning("Unreadable object discarded in handoff: ~p:~p",
+            ?LOG_WARNING("Unreadable object discarded in handoff: ~p:~p",
                           [Error, Reason2]),
             {reply, ok, State}
     end.
@@ -2453,7 +2504,7 @@ encode_handoff_item({B, K}, V) ->
         Value  = riak_object:to_binary_version(ObjFmt, B, K, V),
         encode_binary_object(B, K, Value)
     catch Error:Reason ->
-            lager:warning("Handoff encode failed: ~p:~p",
+            ?LOG_WARNING("Handoff encode failed: ~p:~p",
                           [Error,Reason]),
             corrupted
     end.
@@ -2487,7 +2538,7 @@ delete(State=#state{status_mgr_pid=StatusMgr, mod=Mod, modstate=ModState}) ->
             {ok, S} ->
                 S;
             {error, Reason, S2} ->
-                lager:error("Failed to drop ~p. Reason: ~p~n", [Mod, Reason]),
+                ?LOG_ERROR("Failed to drop ~p. Reason: ~p~n", [Mod, Reason]),
                 S2
         end,
     case State#state.hashtrees of
@@ -2620,7 +2671,7 @@ handle_info(retry_create_hashtree, State=#state{hashtrees=undefined}) ->
         undefined ->
             ok;
         _ ->
-            lager:info("riak_kv/~p: successfully started index_hashtree on retry",
+            ?LOG_INFO("riak_kv/~p: successfully started index_hashtree on retry",
                        [State#state.idx])
     end,
     {ok, State2};
@@ -2645,14 +2696,14 @@ handle_info({counter_lease, {FromPid, NewVnodeId, NewLease}}, State=#state{statu
     #state{counter=CounterState} = State,
     CS1 = CounterState#counter_state{lease=NewLease, leasing=false, cnt=1},
     State2 = State#state{vnodeid=NewVnodeId, counter=CS1},
-    lager:info("New Vnode id for ~p. Epoch counter rolled over.", [Idx]),
+    ?LOG_INFO("New Vnode id for ~p. Epoch counter rolled over.", [Idx]),
     {ok, State2};
 handle_info({aae_pong, QueueTime}, State) ->
     ok = riak_kv_stat:update({controller_queue, QueueTime}),
     QueueTimeMS = QueueTime div 1000,
     case QueueTimeMS >= State#state.max_aae_queue_time of
         true ->
-            lager:info("AAE queue queue_time=~w ms prompting sync ping",
+            ?LOG_INFO("AAE queue queue_time=~w ms prompting sync ping",
                         [QueueTimeMS]),
             StartDrain = os:timestamp(),
             R = aae_controller:aae_ping(State#state.aae_controller,
@@ -2662,22 +2713,22 @@ handle_info({aae_pong, QueueTime}, State) ->
                 ok ->
                     DrainTime =
                         timer:now_diff(os:timestamp(), StartDrain) div 1000,
-                    lager:info("AAE queue drained in ~w ms", [DrainTime]);
+                    ?LOG_INFO("AAE queue drained in ~w ms", [DrainTime]);
                 timeout ->
-                    lager:warning("AAE queue not yet drained due to timeout")
+                    ?LOG_WARNING("AAE queue not yet drained due to timeout")
             end;
         false ->
             ok
     end,
     {ok, State};
 handle_info({Ref, ok}, State) ->
-    lager:info("Ignoring ok returned after timeout for Ref ~p", [Ref]),
+    ?LOG_INFO("Ignoring ok returned after timeout for Ref ~p", [Ref]),
     {ok, State}.
 
 
 
 handle_exit(Pid, Reason, State=#state{status_mgr_pid=Pid, idx=Index, counter=CntrState}) ->
-    lager:error("Vnode status manager exit ~p", [Reason]),
+    ?LOG_ERROR("Vnode status manager exit ~p", [Reason]),
     %% The status manager died, start a new one
     #counter_state{lease_size=LeaseSize, leasing=Leasing, use=UseEpochCounter} = CntrState,
     {ok, NewPid} = riak_kv_vnode_status_mgr:start_link(self(), Index, UseEpochCounter),
@@ -2699,7 +2750,7 @@ handle_exit(_Pid, Reason, State) ->
     %% by riak_core_vnode_master to prevent
     %% messages from stacking up on the process message
     %% queue and never being processed.
-    lager:error("Linked process exited. Reason: ~p", [Reason]),
+    ?LOG_ERROR("Linked process exited. Reason: ~p", [Reason]),
     {stop, linked_process_crash, State}.
 
 %% Optional Callback. A node is about to exit. Ensure that this node doesn't
@@ -2759,6 +2810,7 @@ do_put(Sender, {Bucket, _Key}=BKey, RObj, ReqID, StartTime, Options, State) ->
                         StartTime
                 end,
     Coord = proplists:get_value(coord, Options, false),
+    SyncOnWrite = proplists:get_value(sync_on_write, Options, undefined),
     CRDTOp = proplists:get_value(counter_op, Options, proplists:get_value(crdt_op, Options, undefined)),
     PutArgs = #putargs{returnbody=proplists:get_value(returnbody,Options,false) orelse Coord,
                        coord=Coord,
@@ -2770,7 +2822,8 @@ do_put(Sender, {Bucket, _Key}=BKey, RObj, ReqID, StartTime, Options, State) ->
                        starttime=StartTime,
                        readrepair = ReadRepair,
                        prunetime=PruneTime,
-                       crdt_op = CRDTOp},
+                       crdt_op = CRDTOp,
+                       sync_on_write = SyncOnWrite},
     {PrepPutRes, UpdPutArgs, State2} = prepare_put(State, PutArgs),
     {Reply, UpdState} = perform_put(PrepPutRes, State2, UpdPutArgs),
     riak_core_vnode:reply(Sender, Reply),
@@ -2792,7 +2845,7 @@ final_delete(BKey, DeleteHash, State = #state{mod=Mod, modstate=ModState}) ->
                 {true, DeleteHash} ->
                     do_backend_delete(BKey, RObj, State#state{modstate=ModState1});
                 {IsDeleted, OtherHash} ->
-                    lager:info("Final delete failure " ++
+                    ?LOG_INFO("Final delete failure " ++
                                 "~p deleted ~w hashes ~w ~w",
                                 [BKey, IsDeleted, DeleteHash, OtherHash]),
                     State#state{modstate=ModState1}
@@ -2946,7 +2999,7 @@ prepare_put_existing_object(#state{idx =Idx} = State,
                                             PutArgs, State2,
                                             IndexSpecs, IndexBackend);
                 {error, Reason} ->
-                    lager:error("Error on allow_mult ~w", [Reason]),
+                    ?LOG_ERROR("Error on allow_mult ~w", [Reason]),
                     {{fail, Idx, Reason}, PutArgs, State2}
             end
     end.
@@ -3077,32 +3130,49 @@ perform_put({true, {_Obj, _OldObj}=Objects},
                      reqid=ReqID,
                      coord=Coord,
                      index_specs=IndexSpecs,
-                     readrepair=ReadRepair}) ->
+                     readrepair=ReadRepair,
+                     sync_on_write=SyncOnWrite}) ->
     case ReadRepair of
         true ->
             MaxCheckFlag = no_max_check;
         false ->
             MaxCheckFlag = do_max_check
     end,
+    Sync =
+        case SyncOnWrite of
+            all ->
+                true;
+            %% 'one' does not override the backend value for the other nodes
+            %% therefore is only useful if the backend is configured to not
+            %% sync-on-write
+            one ->
+                Coord;
+            _ ->
+            %% anything but all or one means do the default configured backend
+            %% write
+                false
+        end,
     {Reply, State2} =
-        actual_put(BKey, Objects, IndexSpecs, RB, ReqID, MaxCheckFlag, Coord, State),
+        actual_put(BKey, Objects, IndexSpecs, RB, ReqID, MaxCheckFlag,
+                    {Coord, Sync}, State),
     {Reply, State2}.
 
 actual_put(BKey, {Obj, OldObj}, IndexSpecs, RB, ReqID, State) ->
-    actual_put(BKey, {Obj, OldObj}, IndexSpecs,
-                RB, ReqID, do_max_check, false, State).
+    actual_put(BKey, {Obj, OldObj}, IndexSpecs, RB, ReqID, do_max_check,
+                {false, false}, State).
 
 actual_put(BKey={Bucket, Key},
            {Obj, OldObj},
            IndexSpecs,
            RB, ReqID,
-           MaxCheckFlag, Coord,
-           State = #state{idx=Idx,
-                          mod=Mod,
-                          modstate=ModState,
-                          update_hook=UpdateHook}) ->
+           MaxCheckFlag,
+           {Coord, Sync},
+           State=#state{idx=Idx,
+                        mod=Mod,
+                        modstate=ModState,
+                        update_hook=UpdateHook}) ->
     case encode_and_put(Obj, Mod, Bucket, Key, IndexSpecs, ModState,
-                       MaxCheckFlag) of
+                       MaxCheckFlag, Sync) of
         {{ok, UpdModState}, EncodedVal} ->
             aae_update(Bucket, Key, Obj, OldObj, EncodedVal, State),
             nextgenrepl(Bucket, Key, Obj, size(EncodedVal),
@@ -3175,14 +3245,14 @@ enforce_allow_mult(Obj, OldObj, BProps) ->
             OldClock = riak_object:vclock(OldObj),
             Bucket = riak_object:bucket(OldObj),
             Key = riak_object:key(OldObj),
-            lager:error("Unexpected empty contents after merge"
+            ?LOG_ERROR("Unexpected empty contents after merge"
                             ++ " object bucket=~w key=~w"
                             ++ " merged_clock=~w old_clock=~w",
                             [Bucket, Key, MergedClock, OldClock]),
             OldValSum =
                 lists:map(fun({D, V}) -> {D, erlang:phash2(V)} end,
                             riak_object:get_dotted_values(OldObj)),
-            lager:error("Summary of old object values ~w", [OldValSum]),
+            ?LOG_ERROR("Summary of old object values ~w", [OldValSum]),
             {error, empty_contents};
         {true, _, false} ->
             {ok, Obj};
@@ -3198,7 +3268,7 @@ enforce_allow_mult(Obj, OldObj, BProps) ->
             % be removed in 2.9.1
             Bucket = riak_object:bucket(OldObj),
             Key = riak_object:key(OldObj),
-            lager:error("Unexpected head object after merge"
+            ?LOG_ERROR("Unexpected head object after merge"
                             ++ " object bucket=~w key=~w",
                             [Bucket, Key]),
             {error, head_object}
@@ -3339,7 +3409,7 @@ do_get_object(Bucket, Key, Mod, ModState, BinFetchFun) ->
                     WarnSize = app_helper:get_env(riak_kv, warn_object_size),
                     case BinSize > WarnSize of
                         true ->
-                            lager:warning("Read large object ~p/~p (~p bytes)",
+                            ?LOG_WARNING("Read large object ~p/~p (~p bytes)",
                                           [Bucket, Key, BinSize]);
                         false ->
                             ok
@@ -3352,7 +3422,7 @@ do_get_object(Bucket, Key, Mod, ModState, BinFetchFun) ->
                                 {ok, RObj, _UpdModState}
                         end
                     catch _:_ ->
-                            lager:warning("Unreadable object ~p/~p discarded",
+                            ?LOG_WARNING("Unreadable object ~p/~p discarded",
                                           [Bucket,Key]),
                             {error, not_found, _UpdModState}
                     end;
@@ -3489,8 +3559,8 @@ result_fun_ack(Bucket, Sender) ->
                     erlang:demonitor(Monitor, [flush]),
                     throw(stop_fold);
                 {'DOWN', Monitor, process, Pid, Reason} ->
-                    lager:error("Process ~w down for reason ~w",
-                                    [Pid, Reason]),
+                    ?LOG_ERROR("Process ~w down for reason ~w",
+                               [Pid, Reason]),
                     throw(receiver_down)
             end
     end.
@@ -3726,7 +3796,7 @@ do_diffobj_put({Bucket, Key}=BKey, DiffObj,
             end,
             {_, State2, DiffObj2} = maybe_new_actor_epoch(DiffObj, StateData),
             case encode_and_put(DiffObj2, Mod, Bucket, Key,
-                                IndexSpecs, ModState, no_max_check) of
+                                IndexSpecs, ModState, no_max_check, false) of
                 {{ok, UpdModState}, EncodedVal} ->
                     aae_update(Bucket, Key,
                                 DiffObj2, confirmed_no_old_object, EncodedVal,
@@ -3754,7 +3824,8 @@ do_diffobj_put({Bucket, Key}=BKey, DiffObj,
                             IndexSpecs = []
                     end,
                     case encode_and_put(AMObj, Mod, Bucket, Key,
-                                        IndexSpecs, ModState, no_max_check) of
+                                        IndexSpecs, ModState,
+                                        no_max_check, false) of
                         {{ok, UpdModState}, EncodedVal} ->
                             aae_update(Bucket, Key,
                                         AMObj, OldObj, EncodedVal,
@@ -4040,9 +4111,10 @@ wait_for_vnode_status_results(PrefLists, ReqId, Acc) ->
     end.
 
 %% @private
--spec update_vnode_stats(vnode_get | vnode_put | vnode_head,
-                            partition(), erlang:timestamp()) ->
-                                ok.
+-spec update_vnode_stats(vnode_get|vnode_put|vnode_head,
+                         partition(),
+                         erlang:timestamp()) ->
+          ok.
 update_vnode_stats(Op, Idx, StartTS) ->
     ok = riak_kv_stat:update({Op, Idx, timer:now_diff( os:timestamp(), StartTS)}).
 
@@ -4103,36 +4175,36 @@ return_encoded_binary_object(Method, EncodedObject) ->
     term_to_binary({ Method, EncodedObject }).
 
 -spec encode_and_put(
-      Obj::riak_object:riak_object(), Mod::term(), Bucket::riak_object:bucket(),
-      Key::riak_object:key(), IndexSpecs::list(), ModState::term(),
-       MaxCheckFlag::no_max_check | do_max_check) ->
+        Obj::riak_object:riak_object(), Mod::term(), Bucket::riak_object:bucket(),
+        Key::riak_object:key(), IndexSpecs::list(), ModState::term(),
+        MaxCheckFlag::no_max_check | do_max_check, Sync::boolean()) ->
            {{ok, UpdModState::term()}, EncodedObj::binary()} |
            {{error, Reason::term(), UpdModState::term()}, EncodedObj::binary()}.
 
-encode_and_put(Obj, Mod, Bucket, Key, IndexSpecs, ModState, MaxCheckFlag) ->
+encode_and_put(Obj, Mod, Bucket, Key, IndexSpecs, ModState, MaxCheckFlag, Sync) ->
     DoMaxCheck = MaxCheckFlag == do_max_check,
     NumSiblings = riak_object:value_count(Obj),
     case DoMaxCheck andalso
          NumSiblings > app_helper:get_env(riak_kv, max_siblings) of
         true ->
-            lager:error("Put failure: too many siblings for object ~p/~p (~p)",
+            ?LOG_ERROR("Put failure: too many siblings for object ~p/~p (~p)",
                         [Bucket, Key, NumSiblings]),
             {{error, {too_many_siblings, NumSiblings}, ModState},
              undefined};
         false ->
             case NumSiblings > app_helper:get_env(riak_kv, warn_siblings) of
                 true ->
-                    lager:warning("Too many siblings for object ~p/~p (~p)",
+                    ?LOG_WARNING("Too many siblings for object ~p/~p (~p)",
                                   [Bucket, Key, NumSiblings]);
                 false ->
                     ok
             end,
             encode_and_put_no_sib_check(Obj, Mod, Bucket, Key, IndexSpecs,
-                                        ModState, MaxCheckFlag)
+                                        ModState, MaxCheckFlag, Sync)
     end.
 
 encode_and_put_no_sib_check(Obj, Mod, Bucket, Key, IndexSpecs, ModState,
-                            MaxCheckFlag) ->
+                            MaxCheckFlag, Sync) ->
     DoMaxCheck = MaxCheckFlag == do_max_check,
     case uses_r_object(Mod, ModState, Bucket) of
         true ->
@@ -4147,7 +4219,7 @@ encode_and_put_no_sib_check(Obj, Mod, Bucket, Key, IndexSpecs, ModState,
             case DoMaxCheck andalso
                  BinSize > app_helper:get_env(riak_kv, max_object_size) of
                 true ->
-                    lager:error("Put failure: object too large to write ~p/~p ~p bytes",
+                    ?LOG_ERROR("Put failure: object too large to write ~p/~p ~p bytes",
                                 [Bucket, Key, BinSize]),
                     {{error, {too_large, BinSize}, ModState},
                      EncodedVal};
@@ -4155,7 +4227,7 @@ encode_and_put_no_sib_check(Obj, Mod, Bucket, Key, IndexSpecs, ModState,
                     WarnSize = app_helper:get_env(riak_kv, warn_object_size),
                     case BinSize > WarnSize of
                        true ->
-                            lager:warning("Writing very large object " ++
+                            ?LOG_WARNING("Writing very large object " ++
                                           "(~p bytes) to ~p/~p",
                                           [BinSize, Bucket, Key]);
                         false ->
@@ -4169,8 +4241,8 @@ encode_and_put_no_sib_check(Obj, Mod, Bucket, Key, IndexSpecs, ModState,
                     %%
                     %% Not the ideal solution but sufficient.
                     PutKey = maybe_timeseries_key(Key, Obj),
-                    PutRet = Mod:put(Bucket, PutKey, IndexSpecs, EncodedVal,
-                                     ModState),
+                    PutFun = select_put_fun(Mod, ModState, Sync),
+                    PutRet = PutFun(Bucket, PutKey, IndexSpecs, EncodedVal, ModState),
                     {PutRet, EncodedVal}
             end
     end.
@@ -4192,6 +4264,21 @@ maybe_timeseries_key(<<16,0,0,0, _Rest/binary>>=Key, Object) ->
     end;
 maybe_timeseries_key(Key, _Object) ->
     Key.
+
+-spec select_put_fun(Mod::term(), ModState::term(), Sync::boolean()) -> fun().
+select_put_fun(Mod, ModState, Sync) ->
+    case Sync of
+        true ->
+            {ok, Capabilities} = Mod:capabilities(ModState),
+            case lists:member(flush_put, Capabilities) of
+                true ->
+                    fun Mod:flush_put/5;
+                _ ->
+                    fun Mod:put/5
+            end;
+        _ ->
+            fun Mod:put/5
+    end.
 
 uses_r_object(Mod, ModState, Bucket) ->
     {ok, Capabilities} = Mod:capabilities(Bucket, ModState),
@@ -4256,10 +4343,10 @@ try_set_concurrency_limit(Lock, Limit, true) ->
     case riak_core_bg_manager:set_concurrency_limit(Lock, Limit) of
         unregistered ->
             %% not ready yet, try again later
-            lager:debug("Background manager unavailable. Will try to set: ~p later.", [Lock]),
+            ?LOG_DEBUG("Background manager unavailable. Will try to set: ~p later.", [Lock]),
             erlang:send_after(250, ?MODULE, {set_concurrency_limit, Lock, Limit});
         _ ->
-            lager:debug("Registered lock: ~p", [Lock]),
+            ?LOG_DEBUG("Registered lock: ~p", [Lock]),
             ok
     end.
 
@@ -4393,7 +4480,7 @@ update_counter(State=#state{counter=CounterState}) ->
 maybe_lease_counter(#state{vnodeid=VId, counter=#counter_state{cnt=Cnt, lease=Lease}})
   when Cnt > Lease ->
     %% Holy broken invariant. Log and crash.
-    lager:error("Broken invariant, epoch counter ~p greater than lease ~p for vnode ~p. Crashing.",
+    ?LOG_ERROR("Broken invariant, epoch counter ~p greater than lease ~p for vnode ~p. Crashing.",
                 [Cnt, Lease, VId]),
     exit(epoch_counter_invariant_broken);
 maybe_lease_counter(State=#state{counter=#counter_state{cnt=Lease, lease=Lease,
@@ -4442,7 +4529,7 @@ blocking_lease_counter(State, {ErrCnt, MaxErrors, MaxTime}) ->
     Start = os:timestamp(),
     receive
         {'EXIT', Pid, Reason} ->
-            lager:error("Failed to lease counter for ~p : ~p", [Index, Reason]),
+            ?LOG_ERROR("Failed to lease counter for ~p : ~p", [Index, Reason]),
             {ok, NewPid} = riak_kv_vnode_status_mgr:start_link(self(), Index, UseEpochCounter),
             ok = riak_kv_vnode_status_mgr:lease_counter(NewPid, LeaseSize),
             NewState = State#state{status_mgr_pid=NewPid},
@@ -4452,7 +4539,7 @@ blocking_lease_counter(State, {ErrCnt, MaxErrors, MaxTime}) ->
             NewCS = CounterState#counter_state{lease=NewLease, leasing=false},
             {ok, State#state{counter=NewCS}};
         {counter_lease, {Pid, NewVId, NewLease}} ->
-            lager:info("New Vnode id for ~p. Epoch counter rolled over.", [Index]),
+            ?LOG_INFO("New Vnode id for ~p. Epoch counter rolled over.", [Index]),
             NewCS = CounterState#counter_state{lease=NewLease, leasing=false, cnt=1},
             {ok, State#state{vnodeid=NewVId, counter=NewCS}}
     after
@@ -4483,7 +4570,7 @@ non_neg_env(App, EnvVar, Default) when is_integer(Default),
                N > 0 ->
             N;
         X ->
-            lager:warning("Non-integer/Negative integer ~p for vnode counter config ~p."
+            ?LOG_WARNING("Non-integer/Negative integer ~p for vnode counter config ~p."
                           " Using default ~p",
                           [X, EnvVar, Default]),
             Default
@@ -4586,7 +4673,7 @@ log_key_amnesia(VId, Obj, InEpoch, InCntr, LocalEpoch, LocalCntr) ->
     B = riak_object:bucket(Obj),
     K = riak_object:key(Obj),
 
-    lager:warning("Inbound clock entry for ~p in ~p/~p greater than local." ++
+    ?LOG_WARNING("Inbound clock entry for ~p in ~p/~p greater than local." ++
                       "Epochs: {In:~p Local:~p}. Counters: {In:~p Local:~p}.",
                   [VId, B, K, InEpoch, LocalEpoch, InCntr, LocalCntr]).
 
