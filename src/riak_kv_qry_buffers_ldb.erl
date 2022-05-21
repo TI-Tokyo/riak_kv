@@ -30,6 +30,7 @@
          add_rows/5,
          fetch_rows/3]).
 
+-include_lib("kernel/include/logger.hrl").
 
 %% leveldb instance parameters
 -define(LDB_WRITE_BUFFER_SIZE, 10*1024*1024).  %% 10 M should be enough for everybody
@@ -54,10 +55,10 @@ new_table(Table, Root) ->
               ],
     case eleveldb:open(Path, Options) of
         {ok, LdbRef} ->
-            lager:debug("new LdbRef ~p in ~p", [LdbRef, Path]),
+            ?LOG_DEBUG("new LdbRef ~p in ~p", [LdbRef, Path]),
             {ok, LdbRef};
         {error, {Atom, _Message} = LdbError} ->
-            lager:warning("qbuf eleveldb:open(~s) failed: ~p", [Path, LdbError]),
+            ?LOG_WARNING("qbuf eleveldb:open(~s) failed: ~p", [Path, LdbError]),
             riak_kv_ts_util:rm_rf(Path),
             {error, Atom}
     end.

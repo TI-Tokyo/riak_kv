@@ -32,6 +32,7 @@
         ]).
 
 -include("riak_kv_ts.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 -define(EMPTYRESPONSE, {[], [], []}).
 
@@ -280,8 +281,8 @@ do_select(SQL, ?DDL{table = BucketType} = DDL) ->
                                     Result
                             catch
                                 Error:Reason ->
-                                    lager:warning("Failed to fetch results from qbuf for ~p: ~p:~p",
-                                                  [SQL, Error, Reason]),
+                                    ?LOG_WARNING("Failed to fetch results from qbuf for ~p: ~p:~p",
+                                                 [SQL, Error, Reason]),
                                     {error, {qbuf_internal_error, "qbuf manager died/restarted unexpectedly"}}
                             end
                     end
@@ -308,12 +309,12 @@ maybe_create_query_buffer(SQL, NSubqueries, CompiledSelect, CompiledOrderBy, Opt
         {ok, QBufRefNewOrExisting} ->
             {ok, QBufRefNewOrExisting};
         {error, Reason} ->
-            lager:warning("Failed to set up query buffer for ~p: ~p", [SQL, Reason]),
+            ?LOG_WARNING("Failed to set up query buffer for ~p: ~p", [SQL, Reason]),
             {error, Reason}
     catch
         Error:Reason ->
-            lager:warning("Failed to set up qbuf for ~p: ~p:~p",
-                          [SQL, Error, Reason]),
+            ?LOG_WARNING("Failed to set up qbuf for ~p: ~p:~p",
+                         [SQL, Error, Reason]),
             {error, Reason}
     end.
 

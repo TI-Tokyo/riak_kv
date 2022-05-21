@@ -46,6 +46,7 @@
 -define(BUCKET_TYPE_PREFIX, {core, bucket_types}).
 
 -include_lib("riak_ql/include/riak_ql_ddl.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 %%%
 %%% API.
@@ -57,7 +58,7 @@ start_link() ->
 
 -spec new_type(binary()) -> ok.
 new_type(BucketType) ->
-    lager:info("Add new Time Series bucket type ~s", [BucketType]),
+    ?LOG_INFO("Add new Time Series bucket type ~s", [BucketType]),
     gen_server:cast(?MODULE, {new_type, BucketType}).
 
 %%
@@ -171,13 +172,13 @@ prepare_ddl_versions(Table, CurrentVersion, DDL) when is_binary(Table), is_atom(
     log_compiling_new_type(Table),
     %% conversions, if the DDL is greater, then we need to convert
     UpgradedDDLs = riak_ql_ddl:convert(CurrentVersion, DDL),
-    % lager:info("DDLs ~p", [UpgradedDDLs]),
+    % ?LOG_INFO("DDLs ~p", [UpgradedDDLs]),
     [ok = riak_kv_compile_tab:insert(Table, DDLx) || DDLx <- UpgradedDDLs],
     ok.
 
 %%
 log_overwriting_ddl(DDL, StoredDDL) ->
-    lager:info("Overwriting DDL ~p with new DDL ~p", [StoredDDL, DDL]).
+    ?LOG_INFO("Overwriting DDL ~p with new DDL ~p", [StoredDDL, DDL]).
 
 %%
 is_known_ddl_version(CurrentVersion, DDL) ->
@@ -186,29 +187,26 @@ is_known_ddl_version(CurrentVersion, DDL) ->
 
 %%
 log_missing_ddl_metadata(Table) ->
-    lager:info("No 'ddl' property in the metata for bucket type ~ts",
-        [Table]).
+    ?LOG_INFO("No 'ddl' property in the metata for bucket type ~ts", [Table]).
 
 %%
 log_compiling_new_type(Table) ->
-    lager:info("Compiling new DDL for bucket type ~ts with version ~p",
-               [Table, riak_ql_ddl:current_version()]).
+    ?LOG_INFO("Compiling new DDL for bucket type ~ts with version ~p",
+              [Table, riak_ql_ddl:current_version()]).
 
 %%
 log_new_type_is_duplicate(Table) ->
-    lager:info("Not compiling DDL for table ~ts because it is unchanged",
-        [Table]).
+    ?LOG_INFO("Not compiling DDL for table ~ts because it is unchanged", [Table]).
 
 %%
 log_unknown_ddl_version(Table, DDL) ->
-    lager:error(
-        "Unknown DDL version ~p for bucket type ~ts (current version is ~p)",
-        [DDL, Table, riak_ql_ddl:current_version()]).
+    ?LOG_ERROR("Unknown DDL version ~p for bucket type ~ts (current version is ~p)",
+               [DDL, Table, riak_ql_ddl:current_version()]).
 
 %%
 -spec actually_compile_ddl(BucketType::binary()) -> ok | {error, term()}.
 actually_compile_ddl(BucketType) ->
-    lager:info("Starting DDL compilation of ~ts", [BucketType]),
+    ?LOG_INFO("Starting DDL compilation of ~ts", [BucketType]),
     Self = self(),
     Ref = make_ref(),
     Pid = proc_lib:spawn_link(
@@ -220,27 +218,28 @@ actually_compile_ddl(BucketType) ->
                 ok = store_module(ddl_ebin_directory(), ModuleName, Bin),
                 Self ! {compilation_complete, Ref}
             after
-                %% this spawned process may crash before lager is properly
+                %% this spawned process may crash before logger is properly
                 %% started and never write a crash report, so do a cheeky wee
                 %% sleep after a success has returned to the newtype gen_server
                 %% so only the error case is blocked
                 timer:sleep(100)
+                %% (not sure this still applies after eviction of lager, though)
             end
         end),
     receive
         {compilation_complete, Ref} ->
-            lager:info("Compilation of DDL ~ts complete and stored to disk", [BucketType]),
+            ?LOG_INFO("Compilation of DDL ~ts complete and stored to disk", [BucketType]),
             ok;
         {'EXIT', Pid, normal} ->
             ok;
         {'EXIT', Pid, Error} ->
-            lager:error("Error compiling DDL ~ts with error ~p", [BucketType, Error]),
+            ?LOG_ERROR("Error compiling DDL ~ts with error ~p", [BucketType, Error]),
             ok
     after
         30000 ->
             %% really allow a lot of time to complete this, because there is
             %% not much we can do if it fails
-            lager:error("timeout on compiling table ~ts", [BucketType]),
+            ?LOG_ERROR("timeout on compiling table ~ts", [BucketType]),
             {error, timeout}
     end.
 
@@ -249,7 +248,7 @@ compile_to_ast(TabResult, BucketType) ->
         {ok, DDL} ->
             riak_ql_ddl_compiler:compile(DDL);
         _ ->
-            lager:info("No DDL for table ~ts, requests on it will not be supported.", [BucketType]),
+            ?LOG_INFO("No DDL for table ~ts, requests on it will not be supported.", [BucketType]),
             riak_ql_ddl_compiler:compile_disabled_module(BucketType)
     end.
 
@@ -257,7 +256,7 @@ compile_to_ast(TabResult, BucketType) ->
 store_module(Dir, Module, Bin) ->
     Filepath = beam_file_path(Dir, Module),
     ok = filelib:ensure_dir(Filepath),
-    lager:info("STORING BEAM ~p to ~p", [Module, Filepath]),
+    ?LOG_INFO("STORING BEAM ~p to ~p", [Module, Filepath]),
     ok = file:write_file(Filepath, Bin).
 
 %%
@@ -340,18 +339,18 @@ insert_downgraded_ddl(BucketType, DDL) ->
 
 %%
 log_storing_downgraded_ddl(BucketType, DDLVersion) when is_atom(DDLVersion) ->
-    lager:info("A DDL for table ~ts for DDL version ~p was stored, for use "
-               "in the event of a downgrade", [BucketType, DDLVersion]).
+    ?LOG_INFO("A DDL for table ~ts for DDL version ~p was stored, for use "
+              "in the event of a downgrade", [BucketType, DDLVersion]).
 
 %%
 log_cannot_downgrade_to_version(BucketType, Version) ->
-    lager:warning("Cannot downgrade table ~ts to version ~p, "
-                  "table will be disablded under this version",
-                  [BucketType, Version]).
+    ?LOG_WARNING("Cannot downgrade table ~ts to version ~p, "
+                 "table will be disablded under this version",
+                 [BucketType, Version]).
 
 %%
 log_ddl_upgrade(DDL, DDLs) ->
-    lager:info("UPGRADING ~p WITH ~p", [DDL, DDLs]).
+    ?LOG_INFO("UPGRADING ~p WITH ~p", [DDL, DDLs]).
 
 %% For each table
 %%     build the table name
@@ -364,10 +363,10 @@ verify_helper_modules() ->
 verify_helper_module(Table) when is_binary(Table) ->
     case beam_exists(Table) of
         true ->
-            lager:info("beam file for table ~ts exists", [Table]),
+            ?LOG_INFO("beam file for table ~ts exists", [Table]),
             ok;
         false ->
-            lager:info("beam file for table ~ts must be recompiled", [Table]),
+            ?LOG_INFO("beam file for table ~ts must be recompiled", [Table]),
             actually_compile_ddl(Table)
     end.
 

@@ -493,7 +493,7 @@ validate_bucket_property(P) ->
         list_to_existing_atom(P)
     catch
         error:badarg ->
-            lager:info("Setting new custom bucket type property '~s'", [P]),
+            ?LOG_INFO("Setting new custom bucket type property '~s'", [P]),
             list_to_atom(P)
     end.
 

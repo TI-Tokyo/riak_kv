@@ -41,6 +41,8 @@
 %% An integer, and the number of bits to shift it left
 -type subpartition() :: { non_neg_integer(), pos_integer() }.
 
+-include_lib("kernel/include/logger.hrl").
+
 %% ===================================================================
 %% Public API
 %% ===================================================================
@@ -109,7 +111,7 @@ build_filter(Bucket, ItemFilterInput, FilterVNode, KeyConvFn) ->
 build_subpartition_filter({Mask, BSR}, Fun) ->
     fun(X) ->
             <<Idx:160/integer>> = Fun(X),
-            %% lager:error("{~B, ~B} Result, Mask, Index: ~B, ~B, ~B",
+            %% ?LOG_ERROR("{~B, ~B} Result, Mask, Index: ~B, ~B, ~B",
             %%             [Mask, BSR, FullMask band Idx,
             %%              FullMask, Idx]),
             Idx bsr BSR =:= Mask

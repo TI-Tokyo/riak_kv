@@ -37,6 +37,7 @@
 -module(riak_kv_pb_coverage).
 
 -include_lib("riak_pb/include/riak_kv_pb.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 -behaviour(riak_api_pb_service).
 -export([init/0,
@@ -149,15 +150,15 @@ node_to_pb_details(NodeName) ->
 
 handle_pb_response(NodeName, {badrpc, Error}) ->
     %% XXX: Todo: do something more smarter here
-    lager:info("Coverage request: unable to request api endpoint "
-               "from node ~p (~p)",
-               [NodeName, Error]),
+    ?LOG_INFO("Coverage request: unable to request api endpoint "
+              "from node ~p (~p)",
+              [NodeName, Error]),
     {unreachable, 0};
 handle_pb_response(NodeName, undefined) ->
     %% XXX: Todo: do something more smarter here
-    lager:error("Coverage request: no api endpoint defined on "
-                "node ~p",
-                [NodeName]),
+    ?LOG_ERROR("Coverage request: no api endpoint defined on "
+               "node ~p",
+               [NodeName]),
     {undefined, 0};
 handle_pb_response(_NodeName, {ok, [{IP, Port}]}) ->
     {IP, Port}.

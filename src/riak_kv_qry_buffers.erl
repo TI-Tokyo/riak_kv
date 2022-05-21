@@ -76,6 +76,7 @@
 -export_type([qbuf_ref/0, qbuf_options/0, watermark_status/0, data_row/0]).
 
 -include("riak_kv_ts.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 -define(SERVER, ?MODULE).
 -define(TIMER_TICK_MSEC, 1000).
@@ -251,7 +252,7 @@ prepare_qbuf_dir(RootPath) ->
         ok ->
             gen_server:cast(?SERVER, {prepare_qbuf_dir, ok});
         {error, Reason1} ->
-            lager:warning("Found old data in qbuf dir \"~s\" could not be removed: ~p", [RootPath, Reason1]),
+            ?LOG_WARNING("Found old data in qbuf dir \"~s\" could not be removed: ~p", [RootPath, Reason1]),
             gen_server:cast(?SERVER, {prepare_qbuf_dir, ok})
             %% eleveldb:open may fail, users beware
     end,
@@ -259,7 +260,7 @@ prepare_qbuf_dir(RootPath) ->
         ok ->
             gen_server:cast(?SERVER, {prepare_qbuf_dir, ok});
         {error, Reason2} ->
-            lager:warning("Could not create qbuf dir \"~s\": ~p", [RootPath, Reason2]),
+            ?LOG_WARNING("Could not create qbuf dir \"~s\": ~p", [RootPath, Reason2]),
             gen_server:cast(?SERVER, {prepare_qbuf_dir, {fail, Reason2}})
     end.
 
@@ -315,7 +316,7 @@ handle_cast({prepare_qbuf_dir, {error, Reason}}, State) ->
 handle_cast(tick, State) ->
     do_reap_expired_qbufs(State);
 handle_cast(_Msg, State) ->
-    lager:warning("Not handling cast message ~p", [_Msg]),
+    ?LOG_WARNING("Not handling cast message ~p", [_Msg]),
     {noreply, State}.
 
 
@@ -325,7 +326,7 @@ handle_info({streaming_end, _Ref}, State) ->
     %% eleveldb:fold has reached an end of range
     {noreply, State};
 handle_info(_Msg, State) ->
-    lager:warning("Not handling info message ~p", [_Msg]),
+    ?LOG_WARNING("Not handling info message ~p", [_Msg]),
     {noreply, State}.
 
 
@@ -360,7 +361,7 @@ do_get_or_create_qbuf(SQL,
                 false ->
                     DDL = ?DDL{table = Table} =
                         sql_to_ddl(CompiledSelect, CompiledOrderBy, QBufSerialId0),
-                    lager:debug("creating new query buffer ~p (ref ~p) for ~p", [Table, QBufRef, SQL]),
+                    ?LOG_DEBUG("creating new query buffer ~p (ref ~p) for ~p", [Table, QBufRef, SQL]),
                     case riak_kv_qry_buffers_ldb:new_table(Table, RootPath) of
                         {ok, LdbRef} ->
                             QBuf = #qbuf{orig_qry      = SQL,
@@ -445,7 +446,7 @@ maybe_add_chunk(#qbuf{ldb_ref       = LdbRef,
             %% number of the subquery.
             ChunkId = ChunksGot0,
             ChunksGot = ChunksGot0 + 1,
-            lager:debug("adding chunk ~b of ~b", [ChunksGot, ChunksNeed]),
+            ?LOG_DEBUG("adding chunk ~b of ~b", [ChunksGot, ChunksNeed]),
             OrdByFieldQualifiers = lists:map(fun get_ordby_field_qualifiers/1, OrderBy),
             case riak_kv_qry_buffers_ldb:add_rows(LdbRef, Data, ChunkId,
                                                   KeyFieldPositions,
@@ -510,7 +511,7 @@ do_fetch_limit(QBufRef,
                          table = Table}} ->
             case riak_kv_qry_buffers_ldb:fetch_rows(LdbRef, Offset, Limit) of
                 {ok, Rows} ->
-                    lager:debug("fetched ~p rows from ~p for ~p", [length(Rows), Table, OrigQry]),
+                    ?LOG_DEBUG("fetched ~p rows from ~p for ~p", [length(Rows), Table, OrigQry]),
                     ColNames = [Name || #riak_field_v1{name = Name} <- QBufFields],
                     ColTypes = [Type || #riak_field_v1{type = Type} <- QBufFields],
                     State9 = touch_qbuf(QBufRef, State0),
@@ -563,7 +564,7 @@ do_reap_expired_qbufs(#state{qbufs = QBufs0,
                   case ExpiresOn < Now of
                       true ->
                           ok = kill_ldb(RootPath, Table, LdbRef),
-                          lager:debug("Reaped expired qbuf ~p", [Table]),
+                          ?LOG_DEBUG("Reaped expired qbuf ~p", [Table]),
                           false;
                       false ->
                           true
@@ -576,7 +577,7 @@ do_reap_expired_qbufs(#state{qbufs = QBufs0,
                   case ExpiresOn < Now of
                       true ->
                           ok = kill_ldb(RootPath, Table, LdbRef),
-                          lager:info("Reaped incompletely filled qbuf ~p", [Table]),
+                          ?LOG_INFO("Reaped incompletely filled qbuf ~p", [Table]),
                           false;
                       false ->
                           true
@@ -587,7 +588,7 @@ do_reap_expired_qbufs(#state{qbufs = QBufs0,
         lists:foldl(
           fun({_QBufRef, #qbuf{size = Size}}, Acc) -> Acc + Size end,
           0, QBufs9),
-    lager:debug("TotalSize now ~p", [TotalSize]),
+    ?LOG_DEBUG("TotalSize now ~p", [TotalSize]),
     {noreply, State#state{qbufs = QBufs9,
                           total_size = TotalSize}}.
 
@@ -647,7 +648,7 @@ get_qref(_SQL, _QBufs) ->
 
 kill_all_qbufs(State0 = #state{qbufs = QBufs,
                                root_path = RootPath}) ->
-    [lager:debug("cleaning up ~b buffer(s)", [length(QBufs)]) || QBufs /= []],
+    [?LOG_DEBUG("cleaning up ~b buffer(s)", [length(QBufs)]) || QBufs /= []],
     lists:foreach(
       fun({_QBufRef, #qbuf{ldb_ref = LdbRef,
                            ddl = ?DDL{table = Table}}}) ->

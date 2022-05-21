@@ -48,6 +48,7 @@
 -export([produce_doc_body/2]).
 
 -include("riak_kv_wm_raw.hrl").
+-include_lib("kernel/include/logger.hrl").
 -include_lib("webmachine/include/webmachine.hrl").
 
 -record(ctx,
@@ -152,7 +153,8 @@ stream_keys(ReqId, Table, Mod) ->
         {ReqId, {error, timeout}} ->
             {mochijson2:encode({struct, [{error, timeout}]}), done};
         Weird ->
-            lager:warning("Unexpected message while waiting for list_keys batch with ReqId ~p, Table ~s: ~p", [ReqId, Table, Weird]),
+            ?LOG_WARNING("Unexpected message while waiting for list_keys batch with ReqId ~p, Table ~s: ~p",
+                         [ReqId, Table, Weird]),
             stream_keys(ReqId, Table, Mod)
     end.
 

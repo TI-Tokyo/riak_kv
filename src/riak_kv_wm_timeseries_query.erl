@@ -309,6 +309,3 @@ rows_to_json_compat(Types, Rows) ->
 row_to_json_compat(Types, Row) ->
     lists:map(fun riak_kv_wm_timeseries:value_to_json_compat/1,
               lists:zip(Types, Row)).
-
-%% log(Format, Args) ->
-%%     lager:log(info, self(), Format, Args).

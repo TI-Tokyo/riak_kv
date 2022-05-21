@@ -46,6 +46,8 @@
          varchar_to_timestamp/1
         ]).
 
+-include_lib("kernel/include/logger.hrl").
+
 -type ts_service_req() ::
     {ok, riak_kv_ts_svc:ts_requests(), {PermSpec::string(), Table::binary()}}.
 
@@ -837,7 +839,7 @@ local_to_partition_key(Table, Key) ->
     %%
     %%    Nonetheless, we log an error in case this branch is ever
     %%    exercised
-    lager:error("Non-binary object key in table ~p: ~p", [Table, Key]),
+    ?LOG_ERROR("Non-binary object key in table ~p: ~p", [Table, Key]),
     Key.
 
 

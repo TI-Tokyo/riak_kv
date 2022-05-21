@@ -38,6 +38,8 @@
     terminate/2,
     code_change/3]).
 
+-include_lib("kernel/include/logger.hrl").
+
 -ifdef(TEST).
 -export([w1c_vclock/1]).
 -endif.
@@ -604,13 +606,13 @@ are_object_sizes_valid(Bucket, Key, BinSizes, MaxSize, WarnSize) ->
             case Warning of
                 [] -> ok;
                 _ ->
-                    lager:warning("Writing very large object (~p bytes) to ~p/~p",
-                        [hd(Warning), Bucket, Key])
+                    ?LOG_WARNING("Writing very large object (~p bytes) to ~p/~p",
+                                 [hd(Warning), Bucket, Key])
             end,
             true;
         _ ->
-            lager:error("Write-Once Put failure: object too large to write ~p/~p ~p bytes",
-                [Bucket, Key, hd(TooBig)]),
+            ?LOG_ERROR("Write-Once Put failure: object too large to write ~p/~p ~p bytes",
+                       [Bucket, Key, hd(TooBig)]),
             false
     end.
 

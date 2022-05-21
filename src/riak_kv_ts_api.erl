@@ -43,6 +43,7 @@
          %% use riak_kv_ts_util:sql_to_cover/4.
         ]).
 
+-include_lib("kernel/include/logger.hrl").
 -include_lib("riak_ql/include/riak_ql_ddl.hrl").
 -include("riak_kv_wm_raw.hrl").
 -include("riak_kv_ts.hrl").
@@ -172,7 +173,7 @@ wait_until_supported1(Nodes, SvcMod, Table, DDL, DDLRecCap, Milliseconds, WaitMi
         true -> ok;
         _ ->
             timer:sleep(WaitMilliseonds),
-            lager:info("Waiting for table ~ts to be compiled on all active nodes", [Table]),
+            ?LOG_INFO("Waiting for table ~ts to be compiled on all active nodes", [Table]),
             wait_until_supported1(Nodes, SvcMod, Table, DDL, DDLRecCap, Milliseconds - WaitMilliseonds, WaitMilliseonds)
     end.
 
@@ -199,7 +200,7 @@ wait_until_active_and_supported(SvcMod, Table, DDL, DDLRecCap, Milliseconds, Wai
         ok -> wait_until_supported(SvcMod, Table, DDL, DDLRecCap, Milliseconds, WaitMilliseonds);
         {error, not_ready} ->
             timer:sleep(WaitMilliseonds),
-            lager:info("Waiting for table ~ts to be ready for activation", [Table]),
+            ?LOG_INFO("Waiting for table ~ts to be ready for activation", [Table]),
             wait_until_active_and_supported(SvcMod, Table, DDL, DDLRecCap, Milliseconds - WaitMilliseonds, WaitMilliseonds);
         {error, undefined} ->
             {error, SvcMod:make_table_created_missing_resp(Table)}
@@ -220,7 +221,7 @@ alter_table(Table, Props1) ->
         ok ->
             ok;
         {error, EE} ->
-            lager:warning("unsanitized bucket properties of TS bucket ~s: ~p", [Table, EE]),
+            ?LOG_WARNING("unsanitized bucket properties of TS bucket ~s: ~p", [Table, EE]),
             {error, bad_property}
     end.
 

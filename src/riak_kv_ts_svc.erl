@@ -108,7 +108,6 @@ decode_query(#tsinterpolation{base = BaseQuery}, Options) ->
             %% CREATE TABLE, so don't check if the table exists
             {ok, {ddl, {DDL, WithProperties}}};
         {ok, {alter_table, Table, _, Props}} ->
-            lager:info("", []),
             {ok, {alter, #riak_sql_alter_table_v1{'ALTER_TABLE' = Table,
                                                   with = Props
                                                  }}};

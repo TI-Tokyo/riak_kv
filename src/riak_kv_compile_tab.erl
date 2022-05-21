@@ -39,6 +39,7 @@
 
 -include_lib("riak_pb/include/riak_ts_pb.hrl").
 -include_lib("riak_ql/include/riak_ql_ddl.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 -type matchspec_value() :: '_' | '$1'.
 
@@ -99,7 +100,7 @@ file_v3(Dir) ->
 %%
 -spec insert(BucketType :: binary(), DDL :: term()) -> ok.
 insert(BucketType, DDL) when is_binary(BucketType), is_tuple(DDL) ->
-    lager:info("DDL DETS Update: ~p, ~p", [BucketType, DDL]),
+    ?LOG_INFO("DDL DETS Update: ~p, ~p", [BucketType, DDL]),
     DDLVersion = riak_ql_ddl:ddl_record_version(element(1, DDL)),
     Row = #row_v3{
          table = BucketType
@@ -251,7 +252,7 @@ get_all_table_names() ->
 
 %%
 log_compile_tab_v2_inserted(BucketType) ->
-    lager:info("DDL for table ~ts was stored, it can be used in Riak TS 1.4",
+    ?LOG_INFO("DDL for table ~ts was stored, it can be used in Riak TS 1.4",
     [BucketType]).
 
 %% ===================================================================
@@ -274,7 +275,7 @@ maybe_insert_into_v3(BucketType) ->
     end.
 
 log_v2_to_v3_ddl_migration(BucketType) ->
-    lager:info("Moving table ~ts from compile tab v2 to v3 as part of upgrade.",
+    ?LOG_INFO("Moving table ~ts from compile tab v2 to v3 as part of upgrade.",
         [BucketType]).
 
 -spec get_all_table_names_v2() -> [binary()].

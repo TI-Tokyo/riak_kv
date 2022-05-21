@@ -50,6 +50,7 @@
         ]).
 
 -include("riak_kv_ts.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 -define(MAX_RUNNING_FSMS, 20).
 -define(SUBQUERY_FSM_TIMEOUT, 10000).
@@ -105,7 +106,7 @@ handle_call(_, _, State) ->
 -spec handle_cast(term(), #state{}) -> {noreply, #state{}}.
 %% @private
 handle_cast(Msg, State) ->
-    lager:info("Not handling cast message ~p", [Msg]),
+    ?LOG_INFO("Not handling cast message ~p", [Msg]),
     {noreply, State}.
 
 %% @private
@@ -127,20 +128,20 @@ handle_info({{SubQId, QId}, {error, Reason} = Error},
             #state{receiver_pid = ReceiverPid,
                    qid    = QId,
                    result = IndexedChunks}) ->
-    lager:warning("Error ~p while collecting on QId ~p (~p);"
-                  " dropping ~b chunks of data accumulated so far",
-                  [Reason, QId, SubQId, length(IndexedChunks)]),
+    ?LOG_WARNING("Error ~p while collecting on QId ~p (~p);"
+                 " dropping ~b chunks of data accumulated so far",
+                 [Reason, QId, SubQId, length(IndexedChunks)]),
     ReceiverPid ! Error,
     pop_next_query(),
     {noreply, new_state()};
 
 handle_info({{_SubQId, QId1}, _}, State = #state{qid = QId2}) when QId1 =/= QId2 ->
     %% catches late results or errors such getting results for invalid QIds.
-    lager:debug("Bad query id ~p (expected ~p)", [QId1, QId2]),
+    ?LOG_DEBUG("Bad query id ~p (expected ~p)", [QId1, QId2]),
     {noreply, State};
 
 handle_info(_Unexpected, State) ->
-    lager:info("Not handling unexpected message \"~p\" in state ~p", [_Unexpected, State]),
+    ?LOG_INFO("Not handling unexpected message \"~p\" in state ~p", [_Unexpected, State]),
     {noreply, State}.
 
 -spec terminate(term(), #state{}) -> term().
@@ -285,8 +286,8 @@ estimate_query_size(#state{n_subqueries_done = NSubqueriesDone,
     BytesPerChunk = CurrentTotalSize / NSubqueriesDone,
     ProjectedGrandTotal = round(CurrentTotalSize + (BytesPerChunk * length(SubQrys))),
     if ProjectedGrandTotal > MaxQueryData ->
-            lager:info("Cancelling aggregating query because projected result size exceeds limit (~b > ~b, subqueries ~b of ~b done, query ~p)",
-                       [ProjectedGrandTotal, MaxQueryData, NSubqueriesDone, length(SubQrys), OrigQry]),
+            ?LOG_INFO("Cancelling aggregating query because projected result size exceeds limit (~b > ~b, subqueries ~b of ~b done, query ~p)",
+                      [ProjectedGrandTotal, MaxQueryData, NSubqueriesDone, length(SubQrys), OrigQry]),
             cancel_error_query(select_result_too_big, State);
        el/=se ->
             State
@@ -317,8 +318,8 @@ estimate_query_size(#state{total_query_data  = TotalQueryData,
 
     case IsLimitTooBig and IsWhereTooBig of
         true ->
-            lager:info("Cancelling query with both projected LIMIT (~b) and total (~b) result size exceeding limit (~b), subqueries ~b of ~b done, query ~p)",
-                       [EstLimitData, EstTotalData, MaxQueryData, NSubqueriesDone, length(SubQrys), OrigQry]),
+            ?LOG_INFO("Cancelling query with both projected LIMIT (~b) and total (~b) result size exceeding limit (~b), subqueries ~b of ~b done, query ~p)",
+                      [EstLimitData, EstTotalData, MaxQueryData, NSubqueriesDone, length(SubQrys), OrigQry]),
             cancel_error_query(select_result_too_big, State);
         false ->
             State
@@ -332,8 +333,8 @@ estimate_query_size(#state{total_query_data  = TotalQueryData,
     EstTotalData = round(TotalQueryData + (TotalQueryData / NSubqueriesDone) * length(SubQrys)),
     case EstTotalData > MaxQueryData of
         true ->
-            lager:info("Cancelling query with projected total (~b) result size exceeding limit (~b), subqueries ~b of ~b done, query ~p)",
-                       [EstTotalData, MaxQueryData, NSubqueriesDone, length(SubQrys), OrigQry]),
+            ?LOG_INFO("Cancelling query with projected total (~b) result size exceeding limit (~b), subqueries ~b of ~b done, query ~p)",
+                      [EstTotalData, MaxQueryData, NSubqueriesDone, length(SubQrys), OrigQry]),
             cancel_error_query(select_result_too_big, State);
         false ->
             State
@@ -365,7 +366,7 @@ add_subquery_result(SubQId, Chunk, #state{sub_qrys = SubQs,
                     cancel_error_query({qbuf_internal_error, Reason}, State)
             end;
         false ->
-            lager:warning("unexpected chunk received for non-existing query ~p when state is ~p", [SubQId, State]),
+            ?LOG_WARNING("unexpected chunk received for non-existing query ~p when state is ~p", [SubQId, State]),
             State
     end.
 
@@ -455,8 +456,8 @@ run_select_on_rows_chunk(_SubQId, SelClause, DecodedChunk, _QueryResult1, QBufRe
             throw({qbuf_internal_error, Reason})
     catch
         Error:Reason ->
-            lager:warning("Failed to send data to qbuf ~p serving subquery ~p of ~p: ~p:~p",
-                          [QBufRef, _SubQId, SelClause, Error, Reason]),
+            ?LOG_WARNING("Failed to send data to qbuf ~p serving subquery ~p of ~p: ~p:~p",
+                         [QBufRef, _SubQId, SelClause, Error, Reason]),
             throw({qbuf_internal_error, "qbuf manager died/restarted mid-query"})
     end.
 
@@ -521,7 +522,7 @@ prepare_final_results(#state{qbuf_ref = QBufRef,
                 {qbuf_ready, QBufRef} ->
                     prepare_final_results(State)
             after 60000 ->
-                    lager:error("qbuf ~p took too long to signal ready to ship results", [QBufRef]),
+                    ?LOG_ERROR("qbuf ~p took too long to signal ready to ship results", [QBufRef]),
                     cancel_error_query({qbuf_internal_error, "qbuf took too long to signal ready to ship results"}, State)
             end;
         {error, bad_qbuf_ref} ->
@@ -529,8 +530,8 @@ prepare_final_results(#state{qbuf_ref = QBufRef,
             cancel_error_query(bad_qbuf_ref, State)
     catch
         Error:Reason ->
-            lager:warning("Failed to fetch data from qbuf ~p: ~p:~p",
-                          [QBufRef, Error, Reason]),
+            ?LOG_WARNING("Failed to fetch data from qbuf ~p: ~p:~p",
+                         [QBufRef, Error, Reason]),
             cancel_error_query({qbuf_internal_error, "qbuf manager died/restarted mid-query"}, State)
     end;
 

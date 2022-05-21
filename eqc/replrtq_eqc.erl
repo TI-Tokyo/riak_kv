@@ -487,16 +487,13 @@ prop_repl() ->
 %% -- API-spec ---------------------------------------------------------------
 api_spec() ->
     #api_spec{ language = erlang, mocking = eqc_mocking,
-               modules = [ app_helper_spec(), lager_spec() ] }.
+               modules = [ app_helper_spec() ] }.
 
 app_helper_spec() ->
     #api_module{ name = app_helper, fallback = ?MODULE }.
 
 get_env(riak_kv, Key, Default) ->
   application:get_env(riak_kv, Key, Default).
-
-lager_spec() ->
-    #api_module{ name = lager, fallback = ?MODULE }.
 
 warning(_, _) -> ok.
 
