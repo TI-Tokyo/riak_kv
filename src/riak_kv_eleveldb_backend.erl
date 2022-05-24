@@ -31,6 +31,7 @@
          stop/1,
          get/3,
          flush_put/5,
+         batch_put/4,
          put/5,
          async_put/5,
          delete/4,
@@ -200,25 +201,13 @@ put(Bucket, PrimaryKey, IndexSpecs, Val, State) ->
 flush_put(Bucket, PrimaryKey, IndexSpecs, Val, State) ->
     do_put(Bucket, PrimaryKey, IndexSpecs, Val, true, State).
 
-%% @doc Insert an object into the eleveldb backend.
--spec do_put(riak_object:bucket(), riak_object:key(), [index_spec()], binary(), boolean(), state()) ->
-                 {ok, state()} |
-                 {error, term(), state()}.
-do_put(Bucket, PrimaryKey, IndexSpecs, Val, Sync, #state{ref=Ref,
-                                                         write_opts=WriteOpts,
-                                                         legacy_indexes=WriteLegacy,
-                                                         fixed_indexes=FixedIndexes} = State) ->
+
+%% Create a list of backend put-related updates for this object
+put_operations(Bucket, PrimaryKey, IndexSpecs, Val, #state{legacy_indexes=WriteLegacy,
+                                                           fixed_indexes=FixedIndexes}) ->
     %% Create the KV update...
     StorageKey = to_object_key(Bucket, PrimaryKey),
     Updates1 = [{put, StorageKey, Val} || Val /= undefined],
-
-    %% Setup write options...
-    WriteOpts2 = case Sync of
-        true ->
-            lists:keyreplace(sync,1,WriteOpts, {sync,Sync});
-        _ ->
-            WriteOpts
-    end,
 
     %% Convert IndexSpecs to index updates...
     F = fun({add, Field, Value}) ->
@@ -232,9 +221,47 @@ do_put(Bucket, PrimaryKey, IndexSpecs, Val, Sync, #state{ref=Ref,
                 index_deletes(FixedIndexes, Bucket, PrimaryKey, Field, Value)
         end,
     Updates2 = lists:flatmap(F, IndexSpecs),
+    Updates1 ++ Updates2.
+
+%% @doc Insert an object into the eleveldb backend.
+-spec do_put(riak_object:bucket(), riak_object:key(), [index_spec()], binary(), boolean(), state()) ->
+          {ok, state()} |
+          {error, term(), state()}.
+do_put(Bucket, PrimaryKey, IndexSpecs, Val, Sync, #state{ref = Ref,
+                                                         write_opts = WriteOpts} = State) ->
+    Operations = put_operations(Bucket, PrimaryKey, IndexSpecs, Val, State),
+
+    %% Setup write options...
+    WriteOpts2 = case Sync of
+        true ->
+            lists:keyreplace(sync, 1, WriteOpts, {sync, Sync});
+        _ ->
+            WriteOpts
+    end,
 
     %% Perform the write...
-    case eleveldb:write(Ref, Updates1 ++ Updates2, WriteOpts2) of
+    case eleveldb:write(Ref, Operations, WriteOpts2) of
+        ok ->
+            {ok, State};
+        {error, Reason} ->
+            false = is_tuple(Reason) and (element(1, Reason) == db_write),
+            {error, Reason, State}
+    end.
+
+%% @doc Insert a batch of objects (must contain the same index values) into the eleveldb backend.
+-spec batch_put(term(), [{{riak_object:bucket(), riak_object:key()}, binary()}], [index_spec()], state()) ->
+                 {ok, state()} |
+                 {error, term(), state()}.
+batch_put(_Context, Values, IndexSpecs, #state{ref = Ref,
+                                               write_opts = WriteOpts} = State) ->
+    Operations = lists:flatmap(
+                   fun({{Bucket, Key}, Val}) ->
+                           put_operations(Bucket, Key, IndexSpecs, Val, State)
+                   end,
+                   Values),
+
+    %% Perform the write...
+    case eleveldb:write(Ref, Operations, WriteOpts) of
         ok ->
             {ok, State};
         {error, Reason} ->
@@ -244,8 +271,12 @@ do_put(Bucket, PrimaryKey, IndexSpecs, Val, Sync, #state{ref=Ref,
             {error, Reason, State}
     end.
 
+
 async_put(Context, Bucket, PrimaryKey, Val, #state{ref=Ref, write_opts=WriteOpts}=State) ->
     StorageKey = to_object_key(Bucket, PrimaryKey),
+    %% Context:
+    %% - is a whole load of things including Key and Val, all of which is of what use, exactly?
+    %% - is specced as reference() in eleveldb.erl
     eleveldb:async_put(Ref, Context, StorageKey, Val, WriteOpts),
     {ok, State}.
 
