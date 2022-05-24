@@ -1515,12 +1515,14 @@ handle_request(kv_w1c_put_request, Req, Sender, State=#state{async_put=true}) ->
     EncodedVal = riak_kv_requests:get_encoded_obj(Req),
     ReplicaType = riak_kv_requests:get_replica_type(Req),
     Mod = State#state.mod,
+    Idx = State#state.idx,
     ModState = State#state.modstate,
     StartTS = os:timestamp(),
     Context = {w1c_async_put, Sender, ReplicaType, Bucket, Key, EncodedVal, StartTS},
     %% NOTE: sync_put is TS-only, async_put is KV default
     case Mod:async_put(Context, Bucket, Key, EncodedVal, ModState) of
         {ok, UpModState} ->
+            update_vnode_stats(vnode_put, Idx, StartTS),
             {noreply, State#state{modstate=UpModState}};
         {error, Reason, UpModState} ->
             {reply, ?KV_W1C_PUT_REPLY{reply={error, Reason}, type=ReplicaType}, State#state{modstate=UpModState}}
