@@ -514,10 +514,7 @@ bucket_type_create([TypeStr, PropsStr]) ->
             Result = riak_core_bucket_type:create(Type, Props),
             bucket_type_print_create_result(Type, Result)
         end,
-    bucket_type_create(CreateTypeFn, Type, decode_json_props(PropsStr));
-bucket_type_create([TypeStr | PropsStrSplit]) ->
-    PropsStr = lists:flatten(lists:join(" ", PropsStrSplit)),
-    bucket_type_create([TypeStr, PropsStr]).
+    bucket_type_create(CreateTypeFn, Type, decode_json_props(PropsStr)).
 
 %% Attempt to decode the json to string or provide defaults if empty.
 %% mochijson2 has no types exported so returning any.
