@@ -350,11 +350,11 @@ log_timings(Timings, Bucket, ResultCount) ->
 log_timings(_Timings, _Bucket, _ResultCount, false) ->
     ok;
 log_timings(Timings, Bucket, ResultCount, true) ->
-    ?LOG_INFO("Index query on bucket=~p " ++
-                "max_vnodeq=~w min_vnodeq=~w sum_vnodeq=~w count_vnodeq=~w " ++
-                "slow_count_vnodeq=~w fast_count_vnodeq=~w result_count=~w",
-                [Bucket,
-                    Timings#timings.max, Timings#timings.min,
-                    Timings#timings.sum, Timings#timings.count,
-                    Timings#timings.slow_count, Timings#timings.fast_count,
-                    ResultCount]).
+    ?LOG_INFO("Index query on bucket=~p "
+              "max_vnodeq=~w min_vnodeq=~w sum_vnodeq=~w count_vnodeq=~w "
+              "slow_count_vnodeq=~w fast_count_vnodeq=~w result_count=~w",
+              [Bucket,
+               Timings#timings.max, Timings#timings.min,
+               Timings#timings.sum, Timings#timings.count,
+               Timings#timings.slow_count, Timings#timings.fast_count,
+               ResultCount]).
