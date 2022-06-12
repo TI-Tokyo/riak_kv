@@ -49,8 +49,11 @@ start_link() ->
 %% @spec init([]) -> SupervisorTree
 %% @doc supervisor callback.
 init([]) ->
-    IndexFsmSpec = {undefined,
-               {riak_core_coverage_fsm, start_link, [riak_kv_index_fsm]},
-               temporary, 5000, worker, [riak_kv_index_fsm]},
-
-    {ok, {{simple_one_for_one, 10, 10}, [IndexFsmSpec]}}.
+    SupSpec = #{strategy => simple_one_for_one,
+                intensity => 10,
+                period => 10},
+    IndexFsmSpec = #{id => undefined,
+                     start => {riak_core_coverage_fsm, start_link, [riak_kv_index_fsm]},
+                     restart => temporary,
+                     modules => [riak_kv_index_fsm]},
+    {ok, {SupSpec, [IndexFsmSpec]}}.
