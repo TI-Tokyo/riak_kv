@@ -375,38 +375,19 @@ run_select_on_chunk(SubQId, Chunk, #state{qry = Query,
                                           result = QueryResult1,
                                           qbuf_ref = QBufRef}) ->
 
-    %% Return decoded_results for this chunk.  We delegate this to a
-    %% helper function that determines whether the results have
-    %% already been decoded by the sending vnode
-
-    DecodedChunk = get_decoded_results(Chunk),
-
     SelClause = sql_select_clause(Query),
     case sql_select_calc_type(Query) of
         rows ->
-            run_select_on_rows_chunk(SubQId, SelClause, DecodedChunk, QueryResult1, QBufRef);
+            run_select_on_rows_chunk(SubQId, SelClause, Chunk, QueryResult1, QBufRef);
         aggregate ->
             %% query buffers don't enter at this stage: QueryResult is always a
             %% single row for aggregate SELECTs
-            run_select_on_aggregate_chunk(SelClause, DecodedChunk, QueryResult1);
+            run_select_on_aggregate_chunk(SelClause, Chunk, QueryResult1);
         group_by ->
             %% ditto
-            run_select_on_group(Query, SelClause, DecodedChunk, QueryResult1)
+            run_select_on_group(Query, SelClause, Chunk, QueryResult1)
     end.
 
-%% ------------------------------------------------------------
-%% Helper function to return decoded query results for the current
-%% Chunk:
-%%
-%%   if already decoded, simply returns the decoded data
-%%
-%%   if not, decodes and returns
-%% ------------------------------------------------------------
-
-get_decoded_results({decoded, Chunk}) ->
-    Chunk;
-get_decoded_results(Chunk) ->
-    decode_results(lists:flatten(Chunk)).
 
 rows_in_chunk({decoded, Chunk}) ->
     length(Chunk);
