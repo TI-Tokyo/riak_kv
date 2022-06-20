@@ -235,7 +235,13 @@ process_results(_VNode, {_Bucket, Results}, State) ->
     UpdTimings = update_timings(State#state.timings),
     {ok, State#state{timings = UpdTimings, results_sent = ResultsSent}};
 process_results(_VNode, done, State) ->
-    {done, State}.
+    {done, State};
+process_results(a, b, c) ->
+    %% This is complementary to the trick in riak_core_coverage_fsm,
+    %% which is there to avoid expensive module_info calls, which were
+    %% consuming 30% of the query-path time for small queries
+    yes_I_am_here.
+
 
 %% @private Update the buffer with results and process it
 update_buffer(VNode, Results, Buffer) ->
@@ -250,9 +256,7 @@ get_results_to_send(LenToSend, ToSend, ResultsSent, MaxResults) when (ResultsSen
 get_results_to_send(LenToSend, ToSend, _, _) ->
     {ok, LenToSend, ToSend}.
 
-%% @private send results, but only if there are some
-send_results(_ClientPid, _ReqId, []) ->
-    ok;
+%% @private send results
 send_results(ClientPid, ReqId, ResultsToSend) ->
     ClientPid ! {ReqId, {results, ResultsToSend}}.
 
