@@ -108,7 +108,7 @@ api_call_to_perm(query_describe_table) ->
 %% SHOW CREATE TABLE is an extended version of DESCRIBE
 api_call_to_perm(query_show_create_table) ->
     api_call_to_perm(query_describe_table);
-api_call_to_perm(query_query_delete) ->
+api_call_to_perm(query_delete) ->
     "riak_ts.delete";
 %% INSERT query is a put, so let's call it that
 api_call_to_perm(query_insert) ->

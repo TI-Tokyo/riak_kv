@@ -38,7 +38,7 @@
 
 %% enumerate all current SQL query types
 -type query_type() ::
-        ddl | explain | describe | alter | insert | select | show_tables | show_create_table.
+        ddl | explain | describe | alter | insert | select | delete | show_tables | show_create_table.
 %% and also their corresponding records (mainly for use in specs)
 -type sql_query_type_record() ::
         ?SQL_SELECT{} |
