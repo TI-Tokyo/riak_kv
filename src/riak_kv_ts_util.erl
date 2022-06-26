@@ -578,8 +578,8 @@ get_column_types(ColumnNames, Mod) ->
 sql_to_cover(_Client, [], _Bucket, _Replace, _Unavail, Accum) ->
     lists:reverse(Accum);
 sql_to_cover(Client, [SQL|Tail], Bucket, undefined, _Unavail, Accum) ->
-    case Client:get_cover(riak_kv_qry_coverage_plan, Bucket, undefined,
-                          {SQL, Bucket}) of
+    case riak_client:get_cover(riak_kv_qry_coverage_plan, Bucket, undefined,
+                               {SQL, Bucket}, Client) of
         {error, Error} ->
             {error, Error};
         [Cover] ->
@@ -624,11 +624,11 @@ sql_to_cover(Client, [SQL|Tail], Bucket, undefined, _Unavail, Accum) ->
             sql_to_cover(Client, Tail, Bucket, undefined, [], [Entry|Accum])
     end;
 sql_to_cover(Client, [SQL|Tail], Bucket, Replace, Unavail, Accum) ->
-    case Client:replace_cover(riak_kv_qry_coverage_plan, Bucket, undefined,
-                              riak_kv_pb_coverage:checksum_binary_to_term(Replace),
-                              lists:map(fun riak_kv_pb_coverage:checksum_binary_to_term/1,
-                                        Unavail),
-                              [{SQL, Bucket}]) of
+    case riak_client:replace_cover(riak_kv_qry_coverage_plan, Bucket, undefined,
+                                   riak_kv_pb_coverage:checksum_binary_to_term(Replace),
+                                   lists:map(fun riak_kv_pb_coverage:checksum_binary_to_term/1,
+                                             Unavail),
+                                   [{SQL, Bucket}], Client) of
         {error, Error} ->
             {error, Error};
         [Cover] ->
