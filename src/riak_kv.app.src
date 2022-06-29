@@ -18,7 +18,6 @@
                   riak_dt,
                   riak_pb,
                   sext,
-                  leveled,
                   kv_index_tictactree,
                   riak_ensemble,
                   exometer_core,

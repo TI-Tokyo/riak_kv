@@ -40,7 +40,7 @@ basic_schema_test() ->
     %% The defaults are defined in priv/riak_kv.schema and multi_backend.schema.
     %% they are the files under test.
     Config = cuttlefish_unit:generate_templated_config(
-        ["priv/riak_kv.schema", "priv/multi_backend.schema"], [], context(), predefined_schema()),
+        ["priv/riak_kv.schema"], [], context(), predefined_schema()),
 
     cuttlefish_unit:assert_config(Config, "riak_kv.anti_entropy", {off, []}),
     cuttlefish_unit:assert_config(Config, "riak_kv.storage_backend", riak_kv_eleveldb_backend),
@@ -58,13 +58,7 @@ basic_schema_test() ->
     cuttlefish_unit:assert_config(Config, "riak_kv.retry_put_coordinator_failure", true),
     cuttlefish_unit:assert_config(Config, "riak_kv.object_format", v1),
     cuttlefish_unit:assert_config(Config, "riak_kv.vnode_md_cache_size", 0),
-    cuttlefish_unit:assert_not_configured(Config, "riak_kv.memory_backend.max_memory"),
-    cuttlefish_unit:assert_not_configured(Config, "riak_kv.memory_backend.ttl"),
     cuttlefish_unit:assert_config(Config, "riak_kv.handoff_rejected_max", 6),
-
-    %% make sure multi backend is not on by shell_default
-    cuttlefish_unit:assert_not_configured(Config, "riak_kv.multi_backend_default"),
-    cuttlefish_unit:assert_not_configured(Config, "riak_kv.multi_backend"),
 
     cuttlefish_unit:assert_config(Config, "riak_kv.secure_referer_check", true),
     cuttlefish_unit:assert_config(Config, "riak_kv.warn_object_size", 51200),
@@ -115,8 +109,6 @@ override_non_multi_backend_schema_test() ->
         {["retry_put_coordinator_failure"], off},
         {["object", "format"], 0},
         {["metadata_cache_size"], "512KB"},
-        {["memory_backend", "max_memory_per_vnode"], "8GB"},
-        {["memory_backend", "ttl"], "1d"},
         {["secure_referer_check"], off},
         {["object", "size", "warning_threshold"], "10MB"},
         {["object", "size", "maximum"], "100MB"},
@@ -143,7 +135,7 @@ override_non_multi_backend_schema_test() ->
     ],
 
     Config = cuttlefish_unit:generate_templated_config(
-        ["priv/riak_kv.schema", "priv/multi_backend.schema"], Conf, context(), predefined_schema()),
+        ["priv/riak_kv.schema"], Conf, context(), predefined_schema()),
 
     cuttlefish_unit:assert_config(Config, "riak_kv.anti_entropy", {on, [debug]}),
     cuttlefish_unit:assert_config(Config, "riak_kv.storage_backend", riak_kv_eleveldb_backend),
@@ -160,13 +152,7 @@ override_non_multi_backend_schema_test() ->
     cuttlefish_unit:assert_config(Config, "riak_kv.fsm_limit", 100000),
     cuttlefish_unit:assert_config(Config, "riak_kv.retry_put_coordinator_failure", false),
     cuttlefish_unit:assert_config(Config, "riak_kv.object_format", v0),
-    cuttlefish_unit:assert_config(Config, "riak_kv.memory_backend.max_memory", 8192),
-    cuttlefish_unit:assert_config(Config, "riak_kv.memory_backend.ttl", 86400),
     cuttlefish_unit:assert_config(Config, "riak_kv.handoff_rejected_max", 10),
-
-    %% make sure multi backend is not on by shell_default
-    cuttlefish_unit:assert_not_configured(Config, "riak_kv.multi_backend_default"),
-    cuttlefish_unit:assert_not_configured(Config, "riak_kv.multi_backend"),
 
     cuttlefish_unit:assert_config(Config, "riak_kv.secure_referer_check", false),
     cuttlefish_unit:assert_config(Config, "riak_kv.warn_object_size", 10485760),
@@ -206,68 +192,6 @@ override_non_multi_backend_schema_test() ->
 
     ok.
 
-multi_backend_test() ->
-     Conf = [
-        {["storage_backend"], multi},
-        {["multi_backend", "default"], "backend_one"},
-        {["multi_backend", "backend_one", "storage_backend"], "memory"},
-        {["multi_backend", "backend_one", "memory_backend", "max_memory_per_vnode"], "8GB"},
-        {["multi_backend", "backend_one", "memory_backend", "ttl"], "1d"},
-        {["multi_backend", "backend_two", "storage_backend"], "memory"}
-    ],
-
-    Config = cuttlefish_unit:generate_templated_config(
-        ["priv/riak_kv.schema", "priv/multi_backend.schema"], Conf, context(), predefined_schema()),
-
-    cuttlefish_unit:assert_config(Config, "riak_kv.anti_entropy", {off, []}),
-    cuttlefish_unit:assert_config(Config, "riak_kv.storage_backend", riak_kv_multi_backend),
-    cuttlefish_unit:assert_config(Config, "riak_kv.anti_entropy_build_limit", {1, 3600000}),
-    cuttlefish_unit:assert_config(Config, "riak_kv.anti_entropy_expire", 604800000),
-    cuttlefish_unit:assert_config(Config, "riak_kv.anti_entropy_concurrency", 2),
-    cuttlefish_unit:assert_config(Config, "riak_kv.anti_entropy_tick", 15000),
-    cuttlefish_unit:assert_config(Config, "riak_kv.anti_entropy_data_dir", "./data/anti_entropy"),
-    cuttlefish_unit:assert_config(Config, "riak_kv.anti_entropy_leveldb_opts.write_buffer_size", 4194304),
-    cuttlefish_unit:assert_config(Config, "riak_kv.anti_entropy_leveldb_opts.max_open_files", 20),
-    cuttlefish_unit:assert_config(Config, "riak_kv.aae_throttle_enabled", true),
-    cuttlefish_unit:assert_not_configured(Config, "riak_kv.aae_throttle_limits"),
-    cuttlefish_unit:assert_config(Config, "riak_kv.anti_entropy_leveldb_opts.use_bloomfilter", true),
-    cuttlefish_unit:assert_config(Config, "riak_kv.fsm_limit", 50000),
-    cuttlefish_unit:assert_config(Config, "riak_kv.retry_put_coordinator_failure", true),
-    cuttlefish_unit:assert_config(Config, "riak_kv.object_format", v1),
-    cuttlefish_unit:assert_config(Config, "riak_kv.vnode_md_cache_size", 0),
-    cuttlefish_unit:assert_not_configured(Config, "riak_kv.memory_backend.max_memory"),
-    cuttlefish_unit:assert_not_configured(Config, "riak_kv.memory_backend.ttl"),
-
-    cuttlefish_unit:assert_config(Config, "riak_kv.secure_referer_check", true),
-    cuttlefish_unit:assert_config(Config, "riak_kv.warn_object_size", 51200),
-    cuttlefish_unit:assert_config(Config, "riak_kv.max_object_size", 512000),
-    cuttlefish_unit:assert_config(Config, "riak_kv.warn_siblings", 25),
-    cuttlefish_unit:assert_config(Config, "riak_kv.max_siblings", 100),
-
-    %% Default Bucket Properties
-    cuttlefish_unit:assert_config(Config, "riak_core.default_bucket_props.pr", 0),
-    cuttlefish_unit:assert_config(Config, "riak_core.default_bucket_props.r", quorum),
-    cuttlefish_unit:assert_config(Config, "riak_core.default_bucket_props.w", quorum),
-    cuttlefish_unit:assert_config(Config, "riak_core.default_bucket_props.pw", 0),
-    cuttlefish_unit:assert_config(Config, "riak_core.default_bucket_props.dw", quorum),
-    cuttlefish_unit:assert_config(Config, "riak_core.default_bucket_props.rw", quorum),
-    cuttlefish_unit:assert_config(Config, "riak_core.default_bucket_props.notfound_ok", true),
-    cuttlefish_unit:assert_config(Config, "riak_core.default_bucket_props.basic_quorum", false),
-    cuttlefish_unit:assert_config(Config, "riak_core.default_bucket_props.allow_mult", false),
-    cuttlefish_unit:assert_config(Config, "riak_core.default_bucket_props.last_write_wins", false),
-    cuttlefish_unit:assert_not_configured(Config, "riak_core.default_bucket_props.precommit"),
-    cuttlefish_unit:assert_not_configured(Config, "riak_core.default_bucket_props.postcommit"),
-    cuttlefish_unit:assert_config(Config, "riak_core.default_bucket_props.dvv_enabled", false),
-    cuttlefish_unit:assert_config(Config, "riak_dt.binary_compression", 1),
-
-    cuttlefish_unit:assert_config(Config, "riak_kv.multi_backend_default", <<"backend_one">>),
-
-    ExpectedMutliConfig = [
-        {<<"backend_one">>, riak_kv_memory_backend, [{ttl, 86400}, {max_memory, 8192}]},
-        {<<"backend_two">>, riak_kv_memory_backend, []}
-    ],
-    cuttlefish_unit:assert_config(Config, "riak_kv.multi_backend", ExpectedMutliConfig),
-    ok.
 
 commit_hooks_test() ->
     Conf = [
@@ -275,7 +199,7 @@ commit_hooks_test() ->
             {["buckets", "default", "postcommit"], "jsLOL"}
            ],
     Config = cuttlefish_unit:generate_templated_config(
-               ["priv/riak_kv.schema", "priv/multi_backend.schema"], Conf, context(), predefined_schema()),
+               ["priv/riak_kv.schema"], Conf, context(), predefined_schema()),
     ?assertEqual({error, apply_translations,
                   {errorlist, [
                                {error,
@@ -291,7 +215,7 @@ commit_hooks_test() ->
 datatype_compression_validator_test() ->
     Conf = [{["datatypes", "compression_level"], 10}],
     Config = cuttlefish_unit:generate_templated_config(
-               ["priv/riak_kv.schema", "priv/multi_backend.schema"], Conf, context(), predefined_schema()),
+               ["priv/riak_kv.schema"], Conf, context(), predefined_schema()),
     ?assertMatch({error, validation, {errorlist, _}}, Config),
     ok.
 
@@ -383,7 +307,5 @@ get_deps_dir(App) ->
 schema_paths() ->
    [
      filename:join(code:priv_dir(riak_kv), "riak_kv.schema"),
-     filename:join(code:priv_dir(riak_kv), "multi_backend.schema"),
-     filename:join(code:priv_dir(eleveldb), "eleveldb.schema"),
-     filename:join(code:priv_dir(eleveldb), "eleveldb_multi.schema")
+     filename:join(code:priv_dir(eleveldb), "eleveldb.schema")
    ].

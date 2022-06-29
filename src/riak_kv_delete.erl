@@ -344,7 +344,7 @@ configure(load) ->
     application:set_env(riak_core, default_bucket_props,
                         [{r, quorum}, {w, quorum}, {pr, 0}, {pw, 0},
                          {rw, quorum}, {n_val, 3}]),
-    application:set_env(riak_kv, storage_backend, riak_kv_memory_backend);
+    application:set_env(riak_kv, storage_backend, riak_kv_eleveldb_backend);
 configure(_) -> ok.
 
 setup() ->
