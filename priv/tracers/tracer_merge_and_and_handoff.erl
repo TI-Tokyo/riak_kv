@@ -29,7 +29,6 @@ start() ->
 start(Interval) ->
     dbg:tracer(process, {fun trace/2, {orddict:new(), orddict:new()}}),
     dbg:p(all, call),
-    dbg:tpl(bitcask, merge_single_entry, 6, [{'_', [], []}]),
     dbg:tpl(riak_kv_vnode, encode_handoff_item, 2, [{'_', [], []}]),
     dbg:tpl(riak_core_handoff_receiver, process_message, 3, [{'_', [], []}]),
     
@@ -47,13 +46,6 @@ stop() ->
     catch exit(element(2,dbg:get_tracer()), kill),
     stopped.
 
-trace({trace, _Pid, call, {bitcask, merge_single_entry,
-                           [K, V, _TS, _FId, {File,_,_,_}, _State]}},
-      {MDict, HDict}) ->
-    Dir = re:replace(File, "/[^/]*\$", "", [{return, binary}]),
-    Bytes = size(K) + size(V),
-    MDict2 = increment_cbdict(MDict, Dir, Bytes),
-    {MDict2, HDict};
 trace({trace, _Pid, call, {riak_kv_vnode, encode_handoff_item,
                            [{B, K}, V]}},
       {MDict, HDict}) ->

@@ -1044,10 +1044,6 @@ stat_repair_loop(Dad) ->
 -ifdef(TEST).
 -define(LEVEL_STATUS(Idx, Val),  [{Idx, [{backend_status, riak_kv_eleveldb_backend,
                                           [{read_block_error, Val}]}]}]).
--define(BITCASK_STATUS(Idx),  [{Idx, [{backend_status, riak_kv_bitcask_backend,
-                                       []}]}]).
--define(MULTI_STATUS(Idx, Val), [{Idx,  [{backend_status, riak_kv_multi_backend, Val}]}]).
-
 leveldb_rbe_test_() ->
     {foreach,
      fun() ->
@@ -1065,9 +1061,7 @@ leveldb_rbe_test_() ->
      end,
      [{"Zero indexes", fun zero_indexes/0},
       {"Single index", fun single_index/0},
-      {"Multi indexes", fun multi_index/0},
-      {"Bitcask Backend", fun bitcask_backend/0},
-      {"Multi Backend", fun multi_backend/0}]
+      {"Multi indexes", fun multi_index/0}]
     }.
 
 start_exometer_test_env() ->
@@ -1121,33 +1115,5 @@ multi_index() ->
     meck:expect(riak_core_ring, my_indices, fun(_R) -> [index1, index2, index3] end),
     meck:expect(riak_kv_vnode, vnode_status, fun([{Idx, _}]) -> ?LEVEL_STATUS(Idx, <<"100">>) end),
     ?assertEqual(100, leveldb_read_block_errors()).
-
-bitcask_backend() ->
-    meck:expect(riak_core_ring, my_indices, fun(_R) -> [index1, index2, index3] end),
-    meck:expect(riak_kv_vnode, vnode_status, fun([{Idx, _}]) -> ?BITCASK_STATUS(Idx) end),
-    ?assertEqual(undefined, leveldb_read_block_errors()).
-
-multi_backend() ->
-    meck:expect(riak_core_ring, my_indices, fun(_R) -> [index1, index2, index3] end),
-    %% some backends, none level
-    meck:expect(riak_kv_vnode, vnode_status, fun([{Idx, _}]) ->
-                                                     ?MULTI_STATUS(Idx,
-                                                                   [{name1, [{mod, bitcask}]},
-                                                                    {name2, [{mod, fired_chicked}]}]
-                                                                  )
-                                             end),
-    ?assertEqual(undefined, leveldb_read_block_errors()),
-
-    %% one or movel leveldb backends (first level answer is returned)
-    meck:expect(riak_kv_vnode, vnode_status, fun([{Idx, _}]) ->
-                                                     ?MULTI_STATUS(Idx,
-                                                                   [{name1, [{mod, bitcask}]},
-                                                                    {name2, [{mod, riak_kv_eleveldb_backend},
-                                                                             {read_block_error, <<"99">>}]},
-                                                                    {name2, [{mod, riak_kv_eleveldb_backend},
-                                                                             {read_block_error, <<"1000">>}]}]
-                                                                  )
-                                             end),
-    ?assertEqual(99, leveldb_read_block_errors()).
 
 -endif.

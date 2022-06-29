@@ -295,82 +295,6 @@ datatype_compression_validator_test() ->
     ?assertMatch({error, validation, {errorlist, _}}, Config),
     ok.
 
-correct_error_handling_by_multibackend_test() ->
-    Conf = [
-        {["multi_backend", "default", "storage_backend"], bitcask},
-        {["multi_backend", "default", "bitcask", "data_root"], "/data/default_bitcask"}
-    ],
-
-    SchemaPaths = schema_paths() ++ [ "test/bad_bitcask_multi.schema" ],
-
-    Config = cuttlefish_unit:generate_templated_config(SchemaPaths,
-                                                       Conf,
-                                                       context(),
-                                                       predefined_schema()),
-
-
-    ?assertMatch({error, apply_translations, {errorlist, _}}, Config),
-    {error, apply_translations, {errorlist, [Error]}} = Config,
-
-    ?assertMatch({error, {translation_invalid_configuration, _}},
-                 Error),
-    ok.
-
-all_backend_multi_test() ->
-    Conf = [
-        {["storage_backend"], multi},
-        {["multi_backend", "default"], "bitcask1"},
-        {["multi_backend", "bitcask1", "storage_backend"], bitcask},
-        {["multi_backend", "bitcask1", "bitcask", "data_root"], "/data/bitcask1"},
-        {["multi_backend", "bitcask2", "storage_backend"], bitcask},
-        {["multi_backend", "bitcask2", "bitcask", "data_root"], "/data/bitcask2"},
-        {["multi_backend", "level3", "storage_backend"], leveldb},
-        {["multi_backend", "level3", "leveldb", "data_root"], "/data/level3"},
-        {["multi_backend", "level4", "storage_backend"], leveldb},
-        {["multi_backend", "level4", "leveldb", "data_root"], "/data/level4"},
-        {["multi_backend", "memory5", "storage_backend"], "memory"},
-        {["multi_backend", "memory5", "memory_backend", "max_memory_per_vnode"], "8GB"},
-        {["multi_backend", "memory6", "memory_backend", "ttl"], "1d"},
-        {["multi_backend", "memory6", "storage_backend"], "memory"}
-
-    ],
-
-    SchemaPaths = schema_paths(),
-
-    Config = cuttlefish_unit:generate_templated_config(SchemaPaths,
-        Conf, context(), predefined_schema()),
-
-
-    MultiBackendConfig = proplists:get_value(multi_backend, proplists:get_value(riak_kv, Config)),
-
-    {<<"bitcask1">>, riak_kv_bitcask_backend,  B1} = lists:keyfind(<<"bitcask1">>, 1, MultiBackendConfig),
-    {<<"bitcask2">>, riak_kv_bitcask_backend,  B2} = lists:keyfind(<<"bitcask2">>, 1, MultiBackendConfig),
-    {<<"level3">>,   riak_kv_eleveldb_backend, L3} = lists:keyfind(<<"level3">>,   1, MultiBackendConfig),
-    {<<"level4">>,   riak_kv_eleveldb_backend, L4} = lists:keyfind(<<"level4">>,   1, MultiBackendConfig),
-    {<<"memory5">>,  riak_kv_memory_backend,   M5} = lists:keyfind(<<"memory5">>,  1, MultiBackendConfig),
-    {<<"memory6">>,  riak_kv_memory_backend,   M6} = lists:keyfind(<<"memory6">>,  1, MultiBackendConfig),
-
-
-    %% Check B1
-    cuttlefish_unit:assert_config(B1, "data_root", "/data/bitcask1"),
-
-    %% Check B2
-    cuttlefish_unit:assert_config(B2, "data_root", "/data/bitcask2"),
-
-    %% Check L3
-    cuttlefish_unit:assert_config(L3, "data_root", "/data/level3"),
-
-    %% Check L4
-    cuttlefish_unit:assert_config(L4, "data_root", "/data/level4"),
-
-    %% Check M5
-    cuttlefish_unit:assert_not_configured(M5, "ttl"),
-    cuttlefish_unit:assert_config(M5, "max_memory", 8192),
-
-    %% Check M6
-    cuttlefish_unit:assert_config(M6, "ttl", 86400),
-    cuttlefish_unit:assert_not_configured(M6, "max_memory"),
-    ok.
 
 job_class_enabled_test() ->
     test_job_class_enabled(riak_core_schema()).
@@ -460,8 +384,6 @@ schema_paths() ->
    [
      filename:join(code:priv_dir(riak_kv), "riak_kv.schema"),
      filename:join(code:priv_dir(riak_kv), "multi_backend.schema"),
-     filename:join(code:priv_dir(bitcask), "bitcask.schema"),
-     filename:join(code:priv_dir(bitcask), "bitcask_multi.schema"),
      filename:join(code:priv_dir(eleveldb), "eleveldb.schema"),
      filename:join(code:priv_dir(eleveldb), "eleveldb_multi.schema")
    ].

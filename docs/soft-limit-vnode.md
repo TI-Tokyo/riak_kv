@@ -102,10 +102,6 @@ Below is the mean latency plot, which also shows improvement.
  mean latency")
 
 
-### Todo
-
-We still need to benchmark against bitcask.
-
 ### Why do queues build up?
 
 When a read or write request is handled by riak it _always_ contacts

@@ -28,7 +28,7 @@ start() ->
 
 start(LatencyMS) ->
     start(LatencyMS, [get_fsm, put_fsm,
-                      bitcask, eleveldb, file, prim_file, riak_kv_fs2_backend]).
+                      eleveldb, file, prim_file, riak_kv_fs2_backend]).
 
 start(LatencyMS, Modules) ->
     %% catch folsom_metrics:delete_metric(foo),
@@ -45,22 +45,6 @@ start(LatencyMS, Modules) ->
         lists:member(get_fsm, Modules),
         Mod <- [riak_kv_get_fsm],
         {Func, Arity} <- [{init, 1}, {finalize, 1}]],
-
-    [catch dbg:tpl(Mod, Func, Arity, [{'_', [], [{return_trace}]}]) ||
-        lists:member(bitcask, Modules),
-        Mod <- [bitcask],
-        {Func, Arity} <- [
-                          {open,1}, {open,2},
-                           {close,1},
-                           {close_write_file,1},
-                           {get,2},
-                           {put,3},
-                           {delete,2},
-                           {sync,1},
-                           {iterator,3}, {iterator_next,1}, {iterator_release,1},
-                           {needs_merge,1},
-                           {is_empty_estimate,1},
-                           {status,1}]],
 
    [catch dbg:tpl(Mod, Func, Arity, [{'_', [], [{return_trace}]}]) ||
        lists:member(eleveldb, Modules),
@@ -114,10 +98,6 @@ start(LatencyMS, Modules) ->
                           {get_object,4},
                           {put_object,5},
                           {delete,4}]],
-    
-    %% Don't need return_trace events for this use case, but here's
-    %% how to do it if needed.
-    %%dbg:tpl(bitcask, merge_single_entry, 6, [{'_', [], [{return_trace}]}]).
 
     {ok, TPid} = dbg:get_tracer(),
     io:format("Tracer pid: ~p, use ~p:stop() to stop\n", [TPid, ?MODULE]),

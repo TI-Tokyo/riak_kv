@@ -46,8 +46,6 @@ go(Time, Count, Size) ->
               [{'>',{size,'$3'},Size}],
               [{message,{{'$1','$2',{size,'$3'}}}}]}],
     erlang:trace_pattern({riak_kv_eleveldb_backend, put, 5}, PutMS, [local]),
-    erlang:trace_pattern({riak_kv_bitcask_backend, put, 5}, PutMS, [local]),
-    erlang:trace_pattern({riak_kv_memory_backend, put, 5}, PutMS, [local]),
 
     {Tracer, _} = spawn_monitor(?MODULE, tracer, [0, Count, Size, dict:new()]),
     erlang:trace(all, true, [call, arity, {tracer, Tracer}]),
@@ -87,12 +85,6 @@ tracer(Count, Limit, Threshold, Objs) ->
             tracer(Count+1, Limit, Threshold, Objs2);
         {trace,_Pid,call,{riak_kv_eleveldb_backend,put,5},{Bucket,Key,Size}} ->
             io:format("~p: put(l): ~p~n", [ts(), {Bucket, Key, Size}]),
-            tracer(Count+1, Limit, Threshold, Objs);
-        {trace,_Pid,call,{riak_kv_bitcask_backend,put,5},{Bucket,Key,Size}} ->
-            io:format("~p: put(b): ~p~n", [ts(), {Bucket, Key, Size}]),
-            tracer(Count+1, Limit, Threshold, Objs);
-        {trace,_Pid,call,{riak_kv_memory_backend,put,5},{Bucket,Key,Size}} ->
-            io:format("~p: put(m): ~p~n", [ts(), {Bucket, Key, Size}]),
             tracer(Count+1, Limit, Threshold, Objs);
         Msg ->
             io:format("tracer: ~p~n", [Msg]),
