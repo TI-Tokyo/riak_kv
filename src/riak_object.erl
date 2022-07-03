@@ -86,7 +86,7 @@
 -define(EMPTY_VTAG_BIN, <<"e">>).
 %% sub-encoding, selecting between binary_to_term and msgpack:decode (used for TS data)
 -define(MSGPACK_MAGIC, 2). %% Magic number for msgpack encoding
--define(ERLT2B_MAGIC, 3). %% Magic number for msgpack encoding
+-define(ERLT2B_MAGIC, 3). %% Magic number for erlang term_to_binary encoding
 
 -export([new/3, new/4, newts/4, ensure_robject/1, ancestors/1, reconcile/2, equal/2, remove_dominated/1]).
 -export([increment_vclock/2, increment_vclock/3, prune_vclock/3, vclock_descends/2, all_actors/1]).
@@ -1262,14 +1262,14 @@ nextgenrepl_encode(repl_v1, RObj, ToCompress) ->
 %% @doc Deocde for nextgen_repl
 -spec nextgenrepl_decode(binary()) -> riak_object().
 nextgenrepl_decode(<<1:4/integer, C:1/integer, _:3/integer,
-                        0:32/integer, BL:32/integer, B:BL/binary,
-                        KL:32/integer, K:KL/binary,
-                        ObjBin/binary>>) ->
+                     0:32/integer, BL:32/integer, B:BL/binary,
+                     KL:32/integer, K:KL/binary,
+                     ObjBin/binary>>) ->
     nextgenrepl_decode(B, K, C == 1, ObjBin);
 nextgenrepl_decode(<<1:4/integer, C:1/integer, _:3/integer,
-                        TL:32/integer, T:TL/binary, BL:32/integer, B:BL/binary,
-                        KL:32/integer, K:KL/binary,
-                        ObjBin/binary>>) ->
+                     TL:32/integer, T:TL/binary, BL:32/integer, B:BL/binary,
+                     KL:32/integer, K:KL/binary,
+                     ObjBin/binary>>) ->
     nextgenrepl_decode({T, B}, K, C == 1, ObjBin).
 
 nextgenrepl_decode(B, K, true, ObjBin) ->
@@ -1294,7 +1294,7 @@ from_binary(B, K, <<131, _Rest/binary>>=ObjTerm) ->
 from_binary(B, K, <<?MAGIC:8/integer, 1:8/integer, Rest/binary>> = _ObjBin) ->
     %% Version 1 of binary riak object
     case Rest of
-        <<VclockLen:32/integer, VclockBin:VclockLen/binary, _EncMagic:8/integer, SibCount:32/integer, SibsBin/binary>> ->
+        <<VclockLen:32/integer, VclockBin:VclockLen/binary, SibCount:32/integer, SibsBin/binary>> ->
             Vclock = binary_to_term(VclockBin),
             Contents = sibs_of_binary(SibCount, SibsBin),
             #r_object{bucket=B, key=K, contents=Contents, vclock=Vclock};
@@ -1335,10 +1335,10 @@ summary_from_binary(Object = #r_object{}) ->
 %% Return afrom a version 1 binary the vector clock and siblings
 summary_from_binary(ObjBin, ObjSize) ->
     <<?MAGIC:8/integer,
-        1:8/integer,
-        VclockLen:32/integer, VclockBin:VclockLen/binary,
-        SibCount:32/integer,
-        SibsBin/binary>> = ObjBin,
+      1:8/integer,
+      VclockLen:32/integer, VclockBin:VclockLen/binary,
+      SibCount:32/integer,
+      SibsBin/binary>> = ObjBin,
     {LastMods, SibBin} =
         case SibCount of
             SC when is_integer(SC) ->
@@ -1546,7 +1546,7 @@ new_v1(Vclock, Siblings, Enc) ->
     SibCount = length(Siblings),
     SibsBin = bin_contents(Siblings, Enc),
     <<?MAGIC:8/integer, ?V1_VERS:8/integer,
-      VclockLen:32/integer, VclockBin/binary, (enc_magic(Enc)):8/integer, SibCount:32/integer, SibsBin/binary>>.
+      VclockLen:32/integer, VclockBin/binary, SibCount:32/integer, SibsBin/binary>>.
 
 bin_content(#r_content{metadata=Meta0, value=Val}, Enc) ->
     {TypeTag, Meta} = determine_binary_type(Val, Meta0),
@@ -1561,9 +1561,6 @@ bin_contents(Contents, Enc) ->
                 <<Acc/binary, (bin_content(Content, Enc))/binary>>
         end,
     lists:foldl(F, <<>>, Contents).
-
-enc_magic(erlang) -> ?ERLT2B_MAGIC;
-enc_magic(msgpack) -> ?MSGPACK_MAGIC.
 
 
 meta_bin(MD, Enc) ->
@@ -1818,17 +1815,17 @@ convert_object_to_headonly(B, K, Object) ->
     % request
     Binary = to_binary(v1, Object),
     <<?MAGIC:8/integer,
-        ?V1_VERS:8/integer,
-        VclockLen:32/integer,
-        VclockBin:VclockLen/binary,
-        SibCount:32/integer, SibsBin/binary>> = Binary,
+      ?V1_VERS:8/integer,
+      VclockLen:32/integer,
+      VclockBin:VclockLen/binary,
+      SibCount:32/integer, SibsBin/binary>> = Binary,
     <<ValLen:32/integer,
-        _ValBin:ValLen/binary,
-        MetaLen:32/integer,
-        MetaBinRest:MetaLen/binary>> = SibsBin,
+      _ValBin:ValLen/binary,
+      MetaLen:32/integer,
+      MetaBinRest:MetaLen/binary>> = SibsBin,
     SibsBin0 = <<0:32/integer,
-                    MetaLen:32/integer,
-                    MetaBinRest:MetaLen/binary>>,
+                 MetaLen:32/integer,
+                 MetaBinRest:MetaLen/binary>>,
     HeadBin = <<?MAGIC:8/integer,
                 ?V1_VERS:8/integer,
                 VclockLen:32/integer,
@@ -2357,21 +2354,21 @@ head_binary(VC1, IsDeleted) ->
         end,
     MetaBin =
         <<0:32/integer,
-            0:32/integer,
-            0:32/integer,
-            0:8/integer,
-            DelBin:1/binary>>,
+          0:32/integer,
+          0:32/integer,
+          0:8/integer,
+          DelBin:1/binary>>,
 
     MetaSize = byte_size(MetaBin),
     SibsBin =
         <<0:32/integer, MetaSize:32/integer, MetaBin/binary,
-            0:32/integer, MetaSize:32/integer, MetaBin/binary>>,
+          0:32/integer, MetaSize:32/integer, MetaBin/binary>>,
     VclockLen = byte_size(VC1),
 
     RObjBin =
         <<?MAGIC:8/integer, ?V1_VERS:8/integer,
-            VclockLen:32/integer, VC1/binary,
-            2:32/integer, SibsBin/binary>>,
+          VclockLen:32/integer, VC1/binary,
+          2:32/integer, SibsBin/binary>>,
     RObjBin.
 
 
@@ -2409,9 +2406,9 @@ from_binary_foldheads_test() ->
     VC1 = term_to_binary(vclock:fresh(a, 3)),
     MDBin = head_binary(VC1),
     HeadObj =
-        term_to_binary(
+          term_to_binary(
             {proxy_object, MDBin, 100,
-                {fun fetch_value/2, clone, "JournalKey"}}),
+             {fun fetch_value/2, clone, "JournalKey"}}),
 
     RObj = from_binary(Bucket, Key, HeadObj),
     ?assertMatch(proxy, is_robject(RObj)),
@@ -2517,6 +2514,6 @@ trim_values(<<ValueLen:32/integer, _ValueBin:ValueLen/binary,
             MetaLen:32/integer, MetaBin:MetaLen/binary, Rest/binary>>, AccBin) ->
     trim_values(Rest,
                 <<AccBin/binary,
-                    0:32/integer, MetaLen:32/integer, MetaBin/binary>>).
+                  0:32/integer, MetaLen:32/integer, MetaBin/binary>>).
 
 -endif.
