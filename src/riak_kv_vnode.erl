@@ -4875,9 +4875,4 @@ rollover_test_() ->
              ]}
     }.
 
-always_v1_test() ->
-    % Confirm that the leveled backend will always be a v1 object
-    ObjFmt = object_format(riak_kv_leveled_backend, undefined),
-    ?assertEqual(v1, ObjFmt).
-
 -endif.
