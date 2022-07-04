@@ -426,7 +426,7 @@ jsonify_bucket_prop({Prop, Value}) ->
           {Property::atom(), erlpropvalue()}.
 %% @doc The reverse of jsonify_bucket_prop/1.  Converts JSON representation
 %%      of bucket properties to their Erlang form.
-erlify_bucket_prop({?JSON_DATATYPE, Type}) when is_binary(Type) ->
+erlify_bucket_prop({?JSON_DATATYPE, Type}) ->
     try
         {datatype, binary_to_existing_atom(Type, utf8)}
     catch
