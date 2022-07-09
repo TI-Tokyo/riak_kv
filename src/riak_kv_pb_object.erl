@@ -525,7 +525,7 @@ bucket_type(T, B) ->
 empty_bucket_key_test_() ->
     Name = "empty_bucket_key_test",
     SetupFun =  fun (load) ->
-                        application:set_env(riak_kv, storage_backend, riak_kv_memory_backend),
+                        application:set_env(riak_kv, storage_backend, riak_kv_eleveldb_backend),
                         application:set_env(riak_api, pb_ip, "127.0.0.1"),
                         application:set_env(riak_api, pb_port, 32767);
                     (_) -> ok end,
