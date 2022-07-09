@@ -342,13 +342,14 @@
 
 -type init_response() ::
         {riak_kv_requests:aaefold_request(),
-            all,
-            pos_integer(),
-            pos_integer(),
-            riak_kv,
-            riak_kv_vnode_master,
-            pos_integer(),
-            query_state()}.
+         all,
+         pos_integer(),
+         pos_integer(),
+         riak_kv,
+         riak_kv_vnode_master,
+         pos_integer(),
+         function(),
+         query_state()}.
 
 -export_type([query_definition/0]).
 
@@ -425,11 +426,11 @@ init(From={_, _, _}, [Query, Timeout]) ->
                     start_time = os:timestamp(),
                     query_type = QueryType},
     ?LOG_INFO("AAE fold prompted of type=~w", [QueryType]),
-    {Req, all, NVal, 1, 
-        riak_kv, riak_kv_vnode_master, 
-        Timeout, 
-        State}.
-        
+    {Req, all, NVal, 1,
+     riak_kv, riak_kv_vnode_master,
+     Timeout,
+     fun riak_core_coverage_plan:create_plan/6,
+     State}.
 
 process_results({error, Reason}, _State) ->
     ?LOG_WARNING("Failure to process fold results due to ~w", [Reason]),
