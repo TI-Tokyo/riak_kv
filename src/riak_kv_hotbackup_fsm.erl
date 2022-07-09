@@ -18,7 +18,7 @@
 %%
 %% -------------------------------------------------------------------
 
-%% @doc The AAE fold FSM allows for coverage folds acrosss Tictac AAE 
+%% @doc The AAE fold FSM allows for coverage folds acrosss Tictac AAE
 %% Controllers
 
 -module(riak_kv_hotbackup_fsm).
@@ -62,13 +62,14 @@
 
 -type init_response() ::
         {riak_kv_requests:hotbackup_request(),
-            all,
-            pos_integer(),
-            pos_integer(),
-            riak_kv,
-            riak_kv_vnode_master,
-            pos_integer(),
-            backup_state()}.
+         all,
+         pos_integer(),
+         pos_integer(),
+         riak_kv,
+         riak_kv_vnode_master,
+         pos_integer(),
+         function(),
+         backup_state()}.
 
 
 -ifdef(TEST).
@@ -78,28 +79,29 @@
 -include_lib("kernel/include/logger.hrl").
 
 -spec init(from(), inbound_api()) -> init_response().
-%% @doc 
-%% Return a tuple containing the ModFun to call per vnode, the number of 
-%% primary preflist vnodes the operation should cover, the service to use to 
-%% check for available nodes,and the registered name to use to access the 
+%% @doc
+%% Return a tuple containing the ModFun to call per vnode, the number of
+%% primary preflist vnodes the operation should cover, the service to use to
+%% check for available nodes,and the registered name to use to access the
 %% vnode master process.
 init(From={_, _, _}, [BackupPath, CoverageN, Timeout]) ->
     ?LOG_INFO("Hot Backup prompted with coverage ~w to path ~s",
-                [CoverageN, BackupPath]),
+              [CoverageN, BackupPath]),
     {TargetNVal, PlanNVal} = CoverageN,
     Req = riak_kv_requests:new_hotbackup_request(BackupPath),
-    {Req, all, TargetNVal, PlanNVal, 
-        riak_kv, riak_kv_vnode_master, 
-        Timeout, 
-        #state{from = From,
-                acc = [{complete, 0}, {not_supported, 0}, {bad_request, 0}]}}.
-        
+    {Req, all, TargetNVal, PlanNVal,
+     riak_kv, riak_kv_vnode_master,
+     Timeout,
+     fun riak_core_coverage_plan:create_plan/6,
+     #state{from = From,
+            acc = [{complete, 0}, {not_supported, 0}, {bad_request, 0}]}}.
+
 
 process_results({error, Reason}, _State) ->
     ?LOG_WARNING("Failure to process fold results due to ~w", [Reason]),
     {error, Reason};
 process_results(Result, State=#state{acc=Acc}) ->
-    % Results are received as a one-off for each vnode in this case, and so 
+    % Results are received as a one-off for each vnode in this case, and so
     % once results are merged work is always done.
     {Result, RC0} = lists:keyfind(Result, 1, Acc),
     UpdAcc = lists:keyreplace(Result, 1, Acc, {Result, RC0 + 1}),
@@ -107,7 +109,7 @@ process_results(Result, State=#state{acc=Acc}) ->
 
 %% Once the coverage FSM has received done for all vnodes (as an output from
 %% process_results), then it will call finish(clean, State) and so the results
-%% can be sent to the client, and the FSM can be stopped. 
+%% can be sent to the client, and the FSM can be stopped.
 finish({error, Error}, State=#state{from={raw, ReqId, ClientPid}}) ->
     % Notify the requesting client that an error
     % occurred or the timeout has elapsed.
@@ -115,12 +117,12 @@ finish({error, Error}, State=#state{from={raw, ReqId, ClientPid}}) ->
     ClientPid ! {ReqId, {error, Error}},
     {stop, normal, State};
 finish(clean, State=#state{from={raw, ReqId, ClientPid}, acc=Acc}) ->
-    % The client doesn't expect results in increments only the final result, 
+    % The client doesn't expect results in increments only the final result,
     % so no need for a seperate send of a 'done' message
     BackupDuration = timer:now_diff(os:timestamp(), State#state.start_time),
     {_NS, BC0} = lists:keyfind(not_supported, 1, Acc),
     {_BR, BC1} = lists:keyfind(bad_request, 1, Acc),
-    ?LOG_INFO("Finished backup with result=~w and duration=~w seconds", 
+    ?LOG_INFO("Finished backup with result=~w and duration=~w seconds",
                 [Acc, BackupDuration/1000000]),
     Result = BC0 + BC1 == 0,
     ClientPid ! {ReqId, {results, Result}},
@@ -152,4 +154,3 @@ bad_request() -> bad_request.
 
 
 -endif.
-
