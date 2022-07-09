@@ -79,7 +79,7 @@ process_results(Buckets0,
     Buckets = filter_buckets(Buckets0, StateData#state.type),
     ?DTRACE(?C_BUCKETS_PROCESS_RESULTS, [length(Buckets)], []),
     BucketsToSend = [ B  || B <- Buckets,
-                             not sets:is_element(B, BucketAcc) ],
+                            not sets:is_element(B, BucketAcc) ],
     case BucketsToSend =/= [] of
         true ->
             reply({buckets_stream, BucketsToSend}, From);
