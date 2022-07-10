@@ -873,9 +873,7 @@ fold_buckets_fun(FoldBucketsFun) ->
                 {Bucket, _} ->
                     {FoldBucketsFun(Bucket, Acc), Bucket};
                 ignore ->
-                    {Acc, LastBucket};
-                _ ->
-                    throw({break, Acc})
+                    {Acc, LastBucket}
             end
     end.
 
@@ -888,9 +886,7 @@ fold_keys_fun(FoldKeysFun, undefined) ->
                 {Bucket, Key} ->
                     FoldKeysFun(Bucket, Key, Acc);
                 ignore ->
-                    Acc;
-                _ ->
-                    throw({break, Acc})
+                    Acc
             end
     end;
 fold_keys_fun(FoldKeysFun, {bucket, FilterBucket}) ->
@@ -900,9 +896,7 @@ fold_keys_fun(FoldKeysFun, {bucket, FilterBucket}) ->
                 {Bucket, Key} when Bucket == FilterBucket ->
                     FoldKeysFun(Bucket, Key, Acc);
                 ignore ->
-                    Acc;
-                _ ->
-                    throw({break, Acc})
+                    Acc
             end
     end;
 %% 2i queries
@@ -933,7 +927,7 @@ fold_keys_fun(FoldKeysFun, {index, FilterBucket,
                     AccFun(Bucket, Key, Acc);
                 {skip, _BK} ->
                     Acc;
-                _ ->
+                false ->
                     throw({break, Acc})
             end
     end;
@@ -1026,7 +1020,7 @@ fold_objects_fun(FoldObjectsFun,
                     end;
                 {skip, _BK} ->
                     Acc;
-                _ ->
+                false ->
                     throw({break, Acc})
             end
     end;
@@ -1036,9 +1030,7 @@ fold_objects_fun(FoldObjectsFun, {bucket, FilterBucket}, _StObjFold) ->
                 {Bucket, Key} when Bucket == FilterBucket ->
                     FoldObjectsFun(Bucket, Key, Value, Acc);
                 ignore ->
-                    Acc;
-                _ ->
-                    throw({break, Acc})
+                    Acc
             end
     end;
 fold_objects_fun(FoldObjectsFun, undefined, _StObjFold) ->
@@ -1047,9 +1039,7 @@ fold_objects_fun(FoldObjectsFun, undefined, _StObjFold) ->
                 {Bucket, Key} ->
                     FoldObjectsFun(Bucket, Key, Value, Acc);
                 ignore ->
-                    Acc;
-                _ ->
-                    throw({break, Acc})
+                    Acc
             end
     end.
 
