@@ -139,14 +139,14 @@ insert_previous(BucketType, #ddl_v1{} = DDL, CompileState) ->
 
 %%
 -spec get_compiled_ddl_versions(BucketType :: binary()) ->
-    riak_ql_component:component_version() | notfound.
+    [riak_ql_component:component_version()] | not_found.
 get_compiled_ddl_versions(BucketType) when is_binary(BucketType) ->
     MatchRow = #row_v3{
         table = BucketType,
         table_version = '$1' },
     case dets:match(?TABLE3, MatchRow) of
         [] ->
-            notfound;
+            not_found;
         TableVersions ->
             Versions = lists:map(fun([{_,V}]) -> V end, TableVersions),
             lists:sort(
@@ -161,11 +161,13 @@ is_current_version(_V) -> false.
 
 assert_compiled_ddl_versions_current(BucketType) when is_binary(BucketType) ->
     case get_compiled_ddl_versions(BucketType) of
-        notfound -> {error, notfound};
-        TableVersions -> case lists:any(fun is_current_version/1, TableVersions) of
-                             true -> ok;
-                             _ -> {error, notcurrent}
-                         end
+        not_found ->
+            {error, notfound};
+        TableVersions ->
+            case lists:any(fun is_current_version/1, TableVersions) of
+                true -> ok;
+                _ -> {error, notcurrent}
+            end
     end.
 
 %%

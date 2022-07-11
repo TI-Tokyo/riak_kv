@@ -64,7 +64,7 @@
           qry           = none                :: none | ?SQL_SELECT{},
           qid           = undefined           :: undefined | {node(), non_neg_integer()},
           sub_qrys      = []                  :: [integer()],
-          receiver_pid                        :: pid(),
+          receiver_pid                        :: pid() | undefined,
           %% overload protection:
           %% 1. Maintain a limited number of running fsms (i.e.,
           %%    process at most that many subqueries at a time):
@@ -75,7 +75,7 @@
           n_subqueries_done  = 0                    :: non_neg_integer(),
           total_query_rows   = 0                    :: non_neg_integer(),
           total_query_data   = 0                    :: non_neg_integer(),
-          max_query_data                            :: non_neg_integer(),
+          max_query_data                            :: non_neg_integer() | undefined,
           %% For queries not backed by query buffers, results are
           %% accumulated in memory:
           result             = []                   :: rows_acc() | aggregate_acc() | group_by_acc(),
@@ -355,7 +355,7 @@ add_subquery_result(SubQId, Chunk, #state{sub_qrys = SubQs,
                 ThisChunkData = erlang:external_size(Chunk),
                 State#state{result            = QueryResult,
                             total_query_data  = TotalQueryData + ThisChunkData,
-                            total_query_rows  = TotalQueryRows + rows_in_chunk(Chunk),
+                            total_query_rows  = TotalQueryRows + length(Chunk),
                             n_subqueries_done = NSubqueriesDone + 1,
                             n_running_fsms    = NRunning - 1,
                             sub_qrys          = NSubQ}
@@ -388,11 +388,6 @@ run_select_on_chunk(SubQId, Chunk, #state{qry = Query,
             run_select_on_group(Query, SelClause, Chunk, QueryResult1)
     end.
 
-
-rows_in_chunk({decoded, Chunk}) ->
-    length(Chunk);
-rows_in_chunk(Chunk) ->
-    length(Chunk).
 
 
 %%

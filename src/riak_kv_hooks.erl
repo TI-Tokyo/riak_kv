@@ -143,7 +143,7 @@ get_hooks(Type) ->
 -spec save_state() -> ok.
 save_state() ->
     Hooks = ets:tab2list(?MODULE),
-    ok = ?SETENV(riak_kv, riak_kv_hooks, Hooks, infinity),
+    ok = ?SETENV(riak_kv, riak_kv_hooks, Hooks, [{timeout, infinity}]),
     ok.
 
 %% Restore registered hooks in the unlikely case that riak_kv_sup died and

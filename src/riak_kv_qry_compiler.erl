@@ -302,10 +302,10 @@ get_col_names2(_, Name) ->
 -record(single_sel_column, {
           calc_type        :: select_result_type(),
           initial_state    :: any(),
-          col_return_types :: [riak_pb_ts_codec:ldbvalue()],
-          col_name         :: riak_pb_ts_codec:tscolumnname(),
+          col_return_types :: [riak_pb_ts_codec:ldbvalue()] | undefined,
+          col_name         :: riak_pb_ts_codec:tscolumnname() | undefined,
           clause           :: function(),
-          finaliser        :: [function()]
+          finaliser        :: [function()] | undefined
          }).
 
 %%
@@ -622,7 +622,7 @@ col_index_and_type_of(Fields, ColumnName) ->
 
 %%
 -spec expand_where(riak_ql_ddl:filter(), #key_v1{}) ->
-                          {ok, [where_props()]} | {error, atom()}.
+                          {ok, [where_props()]} | {error, term()}.
 expand_where(Where, PartitionKey) ->
     case find_quantum_field_index_in_key(PartitionKey) of
         {QField, QSize, QUnit, QIndex} ->

@@ -44,7 +44,7 @@
           start_inclusive=true :: boolean(),
           end_inclusive=true :: boolean(),
           return_body=false ::boolean(), %% Note, only for riak cs bucket folds
-          term_regex :: {'re_pattern', any(), any(), any()} | binary() | undefined,
+          term_regex :: re:mp() | binary() | undefined,
           max_results :: integer() | undefined
          }).
 

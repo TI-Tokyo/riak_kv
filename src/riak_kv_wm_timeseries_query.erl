@@ -202,13 +202,13 @@ process_post(RD, #ctx{sql_type = ddl, compiled_query = SQL, with_props = WithPro
     end;
 process_post(RD, #ctx{table = <<>>} = Ctx) ->
     % SHOW TABLES has table = <<>>
-    process_post_(RD, Ctx, ?DDL{});
+    process_post_(RD, Ctx, ignored);
 process_post(RD, #ctx{mod = Mod} = Ctx) ->
     DDL = Mod:get_ddl(), %% might be faster to store this earlier on
     process_post_(RD, Ctx, DDL).
 
--spec process_post_(#wm_reqdata{}, #ctx{},
-                    ?DDL{}) -> cb_rv_spec(boolean()).
+-spec process_post_(#wm_reqdata{}, #ctx{}, ?DDL{} | ignored) ->
+          cb_rv_spec(boolean()).
 process_post_(RD, #ctx{sql_type = QueryType,
                        compiled_query = SQL,
                        table = Table} = Ctx, DDL) ->

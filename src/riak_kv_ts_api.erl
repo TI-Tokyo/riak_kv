@@ -73,16 +73,16 @@
 
 -export_type([query_api_call/0, api_call/0]).
 
--spec api_call_from_sql_type(riak_kv_qry:query_type()) -> query_api_call().
-api_call_from_sql_type(ddl)               -> query_create_table;
-api_call_from_sql_type(select)            -> query_select;
-api_call_from_sql_type(describe)          -> query_describe_table;
-api_call_from_sql_type(show_create_table) -> query_show_create_table;
-api_call_from_sql_type(show_tables)       -> query_show_tables;
-api_call_from_sql_type(insert)            -> query_insert;
-api_call_from_sql_type(delete)            -> query_delete;
-api_call_from_sql_type(explain)           -> query_explain;
-api_call_from_sql_type(alter)             -> query_alter_table.
+-spec api_call_from_sql_type(riak_kv_qry:query_type()) -> api_call().
+api_call_from_sql_type(ddl)               -> create_table;
+api_call_from_sql_type(select)            -> select;
+api_call_from_sql_type(describe)          -> describe_table;
+api_call_from_sql_type(show_create_table) -> show_create_table;
+api_call_from_sql_type(show_tables)       -> show_tables;
+api_call_from_sql_type(insert)            -> insert;
+api_call_from_sql_type(delete)            -> delete;
+api_call_from_sql_type(explain)           -> explain;
+api_call_from_sql_type(alter)             -> alter_table.
 
 -spec api_call_to_perm(api_call()) -> string().
 api_call_to_perm(get) ->
@@ -95,25 +95,23 @@ api_call_to_perm(list_keys) ->
     "riak_ts.list_keys";
 api_call_to_perm(coverage) ->
     "riak_ts.coverage";
-api_call_to_perm(query_create_table) ->
+api_call_to_perm(create_table) ->
     "riak_ts.create_table";
-api_call_to_perm(query_alter_table) ->
+api_call_to_perm(alter_table) ->
     "riak_ts.alter_table";
-api_call_to_perm(query_select) ->
+api_call_to_perm(select) ->
     "riak_ts.select";
-api_call_to_perm(query_explain) ->
+api_call_to_perm(explain) ->
     "riak_ts.explain";
-api_call_to_perm(query_describe_table) ->
+api_call_to_perm(describe_table) ->
     "riak_ts.describe_table";
 %% SHOW CREATE TABLE is an extended version of DESCRIBE
-api_call_to_perm(query_show_create_table) ->
-    api_call_to_perm(query_describe_table);
-api_call_to_perm(query_delete) ->
-    "riak_ts.delete";
+api_call_to_perm(show_create_table) ->
+    api_call_to_perm(describe_table);
 %% INSERT query is a put, so let's call it that
-api_call_to_perm(query_insert) ->
+api_call_to_perm(insert) ->
     api_call_to_perm(put);
-api_call_to_perm(query_show_tables) ->
+api_call_to_perm(show_tables) ->
     "riak_ts.show_tables".
 
 %%
@@ -226,7 +224,7 @@ alter_table(Table, Props1) ->
     end.
 
 
--spec query(string() | riak_kv_qry:sql_query_type_record(), ?DDL{}) ->
+-spec query(string() | riak_kv_qry:sql_query_type_record(), ?DDL{} | ignored) ->
                    {ok, riak_kv_qry:query_tabular_result()} |
                    {error, term()}.
 query(QueryStringOrSQL, DDL) ->

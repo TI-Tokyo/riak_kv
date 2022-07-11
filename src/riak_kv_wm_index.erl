@@ -193,7 +193,7 @@ malformed_request(RD, Ctx) ->
         undefined -> undefined;
         _ -> normalize_boolean(string:to_lower(PgSort0))
     end,
-    MaxVal = validate_max(validate_max(wrq:get_qs_value(?Q_2I_MAX_RESULTS, RD))),
+    MaxVal = validate_max(wrq:get_qs_value(?Q_2I_MAX_RESULTS, RD)),
     TermRegex = wrq:get_qs_value(?Q_2I_TERM_REGEX, RD),
     Timeout0 =  wrq:get_qs_value("timeout", RD),
     {Start, End} = case {IndexField, Args2} of

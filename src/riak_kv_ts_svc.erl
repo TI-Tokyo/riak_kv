@@ -180,7 +180,7 @@ process(M = ?SQL_SELECT{'FROM' = Table}, State) ->
     check_table_and_call(Table, fun sub_tsqueryreq/4, M, State);
 
 process(M = #riak_sql_delete_query_v1{}, State) ->
-    case riak_kv_qry:submit(M, ?DDL{}) of
+    case riak_kv_qry:submit(M, ignored) of
         {ok, ?EMPTYRESPONSE} ->
             {reply, make_tsqueryresp(?EMPTYRESPONSE), State};
         {error, Err} ->
@@ -195,7 +195,7 @@ process(M = #riak_sql_insert_v1{'INSERT' = Table}, State) ->
 
 process(#riak_sql_show_tables_v1{}, State) ->
     {ok, {ColNames, ColTypes, LdbNativeRows}} =
-        riak_kv_qry:submit(#riak_sql_show_tables_v1{}, ?DDL{}),
+        riak_kv_qry:submit(#riak_sql_show_tables_v1{}, ignored),
     Rows = [list_to_tuple(R) || R <- LdbNativeRows],
     {reply, make_tsqueryresp({ColNames, ColTypes, Rows}), State};
 

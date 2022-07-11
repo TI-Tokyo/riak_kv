@@ -58,7 +58,7 @@
 
 
 %% No coverage plan for parallel requests
--spec submit(string() | sql_query_type_record(), ?DDL{}) ->
+-spec submit(string() | sql_query_type_record(), ?DDL{} | ignored) ->
     {ok, query_tabular_result()} | {error, any()}.
 %% @doc Parse, validate against DDL, and submit a query for execution.
 %%      To get the results of running the query, use fetch/1.
@@ -81,17 +81,17 @@ submit(#riak_sql_describe_v1{}, DDL) ->
 submit(#riak_sql_show_create_table_v1{}, ?DDL{table = Table} = DDL) ->
     Props = riak_core_bucket:get_bucket({Table, Table}),
     riak_ql_show_create_table:show_create_table(DDL, Props);
-submit(SQL = #riak_sql_insert_v1{}, _DDL) ->
+submit(SQL = #riak_sql_insert_v1{}, ignored) ->
     do_insert(SQL);
 submit(SQL = ?SQL_SELECT{}, DDL) ->
     do_select(SQL, DDL);
-submit(#riak_sql_show_tables_v1{}, _DDL) ->
+submit(#riak_sql_show_tables_v1{}, ignored) ->
     do_show_tables();
-submit(#riak_sql_alter_table_v1{} = Q, _DDL) ->
+submit(#riak_sql_alter_table_v1{} = Q, ignored) ->
     do_alter_table(Q);
 submit(#riak_sql_explain_query_v1{'EXPLAIN' = Select}, DDL) ->
     do_explain(DDL, Select);
-submit(#riak_sql_delete_query_v1{} = Q, _DDL) ->
+submit(#riak_sql_delete_query_v1{} = Q, ignored) ->
     do_delete(Q).
 
 %% ---------------------
@@ -153,7 +153,7 @@ make_empty_row(Mod) ->
 %% This *requires* that once schema changes take place the DDL fields are left in order.
 %%
 -spec lookup_field_positions(module(), [riak_ql_ddl:field_identifier()]) ->
-                           {ok, [pos_integer()]} | {error, string()}.
+                           {ok, [pos_integer()]} | {error, {undefined_fields, [string()]}}.
 lookup_field_positions(Mod, FieldIdentifiers) ->
     GoodBadPositions =
         lists:foldl(
@@ -168,8 +168,8 @@ lookup_field_positions(Mod, FieldIdentifiers) ->
     case GoodBadPositions of
         {Positions, []} ->
             {ok, lists:reverse(Positions)};
-        {_, Errors} ->
-            {error, {undefined_fields, Errors}}
+        {_, BadFields} ->
+            {error, {undefined_fields, BadFields}}
     end.
 
 %%
@@ -185,7 +185,7 @@ lookup_field_positions(Mod, FieldIdentifiers) ->
 %% list_to_tuple(tuple_to_list())
 -spec xlate_insert_to_putdata([[riak_ql_ddl:data_value()]], [pos_integer()], tuple(),
                               [riak_ql_ddl:internal_field_type()]) ->
-                              {ok, [tuple()]} | {error, string()}.
+                              {ok, [tuple()]} | {error, too_many_insert_values}.
 xlate_insert_to_putdata(Values, Positions, Empty, FieldTypes) ->
     ConvFn = fun(RowVals, {Good, Bad, RowNum}) ->
                  case make_insert_row(RowVals, Positions, Empty, FieldTypes) of
@@ -199,8 +199,8 @@ xlate_insert_to_putdata(Values, Positions, Empty, FieldTypes) ->
     case Converted of
         {PutData, [], _} ->
             {ok, lists:reverse(PutData)};
-        {_, Errors, _} ->
-            {error, {too_many_insert_values, lists:reverse(Errors)}}
+        {_, _Errors, _} ->
+            {error, too_many_insert_values}
     end.
 
 -spec make_insert_row([riak_ql_ddl:data_value()], [pos_integer()], tuple(),

@@ -140,7 +140,7 @@
                 key_buf_size :: pos_integer(),
                 async_folding :: boolean(),
                 in_handoff = false :: boolean(),
-                handoff_target :: {integer(), node()},
+                handoff_target :: {integer(), node()} | undefined,
                 handoffs_rejected = 0 :: integer(),
                 forward :: node() | [{integer(), node()}],
                 hashtrees :: pid() | undefined,
@@ -490,20 +490,14 @@ when_loading_complete(AAECntrl, Preflists, PreflistFun, OnlyIfBroken) ->
 get_modstate(_State=#state{mod=Mod, modstate=ModState}) ->
     {Mod, ModState}.
 
--spec get_asyncopts(state(), binary()|all) -> list(atom()|tuple()).
 %% @doc
 %% Return a start to the options list based on the async capability of the
 %% vnode and the backend
-get_asyncopts(State, Bucket) ->
+get_asyncopts(State) ->
     {Mod, ModState} = get_modstate(State),
     AsyncFolding = State#state.async_folding,
     {{ok, Capabilities}, Opts0} =
-        case Bucket of
-            all ->
-                {Mod:capabilities(ModState), []};
-            _ ->
-                {Mod:capabilities(Bucket, ModState), [{bucket, Bucket}]}
-        end,
+        {Mod:capabilities(ModState), []},
     AsyncBackend = lists:member(async_fold, Capabilities),
     case AsyncFolding andalso AsyncBackend of
         true ->
@@ -1351,7 +1345,7 @@ handle_command(tictacaae_rebuildpoke, Sender, State) ->
                             ReturnFun(ok)
                         end,
                     {Mod, ModState} = get_modstate(State),
-                    Opts = get_asyncopts(State, all),
+                    Opts = get_asyncopts(State),
                     % Make the fold request to the vnode - why is this called list?
                     % Perhaps this should be backend_fold/7
                     case list(FoldFun, FinishFun0,

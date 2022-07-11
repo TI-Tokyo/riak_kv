@@ -302,7 +302,14 @@ recompile_ddl() ->
 
 %%
 upgrade_ddl(Table, CurrentVersion) ->
-    [HighestVersion|_] = riak_kv_compile_tab:get_compiled_ddl_versions(Table),
+    HighestVersion =
+        case riak_kv_compile_tab:get_compiled_ddl_versions(Table) of
+            [Highest|_] ->
+                Highest;
+            not_found ->
+                logger:error("Could not determine highest version of compiled DDL for table ~s", [Table]),
+                v1
+        end,
     case riak_ql_ddl:is_version_greater(CurrentVersion, HighestVersion) of
         equal ->
             %% the table is up to date, no need to upgrade
