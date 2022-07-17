@@ -895,7 +895,7 @@ fold_keys_fun(FoldKeysFun, {bucket, FilterBucket}) ->
             case from_object_key(StorageKey) of
                 {Bucket, Key} when Bucket == FilterBucket ->
                     FoldKeysFun(Bucket, Key, Acc);
-                ignore ->
+                _wrong_bucket_or_ignore ->
                     Acc
             end
     end;
