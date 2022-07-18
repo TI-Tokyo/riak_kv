@@ -17,10 +17,10 @@ jobs:
       fail-fast: false
       matrix:
         otp:
-          - "25.0.3"
-          - "24.3.4.2"
-          - "23.3.4.14"
-          - "22.3.4.26"
+          - "25"
+          - "24"
+          - "23"
+          - "22"
 
     container:
       image: erlang:${{ matrix.otp }}
