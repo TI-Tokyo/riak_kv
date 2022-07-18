@@ -32,6 +32,10 @@
 
 -module(riak_kv_wm_timeseries_listkeys).
 
+-ifdef(OTP_23).
+-compile([{nowarn_deprecated_function, [{http_uri,encode,1}]}]).
+-endif.
+
 %% webmachine resource exports
 -export([
          init/1,
@@ -180,9 +184,18 @@ format_url(BaseUrl, KeyTypes, Key) ->
 
 key_to_string(KFTypes) ->
     string:join(
-      [[Field, $/, http_uri:encode(value_to_url_string(Key, Type))]
+      [[Field, $/, percent_encode(value_to_url_string(Key, Type))]
        || {Key, {Field, Type}} <- KFTypes],
       "/").
+
+-ifdef(OTP_25).
+percent_encode(A) ->
+    uri_string:quote(A).
+-else.
+percent_encode(A) ->
+    http_uri:encode(A).
+-endif.
+
 
 value_to_url_string(V, blob) ->
     base64:encode_to_string(V);
