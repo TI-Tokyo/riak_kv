@@ -6,6 +6,7 @@ compile:
 
 clean:
 	$(REBAR) clean
+	@rm src/riak_core_pb.erl
 
 cover: test
 	$(REBAR) cover
