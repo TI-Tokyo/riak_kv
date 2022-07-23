@@ -589,7 +589,7 @@ do_reap_expired_qbufs(#state{qbufs = QBufs0,
         lists:foldl(
           fun({_QBufRef, #qbuf{size = Size}}, Acc) -> Acc + Size end,
           0, QBufs9),
-    ?LOG_DEBUG("TotalSize now ~p", [TotalSize]),
+    if TotalSize > 0 -> ?LOG_DEBUG("TotalSize now ~p", [TotalSize]); el/=se -> nop end,
     {noreply, State#state{qbufs = QBufs9,
                           total_size = TotalSize}}.
 
