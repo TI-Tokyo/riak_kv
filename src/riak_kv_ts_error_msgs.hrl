@@ -108,3 +108,9 @@
 -define(
    E_ORDER_BY_WITH_AGGREGATE_CALC_TYPE,
    <<"ORDER BY/LIMIT/OFFSET clauses not supported for queries containing an aggregate function.">>).
+
+-define(
+    E_MISSING_COL_IN_GROUP_BY(FieldName, TableName),
+    iolist_to_binary(io_lib:format(
+        "Error in group by clause, column '~ts' does not exist in table ~ts", [FieldName, TableName]))
+).
