@@ -199,6 +199,8 @@ replace_ast_timestamps(Mod, {Op, Item1, Item2}) when is_tuple(Item1) andalso is_
     {Op, replace_ast_timestamps(Mod, Item1), replace_ast_timestamps(Mod, Item2)};
 replace_ast_timestamps(Mod, {Op, FieldName, {binary, Value}}) ->
     {Op, FieldName, maybe_convert_to_epoch(catch Mod:get_field_type([FieldName]), Value, Op)};
+replace_ast_timestamps(_Mod, {Item1, Item2}) ->
+    {Item1, Item2};
 replace_ast_timestamps(_Mod, {Op, Item1, Item2}) ->
     {Op, Item1, Item2}.
 

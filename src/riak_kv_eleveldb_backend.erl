@@ -63,17 +63,12 @@
 -include("riak_kv_index.hrl").
 -include("riak_kv_ts.hrl").
 
--ifdef(EQC).
--include_lib("eqc/include/eqc.hrl").
--export([prop_eleveldb_backend/0]).
--endif.
 
 
 -ifdef(TEST).
--ifdef(EQC).
--include_lib("eqc/include/eqc.hrl").
--endif.
+-include_lib("proper/include/proper.hrl").
 -include_lib("eunit/include/eunit.hrl").
+-export([prop_eleveldb_backend/0]).
 -endif.
 
 -define(API_VERSION, 1).

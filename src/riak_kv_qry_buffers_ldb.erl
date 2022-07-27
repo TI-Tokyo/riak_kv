@@ -27,8 +27,8 @@
 
 -export([new_table/2,
          delete_table/3,
-         add_rows/5,
-         fetch_rows/3]).
+         add_rows/2,
+         fetch_rows/2]).
 
 -include_lib("kernel/include/logger.hrl").
 
@@ -70,86 +70,67 @@ delete_table(Table, LdbRef, Root) ->
     ok.
 
 
--spec add_rows(eleveldb:db_ref(), [riak_kv_qry_buffers:data_row()], integer(),
-               [pos_integer()], [{asc|desc, nulls_first|nulls_last}]) ->
+-spec add_rows(eleveldb:db_ref(), [riak_kv_qry_buffers:data_row()]) ->
                       ok | {error, ldb_put_failed}.
-add_rows(LdbRef, Rows, ChunkId,
-         KeyFieldPositions,
-         OrdByFieldQualifiers) ->
-    %% 0. The new key is composed from fields appearing in the ORDER
-    %%    BY clause, and may therefore not work out to be unique. We
-    %%    now index the rows in the chunk to preserve the original
-    %%    order (because imposing any other order is even worse)
-    RowsIndexed = lists:zip(Rows, lists:seq(1, length(Rows))),
+add_rows(LdbRef, Rows) ->
     try
         lists:foreach(
-          fun({Row, Idx}) ->
-                  %% a. Form a new key from ORDER BY fields
-                  KeyRaw = [lists:nth(Pos, Row) || Pos <- KeyFieldPositions],
-                  %% b. Negate values in columns marked as DESC in ORDER BY clause
-                  KeyOrd = [make_sorted_keys(F, AscDesc, Nulls)
-                            || {F, {AscDesc, Nulls}} <- lists:zip(KeyRaw, OrdByFieldQualifiers)],
-                  %% c. Combine with chunk id and row idx to ensure uniqueness, and encode.
-                  KeyEnc = sext:encode({KeyOrd, ChunkId, Idx}),
-                  %% d. Encode the record (don't bother constructing a
-                  %%    riak_object with metadata, vclocks):
-                  RowEnc = sext:encode(Row),
-                  ok = eleveldb:put(LdbRef, KeyEnc, RowEnc, [{sync, true}])
+          fun({K, V}) ->
+                  ok = eleveldb:put(LdbRef, sext:encode(K), sext:encode(V), [{sync, false}])
           end,
-          RowsIndexed)
+          Rows)
     catch
         error:badmatch ->
             {error, ldb_put_failed}
     end.
 
-make_sorted_keys([], desc, nulls_first) ->
-    <<>>;  %% sorts before entupled value
-make_sorted_keys([], asc,  nulls_last) ->
-    <<>>;  %% sorts after entupled value
-make_sorted_keys([], asc,  nulls_first) ->
-    0;
-make_sorted_keys([], desc, nulls_last) ->
-    0;
-make_sorted_keys(F, asc, _) ->
-    {F};
-make_sorted_keys(F, desc, _) when is_number(F) ->
-    {-F};
-make_sorted_keys(F, desc, _) when is_binary(F) ->
-    {[<<bnot X>> || <<X>> <= F]};
-make_sorted_keys(F, desc, _) when is_boolean(F) ->
-    {not F}.
 
-
-
--spec fetch_rows(eleveldb:db_ref(), non_neg_integer(), unlimited|pos_integer()) ->
+-spec fetch_rows(eleveldb:db_ref(), [{Offset::non_neg_integer(),
+                                      Limit::unlimited|pos_integer()}]) ->
                         {ok, [riak_kv_qry_buffers:data_row()]} | {error, term()}.
-fetch_rows(LdbRef, Offset, LimitOrUnlim) ->
-    %% Because the database is read-only, the plan is to keep a cache
-    %% of iterators for faster seeking (to the nearest stored),
-    %% ideally also enable eleveldb to do the folding from stored
-    %% iterators rather than from 'first'.
+%% Given a list of {Offset, Limit} pairs, seek to Offset position and collect Limit
+%% records, concatenating the results.  This cumbersome solution is to allow callers to
+%% fetch many disjoint spans in one go (currently utilised by
+%% riak_ql_inverse_distrib_fns:'PERCENTILE_CONT').
+%%
+%% The underlying consideration is to minimize the number of seeks from start, which are
+%% (a) unnecessary on the ldb instance not receiving any writes and (b) just adding to the
+%% latency when we need to fetch a couple of records at positions near end of a large
+%% buffer.
+%%
+%% The function signature could be reverted to the simpler, more maintainable
+%% `fetch_rows(LdbRef, Offset) -> {ok, riak_kv_qry_buffers:data_row()}` if we had some
+%% sort of iterators cache ([{Pos, Iter}]) kept in a a persistent manner (in a process dict?).
+%%
+%% Currently, the limitation only applies to function 'MODE', which needs to examine every
+%% record.   In a future implementation of reusable query buffers it will re-emerge.
+fetch_rows(LdbRef, SortedSpecs) ->
     FetchLimitFn =
-        fun(_KV, {Off, Lim, Pos, Acc}) when Pos < Off ->
-                {Off, Lim, Pos + 1, Acc};
-           %% Fetching K (let alone V) while "seeking" to our Offset
-           %% is wasteful.  We need to properly implement sensible
-           %% iterator support in eleveldb (iterator_move et al
-           %% currently effectively dereferences the argument
-           %% iterator), before we can think up an iterator cache in
-           %% qbuf state.  For now, we have to trundle to Position
-           %% every time we serve a query.
-           ({_K, V}, {Off, Lim, Pos, Acc}) when Lim == unlimited orelse
-                                                Pos < Off + Lim ->
-                {Off, Lim, Pos + 1, [V | Acc]};
-           (_KV, {_, _, _, Acc}) ->
+        fun(_KV, {[{Off, _Lim}|_] = CurSegment, Pos, Acc}) when Pos < Off ->
+                %% still seeking to Off: increment Pos and skip to
+                %% next record
+                {CurSegment, Pos + 1, Acc};
+
+           ({_K, V}, {[{Off, Lim}|_RestSegment] = CurSegment, Pos, Acc})
+              when Lim == unlimited orelse Pos + 1 < Off + Lim ->
+                %% this and the next record are within the segment we are fetching from
+                {CurSegment, Pos + 1, [V | Acc]};
+
+           ({_K, V}, {[{Off, Lim}|RestSegment] = _CurSegment, Pos, Acc})
+              when Lim == unlimited orelse Pos < Off + Lim ->
+                %% this record is the last in the current segment: take next segment
+                {RestSegment, Pos + 1, [V | Acc]};
+
+           (_KV, {[], _Pos, Acc}) ->
+                %% all segments processed: goto out
                 throw({break, Acc})
         end,
     {ok, Fetched} =
         try eleveldb:fold(
               LdbRef, FetchLimitFn,
-              {Offset, LimitOrUnlim, 0, []},
+              {SortedSpecs, 0, []},
               [{fold_method, streaming}]) of
-            {_, _, _N, Acc} ->
+            {_, _, Acc} ->
                 {ok, Acc}
         catch
             {break, Acc} ->

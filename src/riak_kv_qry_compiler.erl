@@ -3,7 +3,7 @@
 %% riak_kv_qry_compiler: generate the coverage for a hashed query
 %%
 %%
-%% Copyright (c) 2016 Basho Technologies, Inc.  All Rights Reserved.
+%% Copyright (c) 2016-2017 Basho Technologies, Inc.  All Rights Reserved.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -23,16 +23,20 @@
 -module(riak_kv_qry_compiler).
 
 -export([compile/2]).
--export([compile_select_clause/2,  %% used in riak_kv_qry_buffers;
-         compile_order_by/1]).     %% to deliver chunks more efficiently
 -export([finalise_aggregate/2]).
 -export([run_select/2, run_select/3]).
 
+%% Exporting this local function to work around an obscure dialyzer
+%% issue.  See details in a comment near this function head.
+-export([compile_order_by/2]).
+
 -ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
 -compile([nowarn_export_all, export_all]).
 -endif.
 
 -type compiled_select() :: fun((_,_) -> riak_pb_ts_codec:ldbvalue()).
+-type options() :: list().
 -export_type([compiled_select/0]).
 
 -include("riak_kv_ts.hrl").
@@ -47,10 +51,19 @@
                         {end_inclusive, boolean()}].
 -type combinator()       :: [binary()].
 -type limit()            :: pos_integer().
--type offset()           :: non_neg_integer().
+-type offset()           :: non_neg_integer() | function().
 -type operator()         :: [binary()].
 -type sorter()           :: {binary(), asc|desc, nulls_first|nulls_last}.
 
+-type invdist_funcall() :: {riak_ql_inverse_distrib_fns:invdist_function(),
+                            ColumnArg::binary(),
+                            [number()]}.
+
+-type invdist_fn_precompiled_spec() :: {ok, invdist_funcall()} |
+                                       {error, {DescriptiveAtom::atom(), DisplayString::binary()}}.
+-type invdist_fn_compiled_spec() :: {CompiledOrderBy::sorter(),
+                                     CompiledLimit::1,  %% invdist functions returns one row
+                                     CompiledOffset::function()}.
 
 -export_type([combinator/0,
               limit/0,
@@ -64,43 +77,162 @@
 %% chunks will need to be really small, for the result to be within
 %% max query size.
 
+compile(DDL, Query) ->
+    compile(DDL, Query, options()).
 
--spec compile(?DDL{}, ?SQL_SELECT{}) ->
+-spec compile(?DDL{}, ?SQL_SELECT{}, Options::options()) ->
     {ok, [?SQL_SELECT{}]} | {error, any()}.
-compile(?DDL{}, ?SQL_SELECT{is_executable = true}) ->
+compile(?DDL{}, ?SQL_SELECT{is_executable = true}, _) ->
     {error, 'query is already compiled'};
-compile(?DDL{table = T} = DDL,
-        ?SQL_SELECT{is_executable = false} = Q1) ->
+compile(?DDL{table = T} = DDL, ?SQL_SELECT{is_executable = false} = Q1, Options) ->
     Mod = riak_ql_ddl:make_module_name(T),
-    case compile_order_by(
-           maybe_compile_group_by(
-             Mod, compile_select_clause(DDL, Q1), Q1)) of
-        {ok, Q2} ->
-            compile_where_clause(DDL, Q2);
-        {error, _} = Error ->
-            Error
+    case compile_select_clause(DDL, Options, Q1) of
+        {error, _} = ER ->
+            ER;
+        {ok, Q2, InvDistFuns} ->
+            case maybe_compile_group_by(Mod, Q2, Q1) of
+                {error, _} = ER ->
+                    ER;
+                {ok, Q3} ->
+                    case compile_order_by(Q3, InvDistFuns) of
+                        {error, _} = ER ->
+                            ER;
+                        {ok, Q4} ->
+                            compile_where_clause(DDL, Q4, Options)
+                    end
+            end
     end.
 
+%% create a proplist of options for query compilation e.g. configured or
+%% transient values.
+options() ->
+    [
+        %% this is stored in the options so that multiple calls to `now()` in a
+        %% single query share the same value
+        {now_milliseconds, now_milliseconds()}
+        %% TODO include max quanta
+    ].
 
--spec compile_order_by({ok, ?SQL_SELECT{}} | {error, any()}) ->
+now_milliseconds() ->
+  {Mega, Sec, Micro} = os:timestamp(),
+  (Mega*1000000 + Sec)*1000 + round(Micro/1000).
+
+-spec compile_order_by(?SQL_SELECT{}, list()) ->
                               {ok, ?SQL_SELECT{}} | {error, any()}.
-compile_order_by({error,_} = E) ->
-    E;
-compile_order_by({ok, ?SQL_SELECT{'ORDER BY' = OrderBy,
-                                  'OFFSET'   = Offset,
-                                  'LIMIT'    = Limit,
-                                  'SELECT' = #riak_sel_clause_v1{calc_type = CalcType}}})
-  when (length(OrderBy) > 0 orelse
-        length(Limit)   > 0 orelse
-        length(Offset)  > 0) andalso CalcType /= rows ->
+compile_order_by(?SQL_SELECT{'ORDER BY' = OrderBy,
+                             'OFFSET'   = Offset,
+                             'LIMIT'    = Limit,
+                             'SELECT' = #riak_sel_clause_v1{calc_type = CalcType}},
+                 _InvDistFuns)
+  when (Limit /= [] orelse
+        Offset /= [] orelse
+        OrderBy /= [])
+       andalso (CalcType /= rows) ->
     {error, {order_by_with_aggregate_calc_type, ?E_ORDER_BY_WITH_AGGREGATE_CALC_TYPE}};
-compile_order_by({ok, ?SQL_SELECT{'ORDER BY' = OrderBy} = Q}) ->
+
+%% inverdist functions of arg x will simulate 'ORDER BY' = [{x, asc,
+%% nulls_last}], 'LIMIT' = [1], 'OFFSET' = [FunctionOfSelectionRows].
+%% They are 'compiled' and handled here for this reason.
+compile_order_by(?SQL_SELECT{'ORDER BY' = OrderBy,
+                             'OFFSET'   = Offset,
+                             'LIMIT'    = Limit},
+                 InvDistFuns)
+  when (Limit /= [] orelse
+        Offset /= [] orelse
+        OrderBy /= [])
+       andalso (InvDistFuns /= []) ->
+    {error, {inverdist_function_with_orderby,
+             ?E_CANNOT_HAVE_ORDERBY_WITH_INVERSE_DIST_FUNCTION}};
+
+compile_order_by(?SQL_SELECT{'SELECT' = #riak_sel_clause_v1{calc_type = CalcType}},
+                 InvDistFuns)
+  when (InvDistFuns /= [])
+       andalso (CalcType /= rows) ->
+    {error, {inverdist_function_with_groupby_or_aggregate_function,
+             ?E_CANNOT_HAVE_GROUPING_OR_AGGREGATION_WITH_INVERSE_DIST_FUNCTION}};
+
+%% This is a local function. It is exported because otherwise dialyzer
+%% believes all calls to this function are made with its second arg,
+%% InvDistFuns = []. As tests pass (specifically, those involving
+%% queries with multiple calls to percentile functions, this is not
+%% true.  The supplier of InvDistFuns is compile_select_clause, where
+%% it generates InvDistFuns in a foldl.
+compile_order_by(?SQL_SELECT{'SELECT' = Select,
+                             'WHERE'  = [Where]} = Q,
+                 InvDistFuns = [_|_]) ->
+    %% Offset is now a computable thing
+    case compile_inverdist_funcalls_to_orderby(InvDistFuns) of
+        {CompiledSpecs, []} ->
+            {CompiledOrderBys,
+             CompiledLimits,
+             CompiledOffsets} = lists:unzip3(CompiledSpecs),
+            case check_invdist_funs_consistent_with_select(
+                   CompiledOrderBys, Select) of
+                ok ->
+                    %% Select has one compiled column per PERCENTILE call, but
+                    %% only one makes sense
+                    [{SubstituteColName, _, _}|_] = CompiledOrderBys,
+                    %% add a WHERE $that_column is not null because
+                    %% inverse distribution functions want nulls
+                    %% discarded
+                    ExtendedWhere = {and_, {is_not_null, {identifier, SubstituteColName}},
+                                     Where},
+                    SingleColumnSelect = make_single_column_select(Select, SubstituteColName),
+                    {ok, Q?SQL_SELECT{'SELECT'   = SingleColumnSelect,
+                                      'ORDER BY' = CompiledOrderBys,
+                                      'OFFSET'   = CompiledOffsets,
+                                      'LIMIT'    = CompiledLimits,
+                                      'WHERE'    = [ExtendedWhere]}};
+                ER ->
+                    ER
+            end;
+        {_, BadFunCalls} ->
+            %% there can be multiple errors to report, but we can only
+            %% report one, so:
+            {error, hd(BadFunCalls)}
+    end;
+
+%% this is the real ORDER BY (no InvDistFuns)
+compile_order_by(?SQL_SELECT{'ORDER BY' = OrderBy} = Q,
+                 _InvDistFuns = []) ->
     case non_unique_identifiers(OrderBy) of
         [] ->
-            {ok, Q?SQL_SELECT{'ORDER BY' = OrderBy}};
+            {ok, Q};
         WhichNonUnique ->
-            {error, {non_unique_orderby_fields, ?E_NON_UNIQUE_ORDERBY_FIELDS(hd(WhichNonUnique))}}
+            {error, {non_unique_orderby_fields,
+                     ?E_NON_UNIQUE_ORDERBY_FIELDS(hd(WhichNonUnique))}}
     end.
+
+
+
+-spec check_invdist_funs_consistent_with_select(list(tuple()), #riak_sel_clause_v1{}) ->
+                                                       ok | {error, tuple()}.
+check_invdist_funs_consistent_with_select(CompiledOrderBys,
+                                          #riak_sel_clause_v1{col_names = ColNames}) ->
+    lists:foldl(
+      fun(F, ok) -> F(); (_F, Error) -> Error end,
+      ok,
+      [fun() ->
+               %% we allow multiple PERCENTILE calls in a single SELECT,
+               %% but they all must have the same column argument
+               case lists:usort(CompiledOrderBys) of
+                   [_SameColumnOrderBy] ->
+                       ok;
+                   _Multiple ->
+                       {error, {multiple_invdist_funs_with_different_column_args,
+                                ?E_INVERSE_DIST_FUN_MULTIPLE_COLUMN_ARG}}
+               end
+       end,
+       fun() ->
+               %% only inverse distrib functions please
+               case length(CompiledOrderBys) == length(ColNames) of
+                   true ->
+                       ok;
+                   false ->
+                       {error, {plain_column_with_invdist_function,
+                                ?E_INVERSE_DIST_FUN_WITH_OTHER_COLUMN}}
+               end
+       end]).
 
 non_unique_identifiers(FF) ->
     Occurrences = [{F, occurs(F, FF)} || {F, _, _} <- FF],
@@ -112,10 +244,36 @@ occurs(F, FF) ->
       end,
       0, FF).
 
+-spec compile_inverdist_funcalls_to_orderby(
+        [invdist_fn_precompiled_spec()]) -> {[invdist_fn_compiled_spec()], [{error, term()}]}.
+%% convert successfully validated invdist funcalls (a list of them,
+%% to allow for percentile(x, 0.42), percentile(y, 0.24)) into a list
+%% of ORDER BYs, LIMITs and OFFSETs; or report validation errors if any.
+compile_inverdist_funcalls_to_orderby(PrecompiledSpecs) ->
+    Specs = [compile_invdist_funcall(FC) || {ok, FC} <- PrecompiledSpecs],
+    Errors = [Reason || {error, Reason} <- PrecompiledSpecs],
+    {Specs, Errors}.
+
+compile_invdist_funcall({FnName, ThisColumn, Args}) ->
+    {_OrderBy = {ThisColumn, asc, nulls_last},
+     _Limit   = 1,
+     _Offset  = fun(TotalRows, ValueAtF) ->
+                        riak_ql_inverse_distrib_fns:FnName(
+                          Args, TotalRows, ValueAtF)
+                end}.
+
+make_single_column_select(#riak_sel_clause_v1{col_return_types = [ColReturnType1|_],
+                                              clause           = [Clause1|_],
+                                              finalisers       = [Finaliser1|_]} = S,
+                         SubstituteColName) ->
+    S#riak_sel_clause_v1{col_return_types = [ColReturnType1],
+                         col_names        = [SubstituteColName],  %% needs to match real column
+                         clause           = [Clause1],
+                         finalisers       = [Finaliser1]}.
+
+
 %%
-maybe_compile_group_by(_, {error,_} = E, _) ->
-    E;
-maybe_compile_group_by(Mod, {ok, Sel3}, ?SQL_SELECT{ group_by = GroupBy } = Q1) ->
+maybe_compile_group_by(Mod, Sel3, ?SQL_SELECT{ group_by = GroupBy } = Q1) ->
     %% a throw means an error occurred and the function returned early and is
     %% an expected error e.g. column name typo.
     try
@@ -128,15 +286,20 @@ maybe_compile_group_by(Mod, {ok, Sel3}, ?SQL_SELECT{ group_by = GroupBy } = Q1) 
 compile_group_by(_, [], Acc, Q) ->
     {ok, Q?SQL_SELECT{ group_by = lists:reverse(Acc) }};
 compile_group_by(Mod, [{identifier,FieldName}|Tail], Acc, Q)
-        when is_binary(FieldName) ->
-    Pos = get_group_by_field_position(Mod, FieldName),
-    compile_group_by(Mod, Tail, [{Pos,FieldName}|Acc], Q);
-compile_group_by(Mod, [{time_fn,{_,FieldName},_} = GroupTimeFnAST|Tail], Acc, Q) when is_binary(FieldName) ->
+  when is_binary(FieldName) ->
+    case Mod:get_field_position([FieldName]) of
+        undefined ->
+            group_by_column_does_not_exist_error(Mod, FieldName);
+        Pos ->
+            compile_group_by(Mod, Tail, [{Pos,FieldName}|Acc], Q)
+    end;
+compile_group_by(Mod, [{time_fn,{_,FieldName},_} = GroupTimeFnAST|Tail], Acc, Q)
+  when is_binary(FieldName) ->
     GroupTimeFn = make_group_by_time_fn(Mod, GroupTimeFnAST),
     compile_group_by(Mod, Tail, [{GroupTimeFn,FieldName}|Acc], Q).
 
 -spec make_group_by_time_fn(module(), group_time_fn()) -> function().
-make_group_by_time_fn(Mod, {time_fn, {identifier,FieldName},{integer,GroupSize}}) ->
+make_group_by_time_fn(Mod, {time_fn, {identifier, FieldName}, {integer, GroupSize}}) ->
     Pos = get_group_by_field_position(Mod, FieldName),
     fun(Row) ->
         Time = lists:nth(Pos, Row),
@@ -160,20 +323,27 @@ group_by_column_does_not_exist_error(Mod, FieldName) ->
 %% adding the local key here is a bodge
 %% should be a helper fun in the generated DDL module but I couldn't
 %% write that up in time
--spec compile_where_clause(?DDL{}, ?SQL_SELECT{}) ->
+-spec compile_where_clause(?DDL{}, ?SQL_SELECT{}, options()) ->
                                   {ok, [?SQL_SELECT{}]} | {error, term()}.
 compile_where_clause(?DDL{} = DDL,
-                     ?SQL_SELECT{is_executable = false,
-                                 'WHERE'       = W,
-                                 cover_context = Cover} = Q) ->
-    case {compile_where(DDL, W), unwrap_cover(Cover)} of
-        {{error, E}, _} ->
-            {error, E};
-        {_, {error, E}} ->
-            {error, E};
-        {NewW, {ok, {RealCover, WhereModifications}}} ->
-            expand_query(DDL, Q?SQL_SELECT{cover_context = RealCover},
-                         update_where_for_cover(NewW, WhereModifications))
+                     ?SQL_SELECT{helper_mod    = Mod,
+                                 is_executable = false,
+                                 'WHERE'       = W1,
+                                 cover_context = Cover} = Q,
+                     Options) ->
+    try
+        {W2,_} = resolve_expressions(Mod, Options, W1),
+        case {check_if_timeseries(DDL, lists:flatten([W2])), unwrap_cover(Cover)} of
+            {{error, E}, _} ->
+                {error, E};
+            {_, {error, E}} ->
+                {error, E};
+            {{true, W3}, {ok, {RealCover, WhereModifications}}} ->
+                expand_query(DDL, Q?SQL_SELECT{cover_context = RealCover},
+                             update_where_for_cover(W3, WhereModifications))
+        end
+    catch
+        throw:Error when element(1,Error) == error -> Error
     end.
 
 %% now break out the query on quantum boundaries
@@ -215,6 +385,9 @@ is_last_partition_column_descending(FieldOrders, PK) ->
 
 key_length(#key_v1{ast = AST}) ->
     length(AST).
+
+local_key_field_orders(FieldOrders, PK) ->
+    lists:nthtail(key_length(PK), FieldOrders).
 
 %% Calulate the final result for an aggregate.
 -spec finalise_aggregate(#riak_sel_clause_v1{}, [any()]) -> [any()].
@@ -271,39 +444,42 @@ my_mapfoldl(F, Accu0, [Hd|Tail]) ->
 my_mapfoldl(F, Accu, []) when is_function(F, 2) -> {[],Accu}.
 
 %%
-compile_select_clause(DDL, ?SQL_SELECT{'SELECT' = #riak_sel_clause_v1{clause = Sel}} = Q) ->
-    %% compile each select column and put all the calc types into a set, if
-    %% any of the results are aggregate then aggregate is the calc type for the
-    %% whole query
-    CompileColFn =
-        fun(ColX, AccX) ->
-            select_column_clause_folder(DDL, ColX, AccX)
-        end,
-    Acc = {sets:new(), #riak_sel_clause_v1{ }},
-    %% iterate from the right so we can append to the head of lists
-    {ResultTypeSet, Sel1} = lists:foldl(CompileColFn, Acc, Sel),
+compile_select_clause(DDL, Options, ?SQL_SELECT{'SELECT' = #riak_sel_clause_v1{clause = Sel}} = Q) ->
     {ColTypes, Errors} = my_mapfoldl(
         fun(ColASTX, Errors) ->
             infer_col_type(DDL, ColASTX, Errors)
         end, [], Sel),
-    IsGroupBy = (Q?SQL_SELECT.group_by /= []),
-    IsAggregate = sets:is_element(aggregate, ResultTypeSet),
-    if
-        IsGroupBy ->
-            Sel2 = Sel1#riak_sel_clause_v1{calc_type = group_by};
-        IsAggregate ->
-            Sel2 = Sel1#riak_sel_clause_v1{calc_type = aggregate};
-        not IsAggregate ->
-            Sel2 = Sel1#riak_sel_clause_v1{
-                   calc_type = rows,
-                   initial_state = []}
-    end,
+
     case Errors of
         [] ->
-            Sel3 = Sel2#riak_sel_clause_v1{
-                col_return_types = lists:flatten(ColTypes),
-                col_names = get_col_names(DDL, Q)},
-            {ok, Sel3};
+            CompileColFn =
+                fun(ColX, AccX) ->
+                        select_column_clause_folder(DDL, Options, ColX, AccX)
+                end,
+            %% compile each select column and put all the calc types into a set, if
+            %% any of the results are aggregate then aggregate is the calc type for the
+            %% whole query
+            Acc = {sets:new(), #riak_sel_clause_v1{ }, []},
+            %% iterate from the right so we can append to the head of lists
+            {ResultTypeSet, Sel1, InvDistFuns1} = lists:foldl(CompileColFn, Acc, Sel),
+
+            IsGroupBy = (Q?SQL_SELECT.group_by /= []),
+            IsAggregate = sets:is_element(aggregate, ResultTypeSet),
+            Sel2 =
+                if IsGroupBy ->
+                        Sel1#riak_sel_clause_v1{calc_type = group_by,
+                                                col_names = get_col_names(DDL, Q)};
+                   IsAggregate ->
+                        Sel1#riak_sel_clause_v1{calc_type = aggregate,
+                                                col_names = get_col_names(DDL, Q)};
+                   not IsAggregate ->
+                        Sel1#riak_sel_clause_v1{calc_type = rows,
+                                                initial_state = [],
+                                                col_names = get_col_names(DDL, Q)}
+                end,
+            {ok, Sel2#riak_sel_clause_v1{col_names = get_col_names(DDL, Q),
+                                         col_return_types = lists:flatten(ColTypes) },
+             InvDistFuns1};
         [_|_] ->
             {error, {invalid_query, riak_kv_qry:format_query_syntax_errors(lists:reverse(Errors))}}
     end.
@@ -323,55 +499,61 @@ get_col_names2(DDL, "*") ->
 get_col_names2(_, Name) ->
     list_to_binary(Name).
 
-%%
+-type select_column_clause_folder_acc() :: {set:set(), #riak_sel_clause_v1{}, list(invdist_fn_precompiled_spec())}.
+
 -record(single_sel_column, {
           calc_type        :: select_result_type(),
           initial_state    :: any(),
-          col_return_types :: [riak_pb_ts_codec:ldbvalue()] | undefined,
-          col_name         :: riak_pb_ts_codec:tscolumnname() | undefined,
+          col_return_types :: [riak_pb_ts_codec:ldbvalue()],
+          col_name         :: riak_pb_ts_codec:tscolumnname(),
           clause           :: function(),
-          finaliser        :: [function()] | undefined
+          finaliser        :: [function()],
+          inverdist_fn = [] :: [invdist_fn_precompiled_spec()]
          }).
 
-%%
--spec select_column_clause_folder(?DDL{}, riak_ql_ddl:selection(),
-                                  {sets:set(), #riak_sel_clause_v1{}}) ->
-                {sets:set(), #riak_sel_clause_v1{}}.
-select_column_clause_folder(DDL, ColAST1,
-                            {TypeSet1, #riak_sel_clause_v1{ finalisers = Finalisers } = SelClause}) ->
+
+-spec select_column_clause_folder(?DDL{}, options(), riak_ql_ddl:selection(),
+                                  select_column_clause_folder_acc()) ->
+                select_column_clause_folder_acc().
+select_column_clause_folder(DDL, Options, ColAST1,
+                            {TypeSet1, #riak_sel_clause_v1{ finalisers = Finalisers } = SelClause, InvDistFuns1}) ->
     %% extract the stateful functions then treat them as separate select columns
     LenFinalisers = length(Finalisers),
     case extract_stateful_functions(ColAST1, LenFinalisers) of
         {ColAST2, []} ->
             %% the case where the column contains no functions
             FinaliserFn =
-                compile_select_col_stateless(DDL, {return_state, LenFinalisers + 1}),
+                compile_select_col_stateless(DDL, Options, {return_state, LenFinalisers + 1}),
             ColAstList = [{ColAST2, FinaliserFn}];
         {FinaliserAST, [WindowFnAST | Tail]} ->
             %% the column contains one or more functions that will be separated
             %% into their own columns until finalisation
             FinaliserFn =
-                compile_select_col_stateless(DDL, FinaliserAST),
+                compile_select_col_stateless(DDL, Options, FinaliserAST),
             ActualCol = {WindowFnAST, FinaliserFn},
             TempCols = [{AST, skip} || AST <- Tail],
             ColAstList = [ActualCol | TempCols]
     end,
     FolderFn =
         fun(E, Acc) ->
-            select_column_clause_exploded_folder(DDL, E, Acc)
+            select_column_clause_exploded_folder(DDL, Options, E, Acc)
         end,
-    lists:foldl(FolderFn, {TypeSet1, SelClause}, ColAstList).
+    lists:foldl(FolderFn, {TypeSet1, SelClause, InvDistFuns1}, ColAstList).
 
 
+-spec select_column_clause_exploded_folder(?DDL{}, options(), {riak_ql_ddl:selection(), function()},
+                                           select_column_clause_folder_acc()) ->
+                                                  select_column_clause_folder_acc().
 %% When the select column is "exploded" it means that multiple functions that
 %% collect state have been extracted and given their own temporary columns
 %% which will be merged by the finalisers.
-select_column_clause_exploded_folder(DDL, {ColAst, Finaliser}, {TypeSet1, SelClause1}) ->
+select_column_clause_exploded_folder(DDL, Options, {ColAst, Finaliser},
+                                     {TypeSet1, SelClause1, InvDistFnCalls1}) ->
     #riak_sel_clause_v1{
        initial_state = InitX,
        clause = RunFnX,
        finalisers = Finalisers1 } = SelClause1,
-    S = compile_select_col(DDL, ColAst),
+    S = compile_select_col(DDL, Options, ColAst),
     TypeSet2 = sets:add_element(S#single_sel_column.calc_type, TypeSet1),
     Init2   = InitX ++ [S#single_sel_column.initial_state],
     RunFn2  = RunFnX ++ [S#single_sel_column.clause],
@@ -382,22 +564,23 @@ select_column_clause_exploded_folder(DDL, {ColAst, Finaliser}, {TypeSet1, SelCla
                     initial_state    = Init2,
                     clause           = RunFn2,
                     finalisers       = lists:flatten(Finalisers2)},
-    {TypeSet2, SelClause2}.
+    InvDistFnCalls2 = lists:append(InvDistFnCalls1, S#single_sel_column.inverdist_fn),
+    {TypeSet2, SelClause2, InvDistFnCalls2}.
 
 %% Compile a single selection column into a fun that can extract the cell
 %% from the row.
--spec compile_select_col(DDL::?DDL{}, ColumnSpec::any()) ->
+-spec compile_select_col(?DDL{}, options(), ColumnSpec::any()) ->
                                 #single_sel_column{}.
-compile_select_col(DDL, {{window_agg_fn, FnName}, [FnArg1]}) when is_atom(FnName) ->
+compile_select_col(DDL, Options, {{window_agg_fn, FnName}, [FnArg1]}) when is_atom(FnName) ->
     case riak_ql_window_agg_fns:start_state(FnName) of
         stateless ->
             %% TODO this does not run the function! nothing is stateless so far though
-            Fn = compile_select_col_stateless(DDL, FnArg1),
+            Fn = compile_select_col_stateless(DDL, Options, FnArg1),
             #single_sel_column{ calc_type        = rows,
                                 initial_state    = undefined,
                                 clause           = Fn };
         Initial_state ->
-            Compiled_arg1 = compile_select_col_stateless(DDL, FnArg1),
+            Compiled_arg1 = compile_select_col_stateless(DDL, Options, FnArg1),
             % all the windows agg fns so far are arity of 1
             % which we have forced in this clause by matching on a single argument in the
             % function head
@@ -409,45 +592,163 @@ compile_select_col(DDL, {{window_agg_fn, FnName}, [FnArg1]}) when is_atom(FnName
                                 initial_state    = Initial_state,
                                 clause           = SelectFn }
     end;
-compile_select_col(DDL, Select) ->
+compile_select_col(DDL, Options, {{inverse_distrib_fn, FnName}, FnArgs}) when is_atom(FnName) ->
+    %% 1. Convert to plain 'rows' result type, for qry_worker to
+    %%    prepare selection as usual, substituting PERCENTILE(x, 0.75) with x;
+    %%
+    %% 2. Make a function to determine the row position, given the
+    %%    total number of rows (N) in selection (thus N*0.75), for
+    %%    qry_buffers to emulate OFFSET P LIMIT 1.
+    %%
+    %%    This function is not a running aggregator function as those
+    %%    of the window_agg_fn kind.  It will be invoked at a later
+    %%    stage, at the coordinator, once, to produce a virtual OFFSET.
+    %%
+    MaybeInvdistSpec =
+        prepare_invdist_funcall(FnName, FnArgs),
+    ReplacedColumn = hd(FnArgs),
     #single_sel_column{ calc_type = rows,
                         initial_state = undefined,
-                        clause = compile_select_col_stateless(DDL, Select) }.
+                        %% thread result up to compile_order_by, where
+                        %% errors are reported properly and the actual
+                        %% functions are constructed
+                        inverdist_fn = [MaybeInvdistSpec],
+                        clause = compile_select_col_stateless(DDL, Options, ReplacedColumn) };
+compile_select_col(DDL, Options, Select) ->
+    #single_sel_column{ calc_type = rows,
+                        initial_state = undefined,
+                        clause = compile_select_col_stateless(DDL, Options, Select) }.
+
+-spec prepare_invdist_funcall(riak_ql_inverse_distrib_fns:invdist_function(), list()) ->
+                                     invdist_fn_precompiled_spec().
+%% Given a SELECT column `PERCENTILE(x, 0.42)`, convert it to
+%% `{'PERCENTILE', <<"x">>, [0.42]}`, for it to be validated against
+%% possible other such columns and converted to the actual function in
+%% `compile_order_by`.
+prepare_invdist_funcall(FnName, [{identifier, [ColumnArg]}|_] = Args) ->
+    case validate_invdist_funcall(FnName, Args) of
+        {ok, OtherArgsBare} ->
+            {ok, {FnName, ColumnArg, OtherArgsBare}};
+        ER ->
+            ER
+    end;
+prepare_invdist_funcall(FnName, _Args) ->
+    {error, {missing_invdist_fn_column_arg,
+             ?E_INVERSE_DIST_FUN_MISSING_COLUMN_ARG(FnName)}}.
+
+validate_invdist_funcall(FnName, [{identifier, [_ColumnArg]}|Args]) ->
+    case evaluate_const_args(Args) of
+        {error, _} = ER ->
+            ER;
+        {ok, StaticArgs} ->
+            {_StaticArgTypes, StaticArgValues} = lists:unzip(StaticArgs),
+            case riak_ql_inverse_distrib_fns:fn_param_check(FnName, StaticArgValues) of
+                ok ->
+                    {ok, StaticArgValues};
+                {error, InvalidParamPos} ->
+                    {error, {invalid_static_invdist_fn_param,
+                             ?E_INVERSE_DIST_FUN_BAD_PARAMETER(FnName, InvalidParamPos)}}
+            end
+    end.
+
+evaluate_const_args(Args) ->
+    lists:foldl(
+      fun(_, {error, _} = ER) ->
+              ER;
+         (Expr, {ok, Acc}) ->
+              case evaluate_const_expr(Expr) of
+                  {ok, Val} ->
+                      {ok, Acc ++ [Val]};
+                  ER ->
+                      ER
+              end
+      end,
+      {ok, []},
+      Args).
+
+evaluate_const_expr({Type, _})
+  when Type == varchar; Type == boolean; Type == binary  ->
+    {ok, {invalid_expr_in_invdist_fun_arglist,
+          ?E_INVERSE_DIST_FUN_INVAL_EXPR}};
+evaluate_const_expr({Type, _} = Arg)
+  when Type == integer; Type == float ->
+    {ok, Arg};
+evaluate_const_expr({negate, Expr}) ->
+    case evaluate_const_expr(Expr) of
+        {ok, {Type, Value}} ->
+            {ok, {Type, -Value}};
+        ER ->
+            ER
+    end;
+evaluate_const_expr({Op, Expr1, Expr2}) ->
+    case {evaluate_const_expr(Expr1),
+          evaluate_const_expr(Expr2)} of
+        {{ok, A1}, {ok, A2}} ->
+            Res = apply_op(Op, A1, A2),
+            Res;
+        {{error, _} = ER, _} ->
+            ER;
+        {_, ER} ->
+            ER
+    end;
+evaluate_const_expr({identifier, _}) ->
+    {error, {nonconst_expr_in_invdist_fun_arglist,
+             ?E_INVERSE_DIST_FUN_NONCONST_ARG}}.
+
+apply_op(Op, {T1, E1}, {T2, E2})
+  when Op == '+'; Op == '-'; Op == '*'; Op == '/' ->
+    try
+        {ok, {infer_type(Op, T1, T2),
+              apply(erlang, Op, [E1, E2])}}
+    catch
+        error:badarith ->
+            {error, {invalid_expr_in_invdist_fun_arglist,
+                     ?E_INVERSE_DIST_FUN_INVAL_EXPR}}
+    end.
+
+infer_type('/', _, _) -> float;
+infer_type(_, T1, T2) -> numeric_promote(T1, T2).
+
+numeric_promote(integer, integer) -> integer;
+numeric_promote(_, _) -> float.
 
 
 %% Returns a one arity fun which is stateless for example pulling a field from a
 %% row.
--spec compile_select_col_stateless(?DDL{}, riak_ql_ddl:selection()
-                                   | {Op::atom(), riak_ql_ddl:selection(), riak_ql_ddl:selection()}
-                                   | {return_state, integer()}) ->
-                                          compiled_select().
-compile_select_col_stateless(_, {identifier, [<<"*">>]}) ->
+-spec compile_select_col_stateless(?DDL{}, options(),
+                                   riak_ql_ddl:selection()
+                                   | {return_state, integer()}) -> compiled_select().
+compile_select_col_stateless(_, _, {identifier, [<<"*">>]}) ->
     fun(Row, _) -> Row end;
-compile_select_col_stateless(DDL, {negate, ExprToNegate}) ->
-    ValueToNegate = compile_select_col_stateless(DDL, ExprToNegate),
+compile_select_col_stateless(DDL, Options, {negate, ExprToNegate}) ->
+    ValueToNegate = compile_select_col_stateless(DDL, Options, ExprToNegate),
     fun(Row, State) -> -ValueToNegate(Row, State) end;
-compile_select_col_stateless(_, {Type, V}) when Type == varchar; Type == boolean; Type == binary; Type == integer; Type == float ->
+compile_select_col_stateless(_, _, {Type, V}) when Type == varchar; Type == boolean; Type == binary; Type == integer; Type == float ->
     fun(_,_) -> V end;
-compile_select_col_stateless(_, {return_state, N}) when is_integer(N) ->
+compile_select_col_stateless(_, _, {return_state, N}) when is_integer(N) ->
     fun(Row,_) -> pull_from_row(N, Row) end;
-compile_select_col_stateless(DDL, {{sql_select_fn, 'TIME'}, Args1}) ->
-    [Argsx1,Argsx2] = [compile_select_col_stateless(DDL,Ax) || Ax <- Args1],
+compile_select_col_stateless(DDL, Options, {{sql_select_fn, 'TIME'}, Args1}) ->
+    [Argsx1,Argsx2] = [compile_select_col_stateless(DDL,Options,Ax) || Ax <- Args1],
     fun(Row,State) ->
         A1 = Argsx1(Row,State),
         A2 = Argsx2(Row,State),
         riak_ql_quanta:quantum(A1,A2,ms)
     end;
-compile_select_col_stateless(_, {finalise_aggregation, FnName, N}) ->
+compile_select_col_stateless(_, Options, {{sql_select_fn, 'NOW'}, Args}) ->
+    ok = validate_where_fn_arity('NOW', Args),
+    {_, Now} = lists:keyfind(now_milliseconds, 1, Options),
+    fun(_,_) -> Now end;
+compile_select_col_stateless(_, _, {finalise_aggregation, FnName, N}) ->
     fun(Row,_) ->
         ColValue = pull_from_row(N, Row),
         riak_ql_window_agg_fns:finalise(FnName, ColValue)
     end;
-compile_select_col_stateless(?DDL{ fields = Fields }, {identifier, ColumnName}) ->
+compile_select_col_stateless(?DDL{fields = Fields}, _, {identifier, ColumnName}) ->
     {Index, _} = col_index_and_type_of(Fields, to_column_name_binary(ColumnName)),
     fun(Row,_) -> pull_from_row(Index, Row) end;
-compile_select_col_stateless(DDL, {Op, A, B}) ->
-    Arg_a = compile_select_col_stateless(DDL, A),
-    Arg_b = compile_select_col_stateless(DDL, B),
+compile_select_col_stateless(DDL, Options, {Op, A, B}) ->
+    Arg_a = compile_select_col_stateless(DDL, Options, A),
+    Arg_b = compile_select_col_stateless(DDL, Options, B),
     compile_select_col_stateless2(Op, Arg_a, Arg_b).
 
 %%
@@ -465,34 +766,57 @@ infer_col_type(_, {float, _}, Errors) ->
 infer_col_type(?DDL{ fields = Fields }, {identifier, ColName1}, Errors) ->
     case to_column_name_binary(ColName1) of
         <<"*">> ->
-            Type = [T || #riak_field_v1{ type = T } <- Fields];
+            Type = [T || #riak_field_v1{ type = T } <- Fields],
+            {Type, Errors};
         ColName2 ->
-            {_, Type} = col_index_and_type_of(Fields, ColName2)
-    end,
-    {Type, Errors};
+            case col_index_and_type_of(Fields, ColName2) of
+                {error, {unknown_column, _} = ER} ->
+                    {error, [ER|Errors]};
+                {_, Type} ->
+                    {Type, Errors}
+            end
+    end;
+
+infer_col_type(DDL, {{FnClass, FnName}, FnArgs}, Errors0)
+  when FnClass == window_agg_fn;
+       FnClass == inverse_distrib_fn ->
+    MaybeArgTypes =
+        lists:foldl(
+          fun(_, {error, _} = ER) -> ER;
+             (Arg, {AccTypes, Errors}) ->
+                  case infer_col_type(DDL, Arg, Errors) of
+                      {error, _} = ER ->
+                          ER;
+                      {Type, Errors2} ->
+                          {AccTypes ++ [Type], Errors2}
+                  end
+          end,
+          {[], Errors0}, FnArgs),
+    case MaybeArgTypes of
+        {error, _} = Error ->
+            Error;
+        {ArgTypes, Errors} ->
+            infer_col_function_type(FnClass, FnName, ArgTypes, Errors)
+    end;
+infer_col_type(_, {{sql_select_fn, 'NOW'}, _}, Errors1) ->
+    {timestamp, Errors1};
 infer_col_type(DDL, {{sql_select_fn, 'TIME'}, Args}, Errors1) ->
-    {ArgTypes,Errors2} =
+    {ArgTypes, Errors2} =
         lists:foldr(
             fun(E, {Types, ErrorsX}) ->
                 case infer_col_type(DDL, E, ErrorsX) of
-                    {error,E}     -> {[error|Types],[E|ErrorsX]};
+                    {error, E}    -> {[error|Types], [E|ErrorsX]};
                     {T, ErrorsX2} -> {[T|Types], ErrorsX2}
                 end
             end, {[], Errors1}, Args),
     case ArgTypes of
-        [timestamp,sint64] ->
-            {timestamp,Errors2};
+        [timestamp, sint64] ->
+            {timestamp, Errors2};
         _ ->
             FnSigError = {argument_type_mismatch, 'TIME', ArgTypes},
-            {error,[FnSigError|Errors2]}
+            {error, [FnSigError|Errors2]}
     end;
-infer_col_type(DDL, {{window_agg_fn, FnName}, [FnArg1]}, Errors1) ->
-    case infer_col_type(DDL, FnArg1, Errors1) of
-        {error, _} = Error ->
-            Error;
-        {ArgType, Errors2} ->
-            infer_col_function_type(FnName, [ArgType], Errors2)
-    end;
+
 infer_col_type(DDL, {Op, A, B}, Errors1) when Op == '/'; Op == '+'; Op == '-'; Op == '*' ->
     {AType, Errors2} = infer_col_type(DDL, A, Errors1),
     {BType, Errors3} = infer_col_type(DDL, B, Errors2),
@@ -501,13 +825,19 @@ infer_col_type(DDL, {negate, AST}, Errors) ->
     infer_col_type(DDL, AST, Errors).
 
 %%
-infer_col_function_type(FnName, ArgTypes, Errors) ->
-    case riak_ql_window_agg_fns:fn_type_signature(FnName, ArgTypes) of
+infer_col_function_type(FnClass, FnName, ArgTypes, Errors) ->
+    Mod = fn_module(FnClass),
+    case Mod:fn_type_signature(FnName, ArgTypes) of
         {error, Reason} ->
             {error, [Reason | Errors]};
         ReturnType ->
             {ReturnType, Errors}
     end.
+
+%%
+fn_module(window_agg_fn)      -> riak_ql_window_agg_fns;
+fn_module(inverse_distrib_fn) -> riak_ql_inverse_distrib_fns.
+
 
 %%
 pull_from_row(N, Row) ->
@@ -536,7 +866,9 @@ extract_stateful_functions2({Tag, _} = Node, _, Fns)
         when Tag == identifier; Tag == sint64; Tag == integer; Tag == float;
              Tag == binary;     Tag == varchar; Tag == boolean ->
     {Node, Fns};
-extract_stateful_functions2({{sql_select_fn, _}, _} = Node, _, Fns) ->
+extract_stateful_functions2({{FnClass, _FnName}, _} = Node, _, Fns)
+  when FnClass == inverse_distrib_fn;
+       FnClass == sql_select_fn ->
     {Node, Fns};
 extract_stateful_functions2({{window_agg_fn, FnName}, _} = Function, FinaliserLen, Fns1) ->
     Fns2 = [Function | Fns1],
@@ -663,15 +995,14 @@ to_column_name_binary(Name) when is_binary(Name) ->
 col_index_and_type_of(Fields, ColumnName) ->
     case lists:keyfind(ColumnName, #riak_field_v1.name, Fields) of
         false ->
-            FieldNames = [X#riak_field_v1.name || X <- Fields],
-            error({unknown_column, {ColumnName, FieldNames}});
+            {error, {unknown_column, ColumnName}};
         #riak_field_v1{ position = Position, type = Type } ->
             {Position, Type}
     end.
 
 %%
 -spec expand_where(riak_ql_ddl:filter(), #key_v1{}) ->
-                          {ok, [where_props()]} | {error, term()}.
+                          {ok, [where_props()]} | {error, atom()}.
 expand_where(Where, PartitionKey) ->
     case find_quantum_field_index_in_key(PartitionKey) of
         {QField, QSize, QUnit, QIndex} ->
@@ -737,7 +1068,7 @@ hash_timestamp_to_quanta(QField, QSize, QUnit, QIndex, Where1) ->
             %% the end_inclusive flag because the end key is not used to hash
             {ok, make_wheres(Where2, QField, Min2, Max1, Boundaries)};
         false ->
-            ?LOG_INFO("query spans too many quanta (~b, max ~b)", [NQuanta, MaxQueryQuanta]),
+            lager:info("query spans too many quanta (~b, max ~b)", [NQuanta, MaxQueryQuanta]),
             {error, {too_many_subqueries, NQuanta, MaxQueryQuanta}}
     end.
 
@@ -777,15 +1108,6 @@ swap(Where, QField, Key, Val) ->
     {Key, Fields} = lists:keyfind(Key, 1, Where),
     NewFields = lists:keyreplace(QField, 1, Fields, {QField, timestamp, Val}),
     _NewWhere = lists:keyreplace(Key, 1, Where, {Key, NewFields}).
-
-%% going forward the compilation and restructuring of the queries will be a big piece of work
-%% for the moment we just brute force assert that the query is a timeseries SQL request
-%% and go with that
-compile_where(DDL, Where) ->
-    case check_if_timeseries(DDL, Where) of
-        {error, E}   -> {error, E};
-        {true, NewW} -> NewW
-    end.
 
 %%
 quantum_field_name(DDL) ->
@@ -831,12 +1153,19 @@ check_if_timeseries(?DDL{table = T, partition_key = PK, local_key = LK0} = DDL,
                              false -> [{end_inclusive, true}]
                          end,
                 RewrittenFilter = add_types_to_filter(Filter, Mod),
-                {true, lists:flatten([
-                                      {startkey, StartKey},
-                                      {endkey,   EndKey},
-                                      {filter,   RewrittenFilter}
-                                     ] ++ IncStart ++ IncEnd
-                                    )};
+                WhereProps1 = lists:flatten(
+                    [{startkey, StartKey},
+                     {endkey,   EndKey},
+                     {filter,   RewrittenFilter},
+                     IncStart,
+                     IncEnd]),
+                WhereProps2 = check_where_clause_is_possible(DDL, WhereProps1),
+                WhereProps3 = rewrite_where_with_additional_filters(
+                    Mod:additional_local_key_fields(),
+                    local_key_field_orders(Mod:field_orders(), PK),
+                    fun Mod:get_field_type/1,
+                    WhereProps2),
+                {true, WhereProps3};
             Errors ->
                 {error, Errors}
         end
@@ -1146,8 +1475,427 @@ modify_where_key(TupleList, Field, NewVal) ->
     {Field, FieldType, _OldVal} = lists:keyfind(Field, 1, TupleList),
     lists:keyreplace(Field, 1, TupleList, {Field, FieldType, NewVal}).
 
+resolve_expressions(Mod, Options, WhereAST) ->
+    Acc = acc, %% not used
+    riak_ql_ddl:mapfold_where_tree(
+        fun (_, Op, Acc_x) when Op == and_; Op == or_ ->
+                {ok, Acc_x};
+            (_, Filter, Acc_x) ->
+                {resolve_expressions_folder(Mod, Options, Filter), Acc_x}
+        end, Acc, WhereAST).
+
+resolve_expressions_folder(_, _, {ExpOp,{_,A},{_,B}}) when ExpOp == '+'; ExpOp == '*';
+                                                           ExpOp == '-'; ExpOp == '/' ->
+    Value =
+        case ExpOp of
+            '+' -> riak_ql_window_agg_fns:add(A,B);
+            '*' -> riak_ql_window_agg_fns:multiply(A,B);
+            '-' -> riak_ql_window_agg_fns:subtract(A,B);
+            '/' -> riak_ql_window_agg_fns:divide(A,B)
+        end,
+    {calculated, Value};
+resolve_expressions_folder(_, Options, {{sql_select_fn,'NOW'}, Args}) ->
+    ok = validate_where_fn_arity('NOW', Args),
+    {_, Now} = lists:keyfind(now_milliseconds, 1, Options),
+    {timestamp, Now};
+resolve_expressions_folder(Mod, _, {ExpOp,FieldName,{calculated,V1}}) when is_binary(FieldName) ->
+    V2 = cast_value_to_ast(Mod:get_field_type([FieldName]),V1),
+    {ExpOp,FieldName,V2};
+resolve_expressions_folder(_, _, AST) ->
+    AST.
+
+validate_where_fn_arity(FnName, Args) ->
+    ExpectedArity = riak_ql_ddl:sql_function_arity(FnName),
+    ActualArity = length(Args),
+    case ExpectedArity == length(Args) of
+        true ->
+            ok;
+        false ->
+            Msg = format_binary(
+                "Function ~p has arity of ~p but was called with ~p arguments.",
+                [FnName, ExpectedArity, ActualArity]),
+            throw({error,{invalid_query,  Msg}})
+    end.
+
+format_binary(Fmt, Args) ->
+    iolist_to_binary(io_lib:format(Fmt, Args)).
+
+cast_value_to_ast(T, V) when (T == integer orelse T == timestamp), is_integer(V) -> {T, V};
+cast_value_to_ast(T, V) when (T == integer orelse T == timestamp), is_float(V)   -> {T, erlang:round(V)};
+cast_value_to_ast(double, V) when is_integer(V) -> {double, float(V)};
+cast_value_to_ast(double, V) when is_float(V)   -> {double, V}.
+
+-record(filtercheck, {name,'=','>','>=','<','<='}).
+
+check_where_clause_is_possible(DDL, WhereProps) ->
+    Filter1 = proplists:get_value(filter, WhereProps),
+    {Filter2, FilterChecks} = riak_ql_ddl:mapfold_where_tree(
+        fun (_, and_, Acc) ->
+                {ok, Acc};
+            (_, or_, Acc) ->
+                {skip, Acc};
+            (Conditional, Filter, Acc) ->
+                check_where_clause_is_possible_fold(DDL, Conditional, Filter, Acc)
+        end, [{eliminate_later,[]}], Filter1),
+    ElimLater = proplists:get_value(eliminate_later, FilterChecks),
+    {Filter3, _} = riak_ql_ddl:mapfold_where_tree(
+        fun (_, and_, Acc) ->
+                {ok, Acc};
+            (_, or_, Acc) ->
+                {skip, Acc};
+            (_, Filter, Acc) ->
+                case lists:member(Filter, ElimLater) of
+                  true ->
+                      {eliminate, Acc};
+                  false ->
+                      {Filter, Acc}
+                end
+        end, [], Filter2),
+    lists:keystore(filter, 1, WhereProps, {filter,Filter3}).
+
+check_where_clause_is_possible_fold(DDL, _, {'=',{field,FieldName,_},{const,?SQL_NULL}} = F, Acc) ->
+    %% `IS NULL` filters
+    %% if a column is marked NOT NULL, but the WHERE clause has IS NULL for that
+    %% column then no results will ever be returned, so do not execute!
+    case is_field_nullable(FieldName, DDL) of
+        true ->
+            {F, Acc};
+        false ->
+            throw({error, {impossible_where_clause, << >>}})
+    end;
+check_where_clause_is_possible_fold(DDL, _, {'!=',{field,FieldName,_},{const,?SQL_NULL}} = F, Acc) ->
+    %% `NOT NULL` filters
+    %% if column is marked NOT NULL, and the WHERE clause has IS NOT NULL for
+    %% that column then we can eliminate it, and reduce the filter, maybe to
+    %% nothing which means leveldb would not have to decode the rows!
+    case is_field_nullable(FieldName, DDL) of
+        true ->
+            {F, Acc};
+        false ->
+            {eliminate, Acc}
+    end;
+check_where_clause_is_possible_fold(_, _, {'=',{field,FieldName,_},{const,EqVal}} = F, Acc) ->
+    case find_filter_check(FieldName, Acc) of
+        #filtercheck{'=' = F} ->
+            %% this filter has been specified twice so remove the second occurence
+            {eliminate, Acc};
+        #filtercheck{'>' = {_,_,{const,GtVal}} = GtF} = Check1 when GtVal < EqVal ->
+            %% query like `a = 10 AND a > 8` we can eliminate the greater than
+            %% clause because if a to be 10 it must also be greater than 8
+            Acc2 = append_to_eliminate_later(GtF, Acc),
+            Check2 = Check1#filtercheck{'>' = undefined, '=' = F},
+            {F, lists:keystore(FieldName, #filtercheck.name, Acc2, Check2)};
+        #filtercheck{'>=' = {_,_,{const,GteVal}} = GteF} = Check1 when GteVal < EqVal ->
+            %% query like `a = 10 AND a > 8` we can eliminate the greater than
+            %% clause because if a to be 10 it must also be greater than 8
+            Acc2 = append_to_eliminate_later(GteF, Acc),
+            Check2 = Check1#filtercheck{'>=' = undefined, '=' = F},
+            {F, lists:keystore(FieldName, #filtercheck.name, Acc2, Check2)};
+        #filtercheck{'<' = {_,_,{const,LtVal}}} when LtVal =< EqVal ->
+            %% query requires a column to be equal to a value AND less than that
+            %% value which is impossible
+            throw({error, {impossible_where_clause, << >>}});
+        #filtercheck{'<=' = {_,_,{const,LteVal}} = LteF} = Check1 when LteVal >= EqVal ->
+            %% query like `a = 10 AND a <= 10` the less than or equals can be
+            %% eliminated because it is already captured in the equality filter
+            Acc2 = append_to_eliminate_later(LteF, Acc),
+            Check2 = Check1#filtercheck{'<=' = undefined, '=' = F},
+            {F, lists:keystore(FieldName, #filtercheck.name, Acc2, Check2)};
+        #filtercheck{'=' = F_x} when F_x /= undefined ->
+            %% there are two different checks on the same column, for equality
+            %% this can never be satisfied.
+            throw({error, {impossible_where_clause, << >>}});
+        #filtercheck{'<=' = {_,_,{const,LteVal}}} when LteVal < EqVal ->
+            %% query like `a = 10 AND a <= 8`
+            throw({error, {impossible_where_clause, << >>}});
+        #filtercheck{'=' = undefined} = Check1 ->
+            %% this is the first equality check so just record it
+            Check2 = Check1#filtercheck{'=' = F},
+            {F, lists:keystore(FieldName, #filtercheck.name, Acc, Check2)}
+    end;
+check_where_clause_is_possible_fold(_, _, {'>',{field,FieldName,_},{const,GtVal}} = F, Acc) ->
+    case find_filter_check(FieldName, Acc) of
+        #filtercheck{'>' = F} ->
+            %% this filter has been specified twice so remove the second occurence
+            {eliminate, Acc};
+        #filtercheck{'=' = {_,_,{const,EqVal}}} when GtVal >= EqVal ->
+            %% query like `a = 10 AND a > 10` cannot be satisfied
+            throw({error, {impossible_where_clause, << >>}});
+        #filtercheck{'=' = {_,_,{const,EqVal}}} when GtVal < EqVal ->
+            %% query like `a = 10 AND a > 8` we can eliminate the greater than
+            %% clause because if a to be 10 it must also be greater than 8
+            {eliminate, Acc};
+        #filtercheck{'>=' = {_,_,{const,GteVal}} = F_x} = Check1 when GtVal >= GteVal ->
+            %% query like `a >= 8 AND a > 10` we can eliminate the lesser clause
+            %% because if the value must be greater than 10 it can't be 8 or 9.
+            Check2 = Check1#filtercheck{'>' = F, '>=' = undefined},
+            Acc2 = store_filter_check(Check2, Acc),
+            Acc3 = append_to_eliminate_later(F_x, Acc2),
+            {F,Acc3};
+        #filtercheck{'>=' = {_,_,{const,GteVal}}} when GtVal < GteVal ->
+            %% query like `b >= 10 AND b > 9`, the previous >= clause should be
+            %% eliminated on the second pass
+            {eliminate, Acc};
+        #filtercheck{'>' = undefined} = Check1 ->
+            %% this is the first greater than check so just record it
+            Check2 = Check1#filtercheck{'>' = F},
+            {F, lists:keystore(FieldName, #filtercheck.name, Acc, Check2)};
+        #filtercheck{'>' = F_x} = Check1 when F_x < F ->
+            %% eliminate the lower > value for this column
+            Check2 = Check1#filtercheck{'>' = F},
+            Acc2 = store_filter_check(Check2, Acc),
+            Acc3 = append_to_eliminate_later(F_x, Acc2),
+            {F,Acc3};
+        #filtercheck{'>' = F_x} when F_x > F ->
+            %% we already have a filter that is higher than this one, so
+            %% eliminate
+            {eliminate, Acc}
+    end;
+check_where_clause_is_possible_fold(_, _, {'>=',{field,FieldName,_},{const,GteVal}} = F, Acc) ->
+    case find_filter_check(FieldName, Acc) of
+        #filtercheck{'=' = {_,_,{const,EqVal}}} when GteVal =< EqVal ->
+            %% query like `a = 10 AND a >= 8` we can eliminate the greater than
+            %% or equal to clause because if a to be 10 it must also be greater
+            %% than 8
+            {eliminate, Acc};
+        #filtercheck{'=' = {_,_,{const,EqVal}}} when GteVal > EqVal ->
+            %% query like `a = 10 AND a >= 11` cannot be satisfied
+            throw({error, {impossible_where_clause, << >>}});
+        #filtercheck{'>' = {_,_,{const,GtVal}} = F_x} = Check1 when GtVal < GteVal ->
+            %% query like `a > 6 AND a >= 8` we can eliminate the lesser '>' filter
+            Check2 = Check1#filtercheck{'>=' = F},
+            Acc2 = store_filter_check(Check2, Acc),
+            Acc3 = append_to_eliminate_later(F_x, Acc2),
+            {F, Acc3};
+        #filtercheck{'>' = {_,_,{const,GtVal}}} when GtVal >= GteVal ->
+            %% we already have a filter that is higher than the second one
+            {eliminate, Acc};
+        #filtercheck{'>=' = undefined} = Check1 ->
+            %% this is the first equality check so just record it
+            {F, store_filter_check(Check1#filtercheck{'>=' = F}, Acc)};
+        #filtercheck{'>=' = F} ->
+            %% this filter has been specified twice so remove the second occurence
+            {eliminate, Acc};
+        #filtercheck{'>=' = F_x} = Check1 when F_x < F ->
+            %% we already have a filter that is a lower value so eliminate it
+            Check2 = Check1#filtercheck{'>=' = F},
+            Acc2 = store_filter_check(Check2, Acc),
+            Acc3 = append_to_eliminate_later(F_x, Acc2),
+            {F, Acc3};
+        #filtercheck{'>=' = F_x} when F_x > F ->
+            %% we already have a filter that is higher than this one
+            {eliminate, Acc}
+    end;
+check_where_clause_is_possible_fold(_, _, {'<',{field,FieldName,_},{const,LtVal}} = F, Acc) ->
+    case find_filter_check(FieldName, Acc) of
+        #filtercheck{'<=' = {_,_,{const,LteVal}} = F_x} = Check1 when LteVal >= LtVal ->
+            %% query like `a <= 10 AND a < 10`, less than or equal is eliminated
+            Check2 = Check1#filtercheck{'<' = F, '<=' = undefined},
+            Acc2 = store_filter_check(Check2, Acc),
+            Acc3 = append_to_eliminate_later(F_x, Acc2),
+            {F, Acc3};
+        #filtercheck{'<=' = {_,_,{const,LteVal}}} when LteVal < LtVal ->
+            {eliminate, Acc};
+        #filtercheck{'=' = {_,_,{const,EqVal}}} when LtVal > EqVal ->
+            %% existing equality check is less, eliminate this `>` filter.
+            {eliminate, Acc};
+        #filtercheck{'=' = {_,_,{const,EqVal}}} when LtVal =< EqVal ->
+            %% query requires a column to be equal to a value AND less than that
+            %% value which is impossible
+            throw({error, {impossible_where_clause, << >>}});
+        #filtercheck{'<' = F} ->
+            %% duplicate < filter
+            {eliminate, Acc};
+        #filtercheck{'<' = undefined} = Check1 ->
+            %% this is the first less than check so just record it
+            Check2 = Check1#filtercheck{'<' = F},
+            {F, lists:keystore(FieldName, #filtercheck.name, Acc, Check2)};
+        #filtercheck{'<' = F_x} when F_x < F ->
+            %% we already have a filter that is higher than this one,
+            %% which we can eliminate. Store it and eliminate it on the second
+            %% pass since it has already been iterated
+            {eliminate, Acc};
+        #filtercheck{'<' = F_x} = Check1 when F_x > F ->
+            %% we already have a filter that is higher than this one, and so
+            %% includes it so we can safely eliminate this one.
+            Check2 = Check1#filtercheck{'<' = F},
+            Acc2 = store_filter_check(Check2, Acc),
+            Acc3 = append_to_eliminate_later(F_x, Acc2),
+            {F, Acc3}
+    end;
+check_where_clause_is_possible_fold(_, _, {'<=',{field,FieldName,_},{const,LteVal}} = F, Acc) ->
+    case find_filter_check(FieldName, Acc) of
+        #filtercheck{'<=' = F} ->
+            %% duplicate <= filter
+            {eliminate, Acc};
+        #filtercheck{'=' = {_,_,{const,EqVal}}} when LteVal >= EqVal ->
+            %% query like `a = 10 AND a <= 10` the less than or equals can be
+            %% eliminated because it is already captured in the equality filter
+            {eliminate, Acc};
+        #filtercheck{'=' = {_,_,{const,EqVal}}} when LteVal < EqVal ->
+            %% query like `a = 10 AND a <= 8`
+            throw({error, {impossible_where_clause, << >>}});
+        #filtercheck{'<' = {_,_,{const,LtVal}}} when LteVal >= LtVal ->
+            %% query like `a < 10 AND a <= 10`
+            {eliminate, Acc};
+        #filtercheck{'<' = {_,_,{const,LtVal}} = F_x} = Check1 when LteVal < LtVal ->
+            %% query like `a < 11 AND a <= 10`
+            Check2 = Check1#filtercheck{'<' = undefined, '<=' = F},
+            Acc2 = store_filter_check(Check2, Acc),
+            Acc3 = append_to_eliminate_later(F_x, Acc2),
+            {F, Acc3};
+        #filtercheck{'<=' = undefined} = Check1 ->
+            %% this is the first less than check so just record it
+            Check2 = Check1#filtercheck{'<=' = F},
+            {F, lists:keystore(FieldName, #filtercheck.name, Acc, Check2)}
+    end;
+check_where_clause_is_possible_fold(_, _, Filter, Acc) ->
+    {Filter, Acc}.
+
+append_to_eliminate_later(Filter, Acc) ->
+    ElimLater = proplists:get_value(eliminate_later, Acc),
+    lists:keystore(eliminate_later, 1, Acc, {eliminate_later, [Filter|ElimLater]}).
+
+store_filter_check(#filtercheck{name = FieldName} = Check, Acc) ->
+    lists:keystore(FieldName, #filtercheck.name, Acc, Check).
+
+%% TODO put this in the table helper module
+is_field_nullable(FieldName, ?DDL{fields = Fields}) when is_binary(FieldName)->
+    #riak_field_v1{optional = Optional} = lists:keyfind(FieldName, #riak_field_v1.name, Fields),
+    (Optional == true).
+
+find_filter_check(FieldName, Acc) when is_binary(FieldName) ->
+    case lists:keyfind(FieldName, #filtercheck.name, Acc) of
+      false ->
+          #filtercheck{name=FieldName};
+      Val ->
+          Val
+    end.
+
+%% tl;dr put filters that test equality of columns in the local key but not in
+%% in the partition key, in the star and end key.
+%%
+%% PRIMARY KEY((quantum(a,1,'m')),a,b)
+%%
+%% SELECT * FROM table WHERE a > 2 and a < 6 AND b = 5
+%%
+%% Instead of putting b just in the filter, put it in the start and end keys.
+%% This narrows the range from everything between {2,_} and {6,_} to everyting
+%% between {2,5} and {6,5}.
+%%
+%% For equality filters, it is not safe to remove the filter, because {3,7} is
+%% also in the range but should not be returned because only rows where b = 5
+%% are correct for this query.
+rewrite_where_with_additional_filters([], _, _, WhereProps) ->
+    WhereProps;
+rewrite_where_with_additional_filters(AdditionalFields, FieldOrders, ToKeyTypeFn, WhereProps) when is_list(WhereProps) ->
+    SKey1 = proplists:get_value(startkey, WhereProps),
+    EKey1 = proplists:get_value(endkey, WhereProps),
+    SInc1 = proplists:get_value(start_inclusive, WhereProps),
+    EInc1 = proplists:get_value(end_inclusive, WhereProps),
+    Filter = proplists:get_value(filter, WhereProps),
+    AdditionalFilter = find_filters_on_additional_local_key_fields(
+        AdditionalFields, Filter),
+    {SKey2, SInc2} = rewrite_start_key_with_filters(
+        AdditionalFields, FieldOrders, ToKeyTypeFn, AdditionalFilter, SKey1, SInc1),
+    {EKey2, EInc2} = rewrite_end_key_with_filters(
+        AdditionalFields, FieldOrders, ToKeyTypeFn, AdditionalFilter, EKey1, EInc1),
+    lists:foldl(
+        fun({K,V},Acc) -> store_to_where_props(K,V,Acc) end, WhereProps,
+        [{startkey,SKey2}, {endkey,EKey2},
+         {start_inclusive,SInc2}, {end_inclusive,EInc2}]).
+
+store_to_where_props(Key, Val, WhereProps) when Val /= undefined ->
+    lists:keystore(Key, 1, WhereProps, {Key, Val});
+store_to_where_props(_, _, WhereProps) ->
+    WhereProps.
+
+rewrite_start_key_with_filters([], _, _, _, SKey, SInc) ->
+    {SKey, SInc};
+rewrite_start_key_with_filters([AddFieldName|Tail], [Order|TailOrder], ToKeyTypeFn, Filter, SKey, SInc1) when is_binary(AddFieldName) ->
+    case proplists:get_value(AddFieldName, Filter) of
+        {Op,_,_} = F  when Op == '=' orelse (Order == ascending andalso (Op == '>'orelse Op == '>='))
+                                     orelse (Order == descending andalso (Op == '<'orelse Op == '<=')) ->
+            SKeyElem = to_key_elem(ToKeyTypeFn, F),
+            %% if the quantum was inclusive, make sure we stay inclusive or
+            %% the quantum boundary is modified later on
+            SInc2 = ((SInc1 /= false) or is_inclusive_op(Op)),
+            rewrite_start_key_with_filters(
+                Tail, TailOrder, ToKeyTypeFn, Filter, SKey++[SKeyElem], SInc2);
+        _ ->
+            %% there is no filter for the next additional field so give up! The
+            %% filters must be consecutive, we can't have a '_' inbetween
+            %% values
+            {SKey, SInc1}
+    end.
+
+rewrite_end_key_with_filters([], _, _, _, EKey, EInc) ->
+    {EKey, EInc};
+rewrite_end_key_with_filters([AddFieldName|Tail], [Order|TailOrder], ToKeyTypeFn, Filter, EKey, EInc1) when is_binary(AddFieldName) ->
+    case proplists:get_value(AddFieldName, Filter) of
+        {Op,_,_} = F  when Op == '=' orelse (Order == ascending andalso  (Op == '<' orelse Op == '<='))
+                                     orelse (Order == descending andalso  (Op == '>' orelse Op == '>=')) ->
+            EKeyElem = to_key_elem(ToKeyTypeFn, F),
+            %% if the quantum was inclusive, make sure we stay inclusive or
+            %% the quantum boundary is modified later on
+            EInc2 = ((EInc1 /= false) or is_inclusive_op(Op)),
+            rewrite_end_key_with_filters(
+                Tail, TailOrder, ToKeyTypeFn, Filter, EKey++[EKeyElem], EInc2);
+        _ ->
+            %% there is no filter for the next additional field so give up! The
+            %% filters must be consecutive, we can't have a '_' inbetween
+            %% values
+            {EKey, EInc1}
+    end.
+
+is_inclusive_op('=')  -> true;
+is_inclusive_op('>')  -> false;
+is_inclusive_op('>=') -> true;
+is_inclusive_op('<') -> false;
+is_inclusive_op('<=') -> true.
+
+%% Convert a filter to a start/end key element
+to_key_elem(ToKeyTypeFn, {_,{field,FieldName,_},{_,Val}}) ->
+    {FieldName,ToKeyTypeFn([FieldName]),Val}.
+
+%% Return filters where the column is in the local key but not the partition key
+find_filters_on_additional_local_key_fields(AdditionalFields, Where) ->
+    try
+        riak_ql_ddl:fold_where_tree(
+            fun(Conditional, Filter, Acc) ->
+                find_filters_on_additional_local_key_fields_folder(Conditional, Filter, AdditionalFields, Acc)
+            end, [], Where)
+    catch throw:Val -> Val %% a throw means the function wanted to exit immediately
+    end.
+
+%%
+find_filters_on_additional_local_key_fields_folder(or_,_,_,_) ->
+    %% we cannot support filters using OR, because keys must be a singular value
+    throw([]);
+find_filters_on_additional_local_key_fields_folder(_, {'!=',_,_}, _, Acc) ->
+    %% we can't support additional NOT filters on the key
+    Acc;
+find_filters_on_additional_local_key_fields_folder(_, {_,{field,Name,_},_} = F, AdditionalFields, Acc) when is_binary(Name) ->
+    case lists:member(Name, AdditionalFields) of
+        true ->
+            [{Name, F}|Acc];
+        false ->
+            Acc
+    end.
+
+%% -------------------------------------------------------------------
+%% TESTS
+%% -------------------------------------------------------------------
+
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
+
+-define(
+    assertPropsEqual(Expected1, Actual1),
+    Expected2 = lists:sort(Expected1),
+    Actual2 = lists:sort(Actual1),
+    ?assertEqual(lists:sort(Expected2), lists:sort(Actual2))
+).
 
 %%
 %% Helper Fns for unit tests
@@ -1799,8 +2547,11 @@ no_where_clause_test() ->
 %% this helper function is only for tests testing queries with the
 %% query_result_type of 'rows' and _not_ 'aggregate'
 testing_compile_row_select(DDL, QueryString) ->
+    testing_compile_row_select(DDL, QueryString, options()).
+
+testing_compile_row_select(DDL, QueryString, Options) ->
     {ok, [?SQL_SELECT{ 'SELECT' = SelectSpec } | _]} =
-        compile(DDL, element(2, get_query(QueryString))),
+        compile(DDL, element(2, get_query(QueryString)), Options),
     SelectSpec.
 
 run_select_all_test() ->
@@ -1959,7 +2710,7 @@ basic_select_test() ->
         " WHERE myfamily = 'familyX'"
         " and myseries = 'seriesX' and time > 1 and time < 2",
     {ok, Rec} = get_query(SQL),
-    {ok, Sel} = compile_select_clause(DDL, Rec),
+    {ok, Sel, []} = compile_select_clause(DDL, options(), Rec),
     ?assertMatch(#riak_sel_clause_v1{calc_type        = rows,
                                      col_return_types = [
                                                          varchar
@@ -1974,7 +2725,7 @@ basic_select_wildcard_test() ->
     DDL = get_sel_ddl(),
     SQL = "SELECT * from mytab WHERE myfamily = 'familyX' and myseries = 'seriesX' and time > 1 and time < 2",
     {ok, Rec} = get_query(SQL),
-    {ok, Sel} = compile_select_clause(DDL, Rec),
+    {ok, Sel, []} = compile_select_clause(DDL, options(), Rec),
     ?assertMatch(#riak_sel_clause_v1{calc_type        = rows,
                                      col_return_types = [
                                                          varchar,
@@ -1999,7 +2750,7 @@ select_all_and_column_test() ->
     {ok, Rec} = get_query(
                   "SELECT *, location from mytab WHERE myfamily = 'familyX' "
                   "AND myseries = 'seriesX' AND time > 1 AND time < 2"),
-    {ok, Selection} = compile_select_clause(get_sel_ddl(), Rec),
+    {ok, Selection, []} = compile_select_clause(get_sel_ddl(), options(), Rec),
     ?assertMatch(
        #riak_sel_clause_v1{
           calc_type = rows,
@@ -2016,7 +2767,7 @@ select_column_and_all_test() ->
     {ok, Rec} = get_query(
                   "SELECT location, * from mytab WHERE myfamily = 'familyX' "
                   "AND myseries = 'seriesX' AND time > 1 AND time < 2"),
-    {ok, Selection} = compile_select_clause(get_sel_ddl(), Rec),
+    {ok, Selection, []} = compile_select_clause(get_sel_ddl(), options(), Rec),
     ?assertMatch(
        #riak_sel_clause_v1{
           calc_type = rows,
@@ -2034,7 +2785,7 @@ basic_select_window_agg_fn_test() ->
         " from mytab WHERE myfamily = 'familyX'"
         " and myseries = 'seriesX' and time > 1 and time < 2",
     {ok, Rec} = get_query(SQL),
-    {ok, Sel} = compile_select_clause(get_sel_ddl(), Rec),
+    {ok, Sel, []} = compile_select_clause(get_sel_ddl(), options(), Rec),
     ?assertMatch(#riak_sel_clause_v1{calc_type        = aggregate,
                                      col_return_types = [
                                                          sint64,
@@ -2055,7 +2806,7 @@ basic_select_arith_1_test() ->
         " WHERE myfamily = 'familyX' and myseries = 'seriesX'"
         " and time > 1 and time < 2",
     {ok, Rec} = get_query(SQL),
-    {ok, Sel} = compile_select_clause(get_sel_ddl(), Rec),
+    {ok, Sel, []} = compile_select_clause(get_sel_ddl(), options(), Rec),
     ?assertMatch(
        #riak_sel_clause_v1{
           calc_type        = rows,
@@ -2066,7 +2817,7 @@ basic_select_arith_1_test() ->
 
 varchar_literal_test() ->
     {ok, Rec} = get_query("SELECT 'hello' from mytab"),
-    {ok, Sel} = compile_select_clause(get_sel_ddl(), Rec),
+    {ok, Sel, []} = compile_select_clause(get_sel_ddl(), options(), Rec),
     ?assertMatch(
        #riak_sel_clause_v1{
           calc_type        = rows,
@@ -2077,7 +2828,7 @@ varchar_literal_test() ->
 
 boolean_true_literal_test() ->
     {ok, Rec} = get_query("SELECT true from mytab"),
-    {ok, Sel} = compile_select_clause(get_sel_ddl(), Rec),
+    {ok, Sel, []} = compile_select_clause(get_sel_ddl(), options(), Rec),
     ?assertMatch(
        #riak_sel_clause_v1{
           calc_type        = rows,
@@ -2088,7 +2839,7 @@ boolean_true_literal_test() ->
 
 boolean_false_literal_test() ->
     {ok, Rec} = get_query("SELECT false from mytab"),
-    {ok, Sel} = compile_select_clause(get_sel_ddl(), Rec),
+    {ok, Sel, []} = compile_select_clause(get_sel_ddl(), options(), Rec),
     ?assertMatch(
        #riak_sel_clause_v1{
           calc_type        = rows,
@@ -2103,7 +2854,7 @@ basic_select_arith_2_test() ->
         " WHERE myfamily = 'familyX' and myseries = 'seriesX'"
         " and time > 1 and time < 2",
     {ok, Rec} = get_query(SQL),
-    {ok, Sel} = compile_select_clause(get_sel_ddl(), Rec),
+    {ok, Sel, []} = compile_select_clause(get_sel_ddl(), options(), Rec),
     ?assertMatch(
        #riak_sel_clause_v1{
           calc_type = rows,
@@ -2116,7 +2867,7 @@ rows_initial_state_test() ->
     {ok, Rec} = get_query(
                   "SELECT * FROM mytab WHERE myfamily = 'familyX' "
                   "AND myseries = 'seriesX' AND time > 1 AND time < 2"),
-    {ok, Select} = compile_select_clause(get_sel_ddl(), Rec),
+    {ok, Select, []} = compile_select_clause(get_sel_ddl(), options(), Rec),
     ?assertMatch(
        #riak_sel_clause_v1{ initial_state = [] },
        Select
@@ -2126,7 +2877,7 @@ function_1_initial_state_test() ->
     {ok, Rec} = get_query(
                   "SELECT SUM(mydouble) FROM mytab WHERE myfamily = 'familyX' "
                   "AND myseries = 'seriesX' AND time > 1 AND time < 2"),
-    {ok, Select} = compile_select_clause(get_sel_ddl(), Rec),
+    {ok, Select, []} = compile_select_clause(get_sel_ddl(), options(), Rec),
     ?assertMatch(
        #riak_sel_clause_v1{ initial_state = [[]] },
        Select
@@ -2136,7 +2887,7 @@ function_2_initial_state_test() ->
     {ok, Rec} = get_query(
                   "SELECT SUM(mydouble), SUM(mydouble) FROM mytab WHERE myfamily = 'familyX' "
                   "AND myseries = 'seriesX' AND time > 1 AND time < 2"),
-    {ok, Select} = compile_select_clause(get_sel_ddl(), Rec),
+    {ok, Select, []} = compile_select_clause(get_sel_ddl(), options(), Rec),
     ?assertMatch(
        #riak_sel_clause_v1{ initial_state = [[], []] },
        Select
@@ -2148,7 +2899,7 @@ select_negation_test() ->
         "WHERE myfamily = 'familyX' AND myseries = 'seriesX' "
         "AND time > 1 AND time < 2",
     {ok, Rec} = get_query(SQL),
-    {ok, Sel} = compile_select_clause(DDL, Rec),
+    {ok, Sel, []} = compile_select_clause(DDL, options(), Rec),
     ?assertMatch(#riak_sel_clause_v1{calc_type        = rows,
                                      col_return_types = [
                                                          sint64,
@@ -2176,7 +2927,7 @@ select_negation_test() ->
 sum_sum_finalise_test() ->
     {ok, Rec} = get_query(
         "SELECT mydouble, SUM(mydouble), SUM(mydouble) FROM mytab"),
-    {ok, Select} = compile_select_clause(get_sel_ddl(), Rec),
+    {ok, Select, []} = compile_select_clause(get_sel_ddl(), options(), Rec),
     ?assertEqual(
         [1.0,3,7],
         finalise_aggregate(Select, [1.0, 3, 7])
@@ -2203,7 +2954,7 @@ count_plus_count_test() ->
         "SELECT COUNT(mydouble) + COUNT(mydouble) FROM mytab "
         "WHERE myfamily = 'familyX' "
         "AND myseries = 'seriesX' AND time > 1 AND time < 2"),
-    {ok, Select} = compile_select_clause(get_sel_ddl(), Rec),
+    {ok, Select, []} = compile_select_clause(get_sel_ddl(), options(), Rec),
     ?assertMatch(
         #riak_sel_clause_v1{
             initial_state = [0,0],
@@ -2214,7 +2965,7 @@ count_plus_count_test() ->
 count_plus_count_finalise_test() ->
     {ok, Rec} = get_query(
         "SELECT COUNT(mydouble) + COUNT(mydouble) FROM mytab"),
-    {ok, Select} = compile_select_clause(get_sel_ddl(), Rec),
+    {ok, Select, []} = compile_select_clause(get_sel_ddl(), options(), Rec),
     ?assertMatch(
         [6],
         finalise_aggregate(Select, [3,3])
@@ -2223,7 +2974,7 @@ count_plus_count_finalise_test() ->
 count_multiplied_by_count_finalise_test() ->
     {ok, Rec} = get_query(
         "SELECT COUNT(mydouble) * COUNT(mydouble) FROM mytab"),
-    {ok, Select} = compile_select_clause(get_sel_ddl(), Rec),
+    {ok, Select, []} = compile_select_clause(get_sel_ddl(), options(), Rec),
     ?assertMatch(
         [9],
         finalise_aggregate(Select, [3,3])
@@ -2232,7 +2983,7 @@ count_multiplied_by_count_finalise_test() ->
 count_plus_seven_finalise_test() ->
     {ok, Rec} = get_query(
         "SELECT COUNT(mydouble) + 7 FROM mytab"),
-    {ok, Select} = compile_select_clause(get_sel_ddl(), Rec),
+    {ok, Select, []} = compile_select_clause(get_sel_ddl(), options(), Rec),
     ?assertMatch(
         [10],
         finalise_aggregate(Select, [3])
@@ -2241,7 +2992,7 @@ count_plus_seven_finalise_test() ->
 count_plus_seven_sum__test() ->
     {ok, Rec} = get_query(
         "SELECT COUNT(mydouble) + 7, SUM(mydouble) FROM mytab"),
-    {ok, Select} = compile_select_clause(get_sel_ddl(), Rec),
+    {ok, Select, []} = compile_select_clause(get_sel_ddl(), options(), Rec),
     ?assertMatch(
         #riak_sel_clause_v1{
             initial_state = [0,[]],
@@ -2252,7 +3003,7 @@ count_plus_seven_sum__test() ->
 count_plus_seven_sum_finalise_1_test() ->
     {ok, Rec} = get_query(
         "SELECT COUNT(mydouble) + 7, SUM(mydouble) FROM mytab"),
-    {ok, Select} = compile_select_clause(get_sel_ddl(), Rec),
+    {ok, Select, []} = compile_select_clause(get_sel_ddl(), options(), Rec),
     ?assertMatch(
         [10, 11.0],
         finalise_aggregate(Select, [3, 11.0])
@@ -2261,7 +3012,7 @@ count_plus_seven_sum_finalise_1_test() ->
 count_plus_seven_sum_finalise_2_test() ->
     {ok, Rec} = get_query(
         "SELECT COUNT(mydouble+1) + 1 FROM mytab"),
-    {ok, Select} = compile_select_clause(get_sel_ddl(), Rec),
+    {ok, Select, []} = compile_select_clause(get_sel_ddl(), options(), Rec),
     ?assertEqual(
         [2],
         finalise_aggregate(Select, [1])
@@ -2270,8 +3021,8 @@ count_plus_seven_sum_finalise_2_test() ->
 avg_finalise_test() ->
     {ok, Rec} = get_query(
         "SELECT AVG(mydouble) FROM mytab"),
-    {ok, #riak_sel_clause_v1{ clause = [AvgFn] } = Select} =
-        compile_select_clause(get_sel_ddl(), Rec),
+    {ok, #riak_sel_clause_v1{ clause = [AvgFn] } = Select, []} =
+        compile_select_clause(get_sel_ddl(), options(), Rec),
     InitialState = riak_ql_window_agg_fns:start_state('AVG'),
     Rows = [[x,x,x,x,N,x] || N <- lists:seq(1, 5)],
     AverageResult = lists:foldl(AvgFn, InitialState, Rows),
@@ -2309,7 +3060,7 @@ compile_query_with_function_type_error_1_test() ->
           "WHERE time > 5000 AND time < 10000"
           "AND user = 'user_1' AND location = 'derby'"),
     ?assertEqual(
-        {error,{invalid_query,<<"\nFunction 'SUM' called with arguments of the wrong type [varchar].">>}},
+        {error,{invalid_query,<<"Function 'SUM' called with arguments of the wrong type [varchar].">>}},
         compile(get_standard_ddl(), Q)
     ).
 
@@ -2319,7 +3070,7 @@ compile_query_with_function_type_error_2_test() ->
           "WHERE time > 5000 AND time < 10000"
           "AND user = 'user_1' AND location = 'derby'"),
     ?assertEqual(
-        {error,{invalid_query,<<"\nFunction 'SUM' called with arguments of the wrong type [varchar].\n"
+        {error,{invalid_query,<<"Function 'SUM' called with arguments of the wrong type [varchar].\n"
                                 "Function 'AVG' called with arguments of the wrong type [varchar].">>}},
         compile(get_standard_ddl(), Q)
     ).
@@ -2330,7 +3081,7 @@ compile_query_with_function_type_error_3_test() ->
           "WHERE time > 5000 AND time < 10000"
           "AND user = 'user_1' AND location = 'derby'"),
     ?assertEqual(
-        {error,{invalid_query,<<"\nOperator '+' called with mismatched types [varchar vs sint64].">>}},
+        {error,{invalid_query,<<"Operator '+' called with mismatched types [varchar vs sint64].">>}},
         compile(get_standard_ddl(), Q)
     ).
 
@@ -2340,7 +3091,7 @@ compile_query_with_arithmetic_type_error_1_test() ->
           "WHERE time > 5000 AND time < 10000"
           "AND user = 'user_1' AND location = 'derby'"),
     ?assertEqual(
-        {error,{invalid_query,<<"\nOperator '+' called with mismatched types [varchar vs sint64].">>}},
+        {error,{invalid_query,<<"Operator '+' called with mismatched types [varchar vs sint64].">>}},
         compile(get_standard_ddl(), Q)
     ).
 
@@ -2350,7 +3101,7 @@ compile_query_with_arithmetic_type_error_2_test() ->
           "WHERE time > 5000 AND time < 10000"
           "AND user = 'user_1' AND location = 'derby'"),
     ?assertEqual(
-        {error,{invalid_query,<<"\nOperator '+' called with mismatched types [varchar vs sint64].">>}},
+        {error,{invalid_query,<<"Operator '+' called with mismatched types [varchar vs sint64].">>}},
         compile(get_standard_ddl(), Q)
     ).
 
@@ -2366,7 +3117,7 @@ flexible_keys_1_test() ->
     {ok, Q} = get_query(
           "SELECT * FROM tab4 WHERE a > 0 AND a < 1000 AND a1 = 1"),
     {ok, [Select]} = compile(DDL, Q),
-    ?assertEqual(
+    ?assertPropsEqual(
         [{startkey,[{<<"a1">>,sint64,1}, {<<"a">>,timestamp,1}]},
           {endkey, [{<<"a1">>,sint64,1}, {<<"a">>,timestamp,1000}]},
           {filter,[]}],
@@ -2440,7 +3191,7 @@ no_quantum_in_query_2_test() ->
     {ok, [Select]} = compile(DDL, Q),
     Key =
         [{<<"c">>,double,3.5}, {<<"a">>,sint64,1000},{<<"b">>,varchar,<<"bval">>}],
-    ?assertEqual(
+    ?assertPropsEqual(
         [{startkey, Key},
          {endkey, Key},
          {filter,[]},
@@ -2461,11 +3212,12 @@ no_quantum_in_query_3_test() ->
           "SELECT * FROM tababa WHERE a = 1000 AND b = 'bval' AND c = 3.5 AND d = true"),
     {ok, [Select]} = compile(DDL, Q),
     Key =
-        [{<<"c">>,double,3.5}, {<<"a">>,sint64,1000},{<<"b">>,varchar,<<"bval">>}],
-    ?assertEqual(
+        [{<<"c">>,double,3.5}, {<<"a">>,sint64,1000},{<<"b">>,varchar,<<"bval">>},{<<"d">>,boolean,true}],
+    ?assertPropsEqual(
         [{startkey, Key},
          {endkey, Key},
          {filter,{'=',{field,<<"d">>,boolean},{const, true}}},
+         {start_inclusive,true},
          {end_inclusive,true}],
         Select?SQL_SELECT.'WHERE'
     ).
@@ -2592,8 +3344,8 @@ group_by_column_not_in_the_table_test() ->
     {ok, Q1} = get_query(
         "SELECT x FROM mytab "
         "WHERE a = 1 AND b = 2 GROUP BY x"),
-    ?assertError(
-        {unknown_column,{<<"x">>,[<<"a">>,<<"b">>]}},
+    ?assertEqual(
+        {error, {invalid_query, <<"Unknown column \"x\".">>}},
         compile(DDL, Q1)
     ).
 
@@ -2658,11 +3410,10 @@ order_by_with_aggregate_calc_type_test() ->
         compile(DDL, Q)
     ).
 
-
 negate_an_aggregation_function_test() ->
     {ok, Rec} = get_query(
         "SELECT -COUNT(*) FROM mytab"),
-    {ok, Select} = compile_select_clause(get_sel_ddl(), Rec),
+    {ok, Select, []} = compile_select_clause(get_sel_ddl(), options(), Rec),
     ?assertMatch(
         [-3],
         finalise_aggregate(Select, [3])
@@ -2831,8 +3582,811 @@ group_by_on_non_existing_column_returns_error_test() ->
         "WHERE a > 1 AND a < 6 "
         "GROUP BY x;"),
     ?assertMatch(
-       {error,{invalid_query,<<_/binary>>}},
+       {error, {invalid_query, <<_/binary>>}},
        compile(DDL,Query)
+    ).
+
+find_filters_on_additional_local_key_fields_test() ->
+    ?assertEqual(
+        [{<<"a">>,{'=',{field,<<"a">>,integer},{const, 100}}}],
+        find_filters_on_additional_local_key_fields(
+            [<<"a">>],
+            {'=',{field,<<"a">>,integer},{const, 100}})
+    ).
+
+rewrite_where_with_additional_filters_test() ->
+    ?assertPropsEqual(
+        [{startkey,[{<<"c">>,timestamp,5500},{<<"a">>,sint64,100}]},
+         {endkey,  [{<<"c">>,timestamp,5000},{<<"a">>,sint64,100}]},
+         {filter, {'=',{field,<<"a">>,integer},{const, 100}}},
+         {end_inclusive, true},
+         {start_inclusive, true}],
+        rewrite_where_with_additional_filters(
+            [<<"a">>],
+            [ascending],
+            fun([<<"a">>]) -> sint64 end,
+            [{startkey,[{<<"c">>,timestamp,5500}]},
+             {endkey,  [{<<"c">>,timestamp,5000}]},
+             {filter,   {'=',{field,<<"a">>,integer},{const, 100}}},
+             {end_inclusive,true},
+             {start_inclusive,true}])
+    ).
+
+additional_local_key_cols_added_to_query_keys_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((quantum(a,1,'s')),a,b))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE b = 1 AND a >= 4200 AND a <= 4600"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,4200},{<<"b">>,sint64,1}]},
+         {endkey,[{<<"a">>,timestamp,4600},{<<"b">>,sint64,1}]},
+         {filter,{'=',{field,<<"b">>,sint64},{const, 1}}},
+         {end_inclusive,true},
+         {start_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+greater_than_filter_added_to_start_key_if_it_part_of_local_key_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((quantum(a,1,'s')),a,b))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE b > 1 AND a >= 4200 AND a <= 4600"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,4200},{<<"b">>,sint64,1}]},
+         {endkey,[{<<"a">>,timestamp,4600}]},
+         {filter,{'>',{field,<<"b">>,sint64},{const, 1}}},
+         {start_inclusive,true},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+greater_than_filter_added_to_start_key_if_it_part_of_local_key_when_start_inclusive_false_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((quantum(a,1,'s')),a,b))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE b > 1 AND a > 4200 AND a <= 4600"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,4201},{<<"b">>,sint64,1}]},
+         {endkey,[{<<"a">>,timestamp,4600}]},
+         {filter,{'>',{field,<<"b">>,sint64},{const, 1}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+greater_than_or_equal_filter_added_to_start_key_if_it_part_of_local_key_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((quantum(a,1,'s')),a,b))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE b >= 1 AND a >= 4200 AND a <= 4600"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,4200},{<<"b">>,sint64,1}]},
+         {endkey,[{<<"a">>,timestamp,4600}]},
+         {filter,{'>=',{field,<<"b">>,sint64},{const, 1}}},
+         {start_inclusive,true},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+%% if the pk is (a) and lk is (a,b,c) then b AND c must have filters for c
+%% to be added to the key. If b does not have a filter but c does, then neither
+%% is added.
+additional_local_key_cols_must_be_specified_consecutively_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "c SINT64 NOT NULL, "
+        "PRIMARY KEY ((quantum(a,1,'s')),a,b,c))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE c = 2 AND a >= 4200 AND a <= 4600"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,4200}]},
+         {endkey,[{<<"a">>,timestamp,4600}]},
+         {filter,{'=',{field,<<"c">>,sint64},{const, 2}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+is_null_clause_on_non_null_column_is_impossible_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE b IS NULL AND a = 4600"),
+    ?assertEqual(
+        {error,{impossible_where_clause, << >>}},
+        compile(DDL, Q)
+    ).
+
+same_equality_check_twice_has_duplicate_removed_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b = 10 AND b = 10"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'=',{field,<<"b">>,sint64},{const, 10}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+same_equality_check_on_additional_local_key_col_is_not_in_filter_twice_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a,b))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b = 10 AND b = 10"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5},{<<"b">>,sint64,10}]},
+         {endkey,  [{<<"a">>,timestamp,5},{<<"b">>,sint64,10}]},
+         {filter, {'=',{field,<<"b">>,sint64},{const, 10}}},
+         {start_inclusive,true},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+checks_for_different_values_on_the_same_col_is_impossible_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE b = 5 AND b = 6 AND a = 4600"),
+    ?assertEqual(
+        {error,{impossible_where_clause, << >>}},
+        compile(DDL, Q)
+    ).
+
+second_greater_than_check_which_is_a_greater_value_is_removed_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b > 10 AND b > 11"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'>',{field,<<"b">>,sint64},{const, 11}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+
+second_greater_than_check_which_is_a_lesser_value_removes_the_first_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b > 11 AND b > 10"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'>',{field,<<"b">>,sint64},{const, 11}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+clause_for_equality_and_greater_than_equality_is_not_possible_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE b = 5 AND b > 6 AND a = 4600"),
+    ?assertEqual(
+        {error,{impossible_where_clause, << >>}},
+        compile(DDL, Q)
+    ).
+
+clause_for_equality_and_greater_than_is_not_possible_swap_lhs_rhs_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE b > 6 AND b = 5 AND a = 4600"),
+    ?assertEqual(
+        {error,{impossible_where_clause, << >>}},
+        compile(DDL, Q)
+    ).
+
+greater_than_value_lower_than_equality_is_eliminated_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b = 10 AND b > 5"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'=',{field,<<"b">>,sint64},{const, 10}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+greater_than_value_lower_than_equality_is_eliminated_swap_lhs_rhs_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b > 5 AND b = 10"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'=',{field,<<"b">>,sint64},{const, 10}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+same_great_than_or_equals_check_is_not_in_filter_twice_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b >= 10 AND b >= 10"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'>=',{field,<<"b">>,sint64},{const, 10}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+second_greater_than_or_equal_check_which_is_a_greater_value_is_removed_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b >= 10 AND b >= 11"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'>=',{field,<<"b">>,sint64},{const, 11}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+second_greater_than_or_equal_check_which_is_a_lesser_value_removes_the_first_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b >= 11 AND b >= 10"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'>=',{field,<<"b">>,sint64},{const, 11}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+greater_than_or_equal_to_value_lower_than_equality_is_eliminated_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b = 10 AND b >= 5"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'=',{field,<<"b">>,sint64},{const, 10}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+greater_than_or_equal_to_value_lower_than_equality_is_eliminated_swap_lhs_rhs_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b >= 5 AND b = 10"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'=',{field,<<"b">>,sint64},{const, 10}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+clause_for_equality_and_greater_than_or_equalit_to_is_not_possible_swap_lhs_rhs_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE b >= 6 AND b = 5 AND a = 4600"),
+    ?assertEqual(
+        {error,{impossible_where_clause, << >>}},
+        compile(DDL, Q)
+    ).
+
+greater_than_or_equal_to_is_less_than_previous_greater_than_clause_removes_greater_than_clause_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b > 10 AND b >= 10"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'>',{field,<<"b">>,sint64},{const, 10}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+greater_than_or_equal_to_is_less_than_previous_greater_than_clause_removes_greater_than_clause_swap_lhs_rhs_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b >= 10 AND b > 10"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'>',{field,<<"b">>,sint64},{const, 10}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+greater_than_is_less_than_previous_greater_than_or_equal_to_clause_removes_greater_than_or_equal_to_clause_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b > 9 AND b >= 10"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'>=',{field,<<"b">>,sint64},{const, 10}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+greater_than_is_less_than_previous_greater_than_or_equal_to_clause_removes_greater_than_or_equal_to_clause_swap_lhs_rhs_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b >= 10 AND b > 9"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'>=',{field,<<"b">>,sint64},{const, 10}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+less_than_filters_get_reduced_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b < 10 AND b < 9"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'<',{field,<<"b">>,sint64},{const,9}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+less_than_filters_get_reduced_swap_filter_order_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b < 9 AND b < 10"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'<',{field,<<"b">>,sint64},{const,9}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+less_than_eliminated_if_it_is_greater_than_equals_to_on_same_column_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b = 9 AND b < 10"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'=',{field,<<"b">>,sint64},{const,9}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+less_than_duplicates_are_eliminated_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b < 10 AND b < 10"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'<',{field,<<"b">>,sint64},{const,10}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+query_impossible_if_less_than_is_equal_to_equality_filter_on_same_column_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b = 9 AND b < 9"),
+    ?assertEqual(
+        {error,{impossible_where_clause, << >>}},
+        compile(DDL, Q)
+    ).
+
+query_impossible_if_less_than_is_equal_to_equality_filter_on_same_column_swap_filter_order_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b < 9 AND b = 9"),
+    ?assertEqual(
+        {error,{impossible_where_clause, << >>}},
+        compile(DDL, Q)
+    ).
+
+query_impossible_if_less_than_is_less_than_equality_filter_on_same_column_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b = 9 AND b < 8"),
+    ?assertEqual(
+        {error,{impossible_where_clause, << >>}},
+        compile(DDL, Q)
+    ).
+
+query_impossible_if_less_than_is_less_than_equality_filter_on_same_column_swap_filter_order_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b < 8 AND b = 9"),
+    ?assertEqual(
+        {error,{impossible_where_clause, << >>}},
+        compile(DDL, Q)
+    ).
+
+less_than_on_column_in_local_key_is_added_to_endkey_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a,b))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b < 10"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5},{<<"b">>,sint64,10}]},
+         {filter, {'<',{field,<<"b">>,sint64},{const,10}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+duplicate_less_than_or_equal_to_filters_are_eliminated_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b <= 8 AND b <= 8"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'<=',{field,<<"b">>,sint64},{const,8}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+less_than_or_equal_to_filters_are_eliminated_when_equality_filter_value_is_equal_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b = 8 AND b <= 8"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'=',{field,<<"b">>,sint64},{const,8}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+less_than_or_equal_to_filters_are_eliminated_when_equality_filter_value_is_equal_swap_filter_order_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b <= 8 AND b = 8"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'=',{field,<<"b">>,sint64},{const,8}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+less_than_or_equal_to_filters_are_eliminated_when_equality_filter_value_is_greater_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b = 8 AND b <= 9"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'=',{field,<<"b">>,sint64},{const,8}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+less_than_or_equal_to_filters_are_eliminated_when_less_than_filter_value_is_greater_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b < 8 AND b <= 8"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'<',{field,<<"b">>,sint64},{const,8}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+less_than_or_equal_to_filters_are_eliminated_when_less_than_filter_value_is_greater_swap_filter_order_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b <= 8 AND b < 8"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5}]},
+         {filter, {'<',{field,<<"b">>,sint64},{const,8}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+less_than_or_equal_to_on_column_in_local_key_is_added_to_endkey_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a,b))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b <= 10"),
+    {ok, [S|_]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5},{<<"b">>,sint64,10}]},
+         {filter, {'<=',{field,<<"b">>,sint64},{const,10}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+% less_than_or_equal_to_is_less_than_equality_filter_on_same_column_is_impossible_test
+
+'< eliminated when greater than <= on same column_test'() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a,b))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b <= 10 AND b < 11"),
+    {ok, [S]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5},{<<"b">>,sint64,10}]},
+         {filter, {'<=',{field,<<"b">>,sint64},{const,10}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+'< eliminated when greater than <= on same column_swap_filter_order_test'() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a,b))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 5 AND b < 11 AND b <= 10"),
+    {ok, [S]} = compile(DDL, Q),
+    ?assertPropsEqual(
+        [{startkey,[{<<"a">>,timestamp,5}]},
+         {endkey,  [{<<"a">>,timestamp,5},{<<"b">>,sint64,10}]},
+         {filter, {'<=',{field,<<"b">>,sint64},{const,10}}},
+         {end_inclusive,true}],
+        S?SQL_SELECT.'WHERE'
+    ).
+
+less_than_or_equal_to_is_less_than_equality_filter_on_same_column_is_impossible_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a,b))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 1 AND b <= 8 AND b = 10"),
+    ?assertEqual(
+        {error,{impossible_where_clause, << >>}},
+        compile(DDL, Q)
+    ).
+
+less_than_or_equal_to_is_less_than_equality_filter_on_same_column_is_impossible_swap_filter_order_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE table1("
+        "a TIMESTAMP NOT NULL, "
+        "b SINT64 NOT NULL, "
+        "PRIMARY KEY ((a),a,b))"),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a = 1 AND b = 10 AND b <= 8"),
+    ?assertEqual(
+        {error,{impossible_where_clause, << >>}},
+        compile(DDL, Q)
     ).
 
 desc_query_with_additional_column_in_local_key_test() ->
@@ -3007,6 +4561,395 @@ query_with_desc_last_local_key_column_no_quantum_test() ->
           {end_inclusive, true},
           {start_inclusive, true}]],
         [W || ?SQL_SELECT{'WHERE' = W} <- SubQueries]
+    ).
+
+validate_invdist_funcall_1_test() ->
+    ?assertEqual(
+       {ok, [0.3]},
+       validate_invdist_funcall('PERCENTILE_DISC', [{identifier, [<<"x">>]}, {float, 0.3}])).
+
+validate_invdist_funcall_2_test() ->
+    ?assertEqual(
+       {error,
+        {invalid_static_invdist_fn_param, <<"Invalid argument 2 in call to function PERCENTILE_DISC.">>}},
+       validate_invdist_funcall('PERCENTILE_DISC', [{identifier, [<<"x">>]}, {float, 1.3}])).
+
+validate_invdist_funcall_3_test() ->
+    ?assertEqual(
+       {error,
+        {invalid_expr_in_invdist_fun_arglist, <<"Invalid expression passed as parameter for inverse distribution function.">>}},
+       validate_invdist_funcall('PERCENTILE_DISC', [{identifier, [<<"x">>]}, {'+', {float, 1.3}, {boolean, true}}])).
+
+validate_invdist_funcall_4_test() ->
+    ?assertEqual(
+       {error,
+        {nonconst_expr_in_invdist_fun_arglist, <<"Inverse distribution functions (PERCENTILE_*, MODE) must have a static const expression for its parameters.">>}},
+       validate_invdist_funcall('PERCENTILE_DISC', [{identifier, [<<"x">>]}, {identifier, [<<"y">>]}])).
+
+compile_invdist_full_test() ->
+    DDL = get_ddl(
+        "create table t ("
+        "b timestamp not null,"
+        "x sint64,"
+        "primary key ((quantum(b, 10, s)), b));"
+    ),
+    {ok, Rec} = get_query(
+                  "select percentile_disc(x, 0.11) from t where b > 1 and b < 21"),
+    {ok, [SQL = ?SQL_SELECT{'SELECT' = Select,
+                            'OFFSET' = Offset}|_]} = compile(DDL, Rec),
+    ?assertMatch(
+       ?SQL_SELECT{'ORDER BY' = [{<<"x">>, asc, nulls_last}],
+                   'LIMIT'    = [1]},
+       SQL
+      ),
+    ?assertMatch(
+       #riak_sel_clause_v1{col_names = [<<"x">>]},
+       Select
+      ),
+    {_OrderBy = {<<"x">>, asc, nulls_last},
+     _Limit = 1,
+     _Offset} = compile_invdist_funcall({'PERCENTILE_DISC', <<"x">>, [0.11]}),
+    ?assertEqual(
+       [_Offset],
+       Offset
+      ).
+
+compile_invdist_partial_test() ->
+    {ok, Rec} = get_query(
+        "select percentile_disc(mysint, 0.1) from mytab"),
+    {ok, _Select, [{ok, Spec}]} = compile_select_clause(get_sel_ddl(), options(), Rec),
+    ?assertMatch(
+        {'PERCENTILE_DISC', <<"mysint">>, [0.1]},
+        Spec
+      ).
+
+
+query_with_arithmetic_in_where_clause_test() ->
+    DDL = get_ddl(
+        "CREATE table table1 ("
+        "a VARCHAR NOT NULL,"
+        "b TIMESTAMP NOT NULL,"
+        "PRIMARY KEY ((a, b), a, b));"
+    ),
+    {ok, Q} = get_query(
+          "SELECT * FROM table1 WHERE a = 'hi' AND b = 4000 + 1s"),
+    {ok, SubQueries} = compile(DDL, Q),
+    ?assertEqual(
+        [[{startkey,[{<<"a">>,varchar,<<"hi">>},{<<"b">>,timestamp,5000}]},
+          {endkey,  [{<<"a">>,varchar,<<"hi">>},{<<"b">>,timestamp,5000}]},
+          {filter,[]},
+          {end_inclusive, true}]],
+        [W || ?SQL_SELECT{'WHERE' = W} <- SubQueries]
+    ).
+
+query_with_arithmetic_in_where_clause_expresson_on_lhs_test() ->
+    DDL = get_ddl(
+        "CREATE table table1 ("
+        "a VARCHAR NOT NULL,"
+        "b TIMESTAMP NOT NULL,"
+        "PRIMARY KEY ((a, b), a, b));"
+    ),
+    {ok, Q} = get_query(
+          "SELECT * FROM table1 WHERE a = 'hi' AND 4000 + 1s = b"),
+    {ok, SubQueries} = compile(DDL, Q),
+    ?assertEqual(
+        [[{startkey,[{<<"a">>,varchar,<<"hi">>},{<<"b">>,timestamp,5000}]},
+          {endkey,  [{<<"a">>,varchar,<<"hi">>},{<<"b">>,timestamp,5000}]},
+          {filter,[]},
+          {end_inclusive, true}]],
+        [W || ?SQL_SELECT{'WHERE' = W} <- SubQueries]
+    ).
+
+query_with_arithmetic_in_where_clause_add_double_to_integer_test() ->
+    DDL = get_ddl(
+        "CREATE table table1 ("
+        "a VARCHAR NOT NULL,"
+        "b TIMESTAMP NOT NULL,"
+        "PRIMARY KEY ((a, b), a, b));"
+    ),
+    {ok, Q} = get_query(
+          "SELECT * FROM table1 WHERE a = 'hi' AND b = 4000 + 2.4"),
+    {ok, SubQueries} = compile(DDL, Q),
+    ?assertEqual(
+        [[{startkey,[{<<"a">>,varchar,<<"hi">>},{<<"b">>,timestamp,4002}]},
+          {endkey,  [{<<"a">>,varchar,<<"hi">>},{<<"b">>,timestamp,4002}]},
+          {filter,[]},
+          {end_inclusive, true}]],
+        [W || ?SQL_SELECT{'WHERE' = W} <- SubQueries]
+    ).
+
+query_with_arithmetic_in_where_clause_multiple_additions_test() ->
+    DDL = get_ddl(
+        "CREATE table table1 ("
+        "a VARCHAR NOT NULL,"
+        "b TIMESTAMP NOT NULL,"
+        "PRIMARY KEY ((a, b), a, b));"
+    ),
+    {ok, Q} = get_query(
+          "SELECT * FROM table1 WHERE a = 'hi' AND b = 4000 + 2.4 + 7"),
+    {ok, SubQueries} = compile(DDL, Q),
+    ?assertEqual(
+        [[{startkey,[{<<"a">>,varchar,<<"hi">>},{<<"b">>,timestamp,4009}]},
+          {endkey,  [{<<"a">>,varchar,<<"hi">>},{<<"b">>,timestamp,4009}]},
+          {filter,[]},
+          {end_inclusive, true}]],
+        [W || ?SQL_SELECT{'WHERE' = W} <- SubQueries]
+    ).
+
+query_with_arithmetic_in_where_clause_operator_precedence_test() ->
+    DDL = get_ddl(
+        "CREATE table table1 ("
+        "a VARCHAR NOT NULL,"
+        "b TIMESTAMP NOT NULL,"
+        "PRIMARY KEY ((a, b), a, b));"
+    ),
+    {ok, Q} = get_query(
+          "SELECT * FROM table1 WHERE a = 'hi' AND b = 1+3*2/4 - 0.5"),
+    {ok, SubQueries} = compile(DDL, Q),
+    ?assertEqual(
+        [[{startkey,[{<<"a">>,varchar,<<"hi">>},{<<"b">>,timestamp, round(1+3*2/4-0.5)}]},
+          {endkey,  [{<<"a">>,varchar,<<"hi">>},{<<"b">>,timestamp, round(1+3*2/4-0.5)}]},
+          {filter,[]},
+          {end_inclusive, true}]],
+        [W || ?SQL_SELECT{'WHERE' = W} <- SubQueries]
+    ).
+
+cast_integer_expression_to_double_column_test() ->
+    DDL = get_ddl(
+        "CREATE table table1 ("
+        "a TIMESTAMP NOT NULL,"
+        "b DOUBLE NOT NULL,"
+        "PRIMARY KEY ((a), a));"
+    ),
+    {ok, Q} = get_query(
+          "SELECT * FROM table1 WHERE a = 10 AND b = 1+5"),
+    {ok, SubQueries} = compile(DDL, Q),
+    ?assertEqual(
+        [[{startkey,[{<<"a">>,timestamp,10}]},
+          {endkey,  [{<<"a">>,timestamp,10}]},
+          {filter, {'=',{field,<<"b">>,double},{const,6.0}}},
+          {end_inclusive, true}]],
+        [W || ?SQL_SELECT{'WHERE' = W} <- SubQueries]
+    ).
+
+query_with_arithmetic_in_where_clause_operator_precedence_queries_equal_test() ->
+    DDL = get_ddl(
+        "CREATE table table1 ("
+        "a VARCHAR NOT NULL,"
+        "b TIMESTAMP NOT NULL,"
+        "PRIMARY KEY ((a, b), a, b));"
+    ),
+    {ok, QA} = get_query(
+          "SELECT * FROM table1 WHERE a = 'hi' AND b = 2+3*4"),
+    {ok, QB} = get_query(
+          "SELECT * FROM table1 WHERE a = 'hi' AND b = 3*4+2"),
+    {ok, SubQueriesA} = compile(DDL, QA),
+    {ok, SubQueriesB} = compile(DDL, QB),
+    ?assertEqual(
+        [W || ?SQL_SELECT{'WHERE' = W} <- SubQueriesA],
+        [W || ?SQL_SELECT{'WHERE' = W} <- SubQueriesB]
+    ).
+
+select_with_arithmetic_on_identifier_throws_an_error_test() ->
+    DDL = get_ddl(
+        "CREATE table table1 ("
+        "a SINT64 NOT NULL,"
+        "PRIMARY KEY ((a), a));"
+    ),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE a+1 = 10"),
+    ?assertEqual(
+        {false,[{arithmetic_on_identifier,<<"a">>}]},
+        is_query_valid(DDL, Q)
+    ).
+
+select_with_arithmetic_on_identifier_throws_an_error_literal_on_lhs_test() ->
+    DDL = get_ddl(
+        "CREATE table table1 ("
+        "a SINT64 NOT NULL,"
+        "PRIMARY KEY ((a), a));"
+    ),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE 10 = a+1"),
+    ?assertEqual(
+        {false,[{arithmetic_on_identifier,<<"a">>}]},
+        is_query_valid(DDL, Q)
+    ).
+
+%%
+%% Test macro for assertions on now and arithmetic, shouldn't be
+%% extended for other uses
+%%
+-define(assertQueryCompilesToFilter(Options,QuerySQL,Filter),
+    DDL = get_ddl(
+        "CREATE table table1 ("
+        "a VARCHAR NOT NULL,"
+        "b TIMESTAMP NOT NULL,"
+        "c TIMESTAMP NOT NULL,"
+        "PRIMARY KEY ((a, b), a, b));"
+    ),
+    {ok, Q} = get_query(QuerySQL),
+    {ok, SubQueries} = compile(DDL, Q, Options),
+    ?assertEqual(
+        [[{startkey,[{<<"a">>,varchar,<<"hi">>},{<<"b">>,timestamp,4000}]},
+          {endkey,  [{<<"a">>,varchar,<<"hi">>},{<<"b">>,timestamp,4000}]},
+          {filter,  Filter},
+          {end_inclusive, true}]],
+        [W || ?SQL_SELECT{'WHERE' = W} <- SubQueries]
+    )).
+now_function_in_where_test() ->
+    ?assertQueryCompilesToFilter(
+        [{now_milliseconds,1979}],
+        "SELECT * FROM table1 WHERE a = 'hi' AND b = 4000 AND c > now()",
+        {'>',{field,<<"c">>,timestamp},{const,1979}}
+    ).
+now_function_in_where_with_addition_test() ->
+    ?assertQueryCompilesToFilter(
+        [{now_milliseconds,1979}],
+        "SELECT * FROM table1 WHERE a = 'hi' AND b = 4000 AND c > now()+1",
+        {'>',{field,<<"c">>,timestamp},{const,1980}}
+    ).
+now_function_in_range_test() ->
+    ?assertQueryCompilesToFilter(
+        [{now_milliseconds,10000}],
+        "SELECT * FROM table1 WHERE a = 'hi' AND b = 4000 AND c > now() AND c < now()",
+        {and_,{'>',{field,<<"c">>,timestamp},{const,10000}},{'<',{field,<<"c">>,timestamp},{const,10000}}}
+    ).
+now_function_in_range_with_addition_test() ->
+    ?assertQueryCompilesToFilter(
+        [{now_milliseconds,10000}],
+        "SELECT * FROM table1 WHERE a = 'hi' AND b = 4000 AND c > now() AND c < now()+1s",
+        {and_,{'>',{field,<<"c">>,timestamp},{const,10000}},{'<',{field,<<"c">>,timestamp},{const,11000}}}
+    ).
+now_function_in_range_with_addition_and_multiplication_test() ->
+    ?assertQueryCompilesToFilter(
+        [{now_milliseconds,10000}],
+        "SELECT * FROM table1 WHERE a = 'hi' AND b = 4000 AND c > now() AND c < now()+1*2",
+        {and_,{'>',{field,<<"c">>,timestamp},{const,10000}},{'<',{field,<<"c">>,timestamp},{const,10002}}}
+    ).
+now_function_in_range_with_subtraction_test() ->
+    ?assertQueryCompilesToFilter(
+        [{now_milliseconds,10000}],
+        "SELECT * FROM table1 WHERE a = 'hi' AND b = 4000 AND c > now() AND c < now() - 1s",
+        {and_,{'>',{field,<<"c">>,timestamp},{const,10000}},{'<',{field,<<"c">>,timestamp},{const,9000}}}
+    ).
+now_function_in_range_with_multiplication_test() ->
+    ?assertQueryCompilesToFilter(
+        [{now_milliseconds,10000}],
+        "SELECT * FROM table1 WHERE a = 'hi' AND b = 4000 AND c > now() AND c < now() * 2",
+        {and_,{'>',{field,<<"c">>,timestamp},{const,10000}},{'<',{field,<<"c">>,timestamp},{const,20000}}}
+    ).
+now_function_in_range_with_division_test() ->
+    ?assertQueryCompilesToFilter(
+        [{now_milliseconds,10000}],
+        "SELECT * FROM table1 WHERE a = 'hi' AND b = 4000 AND c > now() AND c < now() / 2",
+        {and_,{'>',{field,<<"c">>,timestamp},{const,10000}},{'<',{field,<<"c">>,timestamp},{const,5000}}}
+    ).
+now_function_in_range_with_division_to_decimal_test() ->
+    ?assertQueryCompilesToFilter(
+        [{now_milliseconds,10000}],
+        "SELECT * FROM table1 WHERE a = 'hi' AND b = 4000 AND c > now() AND c < now() / 3",
+        {and_,{'>',{field,<<"c">>,timestamp},{const,10000}},{'<',{field,<<"c">>,timestamp},{const,3333}}}
+    ).
+now_function_equals_value_test() ->
+    ?assertQueryCompilesToFilter(
+        [{now_milliseconds,10000}],
+        "SELECT * FROM table1 WHERE a = 'hi' AND b = 4000 AND c = now()",
+        {'=',{field,<<"c">>,timestamp},{const,10000}}
+    ).
+arithmetic_multiplication_filter_test() ->
+    ?assertQueryCompilesToFilter(
+        [{now_milliseconds,10000}],
+        "SELECT * FROM table1 WHERE a = 'hi' AND b = 4000 AND c <= 100 * (1+9)",
+        {'<=',{field,<<"c">>,timestamp},{const,1000}}
+    ).
+arithmetic_gt_filter_test() ->
+    ?assertQueryCompilesToFilter(
+        [{now_milliseconds,10000}],
+        "SELECT * FROM table1 WHERE a = 'hi' AND b = 4000 AND c > 999 + 1",
+        {'>',{field,<<"c">>,timestamp},{const,1000}}
+    ).
+arithmetic_gte_filter_test() ->
+    ?assertQueryCompilesToFilter(
+        [{now_milliseconds,10000}],
+        "SELECT * FROM table1 WHERE a = 'hi' AND b = 4000 AND c >= 999 + 1",
+        {'>=',{field,<<"c">>,timestamp},{const,1000}}
+    ).
+arithmetic_not_filter_test() ->
+    ?assertQueryCompilesToFilter(
+        [{now_milliseconds,10000}],
+        "SELECT * FROM table1 WHERE a = 'hi' AND b = 4000 AND c != 999 + 1",
+        {'!=',{field,<<"c">>,timestamp},{const,1000}}
+    ).
+arithmetic_lt_filter_test() ->
+    ?assertQueryCompilesToFilter(
+        [{now_milliseconds,10000}],
+        "SELECT * FROM table1 WHERE a = 'hi' AND b = 4000 AND c < 999 + 1",
+        {'<',{field,<<"c">>,timestamp},{const,1000}}
+    ).
+arithmetic_lte_filter_test() ->
+    ?assertQueryCompilesToFilter(
+        [{now_milliseconds,10000}],
+        "SELECT * FROM table1 WHERE a = 'hi' AND b = 4000 AND c <= 999 + 1",
+        {'<=',{field,<<"c">>,timestamp},{const,1000}}
+    ).
+
+now_function_invalid_arity_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE t("
+        "a TIMESTAMP NOT NULL, "
+        "PRIMARY KEY ((a), a))"),
+    {ok, Query} = get_query(
+        "SELECT * FROM t "
+        "WHERE a = now(1)"),
+    ?assertMatch(
+       {error,{invalid_query,<<_/binary>>}},
+       compile(DDL,Query)
+    ).
+
+now_function_in_select_clause_test() ->
+    DDL = get_ddl(
+        "CREATE TABLE t("
+        "a TIMESTAMP NOT NULL, "
+        "PRIMARY KEY ((a), a))"),
+    Now = 7777,
+    Sel = testing_compile_row_select(DDL,
+        "SELECT now() FROM t "
+        "WHERE a = 10", [{now_milliseconds, Now}]),
+    #riak_sel_clause_v1{clause = SelectSpec, initial_state = Initial} = Sel,
+    ?assertEqual(
+       [Now],
+       run_select(SelectSpec, [1001], Initial)
+    ).
+
+select_on_unknown_column_throws_an_error_test() ->
+    DDL = get_ddl(
+        "CREATE table table1 ("
+        "a SINT64 NOT NULL,"
+        "PRIMARY KEY ((a), a));"
+    ),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE x = 10"),
+    ?assertEqual(
+        {false,[{unexpected_where_field,<<"x">>}]},
+        is_query_valid(DDL, Q)
+    ).
+
+select_with_arithmetic_on_unknown_column_throws_an_error_test() ->
+    DDL = get_ddl(
+        "CREATE table table1 ("
+        "a SINT64 NOT NULL,"
+        "PRIMARY KEY ((a), a));"
+    ),
+    {ok, Q} = get_query(
+        "SELECT * FROM table1 "
+        "WHERE x = 10 + 1"),
+    ?assertEqual(
+        {false,[{unexpected_where_field,<<"x">>}]},
+        is_query_valid(DDL, Q)
     ).
 
 -endif.

@@ -38,6 +38,7 @@
 -define(TIMESERIES_QUERY_BUFFERS_ROOT_PATH_SUFFIX, "query_buffers").  %% relative to platform_data_dir
 -define(TIMESERIES_QUERY_BUFFERS_SOFT_WATERMARK, 1*1024*1024*1024).
 -define(TIMESERIES_QUERY_BUFFERS_HARD_WATERMARK, 4*1024*1024*1024).
+-define(TIMESERIES_QUERY_BUFFERS_INMEM_MAX, 10*1024*1024).
 -define(TIMESERIES_QUERY_BUFFERS_EXPIRE_MS, 5000).
 -define(TIMESERIES_QUERY_BUFFERS_INCOMPLETE_RELEASE_MS, 9000).
 
@@ -57,15 +58,11 @@ start_link() ->
 
 %% @spec init([]) -> SupervisorTree
 init([]) ->
-    RestartStrategy = one_for_one,
-    MaxRestarts = 10,
-    MaxSecondsBetweenRestarts = 10,
-
-    SupFlags = {RestartStrategy, MaxRestarts, MaxSecondsBetweenRestarts},
-
-    Restart = permanent,
-    Shutdown = 2000,
-    Type = worker,
+    SupFlags =
+        #{strategy => one_for_one,
+          intensity => 10,
+          period => 10
+         },
 
     NumFSMs = app_helper:get_env(riak_kv, timeseries_max_concurrent_queries,
                                  ?TIMESERIES_MAX_CONCURRENT_QUERIES),
@@ -75,36 +72,43 @@ init([]) ->
                           _Name = list_to_atom("riak_kv_qry_" ++ Int)
                   end,
     Names = [MakeNamesFn(X) || X <- lists:seq(1, NumFSMs)],
-    Riak_kv_qrys = [{X, {riak_kv_qry_worker, start_link, [X]},
-                     Restart, Shutdown, Type, [riak_kv_qry_worker]} || X <- Names],
+    Riak_kv_qrys = [#{id => X,
+                      start => {riak_kv_qry_worker, start_link, [X]},
+                      shutdown => 2000
+                     } || X <- Names],
 
-    Riak_kv_qry_q = {riak_kv_qry_queue,
-                     {riak_kv_qry_queue, start_link,
-                      [
-                       app_helper:get_env(riak_kv, timeseries_query_queue_length,
-                                          ?TIMESERIES_QUERY_QUEUE_LENGTH)
-                      ]},
-                     Restart, Shutdown, Type, [riak_kv_qry_queue]},
+    Riak_kv_qry_q =
+        #{id => riak_kv_qry_queue,
+          start => {riak_kv_qry_queue, start_link,
+                    [app_helper:get_env(riak_kv, timeseries_query_queue_length,
+                                        ?TIMESERIES_QUERY_QUEUE_LENGTH)
+                     ]},
+          shutdown => 2000
+         },
 
-    Riak_kv_qry_b = {riak_kv_qry_buffers,
-                     {riak_kv_qry_buffers, start_link,
-                      [
-                       [app_helper:get_env(riak_kv, timeseries_query_buffers_root_path,
-                                           filename:join(
-                                             app_helper:get_env(riak_core, platform_data_dir),
-                                             ?TIMESERIES_QUERY_BUFFERS_ROOT_PATH_SUFFIX)),
-                        app_helper:get_env(riak_kv, timeseries_query_max_returned_data_size,
-                                           ?TIMESERIES_QUERY_MAX_RETURNED_DATA_SIZE),
-                        app_helper:get_env(riak_kv, timeseries_query_buffers_soft_watermark,
-                                           ?TIMESERIES_QUERY_BUFFERS_SOFT_WATERMARK),
-                        app_helper:get_env(riak_kv, timeseries_query_buffers_hard_watermark,
-                                           ?TIMESERIES_QUERY_BUFFERS_HARD_WATERMARK),
-                        app_helper:get_env(riak_kv, timeseries_query_buffers_expire_ms,
-                                           ?TIMESERIES_QUERY_BUFFERS_EXPIRE_MS),
-                        app_helper:get_env(riak_kv, timeseries_query_buffers_incomplete_release_ms,
-                                           ?TIMESERIES_QUERY_BUFFERS_INCOMPLETE_RELEASE_MS)
-                       ]]},
-                     Restart, Shutdown, Type, [riak_kv_qry_buffers]},
+    Riak_kv_qry_b =
+        #{id => riak_kv_qry_buffers,
+          start => {riak_kv_qry_buffers, start_link,
+                    [[app_helper:get_env(riak_kv, timeseries_query_buffers_root_path,
+                                         filename:join(
+                                           app_helper:get_env(riak_core, platform_data_dir),
+                                           ?TIMESERIES_QUERY_BUFFERS_ROOT_PATH_SUFFIX)),
+                      app_helper:get_env(riak_kv, timeseries_query_max_returned_data_size,
+                                         ?TIMESERIES_QUERY_MAX_RETURNED_DATA_SIZE),
+                      app_helper:get_env(riak_kv, timeseries_query_buffers_soft_watermark,
+                                         ?TIMESERIES_QUERY_BUFFERS_SOFT_WATERMARK),
+                      app_helper:get_env(riak_kv, timeseries_query_buffers_hard_watermark,
+                                         ?TIMESERIES_QUERY_BUFFERS_HARD_WATERMARK),
+                      app_helper:get_env(riak_kv, timeseries_query_buffers_inmem_max,
+                                         ?TIMESERIES_QUERY_BUFFERS_INMEM_MAX),
+                      app_helper:get_env(riak_kv, timeseries_query_buffers_expire_ms,
+                                         ?TIMESERIES_QUERY_BUFFERS_EXPIRE_MS),
+                      app_helper:get_env(riak_kv, timeseries_query_buffers_incomplete_release_ms,
+                                         ?TIMESERIES_QUERY_BUFFERS_INCOMPLETE_RELEASE_MS)
+                     ]]
+                   },
+          shutdown => 2000
+         },
 
     {ok, {SupFlags, [
                      Riak_kv_qry_q, Riak_kv_qry_b |
