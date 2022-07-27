@@ -245,7 +245,7 @@ process_post(RD, #ctx{mod = Mod,
             riak_kv_wm_ts_util:handle_error(Reason, RD, Ctx)
     end.
 
--spec delete_resource(#wm_reqdata{}, #ctx{}) ->  cb_rv_spec(boolean()|halt()).
+-spec delete_resource(#wm_reqdata{}, #ctx{}) -> cb_rv_spec(boolean()|halt()).
 delete_resource(RD, #ctx{table = Table,
                          mod = Mod,
                          key = Key,
@@ -264,21 +264,14 @@ delete_resource(RD, #ctx{table = Table,
 -spec to_json(#wm_reqdata{}, #ctx{}) ->  cb_rv_spec(iolist()|halt()).
 to_json(RD, #ctx{api_call = get, object = Object, mod = Mod} = Ctx) ->
     try
-        Object2 = row_to_json_compat(Object, Mod),
+        Types = [Mod:get_field_type(F) || {F, _Pos} <- Mod:get_field_positions()],
+        Object2 = [value_to_json_compat(TV) || TV <- lists:zip(Types, Object)],
         Json = mochijson2:encode(Object2),
         {Json, RD, Ctx}
     catch
-        _:Reason ->
+        _E:Reason:_ST ->
             riak_kv_wm_ts_util:handle_error({riak_error, Reason}, RD, Ctx)
     end.
-
--spec row_to_json_compat(list({binary(), term()}), atom()) ->
-                                list({binary(), term()}).
-row_to_json_compat(Row, Mod) ->
-    lists:map(fun(R) -> field_to_json_compat(R, Mod) end, Row).
-
-field_to_json_compat({Header, Value}, Mod) ->
-    {Header, value_to_json_compat({Mod:get_field_type([Header]), Value})}.
 
 value_to_json_compat({blob, Value}) ->
     base64:encode(Value);
@@ -317,7 +310,7 @@ path_elements_to_key(PEList, Table, Mod,
                 %% 1. check that supplied key fields exist and values
                 %% supplied are convertible to their types
                 FVList =
-                    [convert_fv(Table, Mod, K, V)
+                    [convert_fv(Table, Mod, percent_decode(K), V)
                      || {K, V} <- empair(PEList, [])],
                 %% 2. possibly reorder field-value pairs to match the LK order
                 case ensure_lk_order_and_strip(LK, FVList) of
@@ -453,3 +446,15 @@ api_call(_KeyInURL, 'DELETE') -> delete.
 %% @private
 result_to_json(ok) ->
     mochijson2:encode([{success, true}]).
+
+-ifdef(OTP_25).
+%% percent_encode(A) ->
+%%     uri_string:quote(A).
+percent_decode(A) ->
+    uri_string:unquote(A).
+-else.
+%% percent_encode(A) ->
+%%     http_uri:encode(A).
+percent_decode(A) ->
+    http_uri:decode(A).
+-endif.
