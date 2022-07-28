@@ -68,7 +68,6 @@
 -ifdef(TEST).
 -include_lib("proper/include/proper.hrl").
 -include_lib("eunit/include/eunit.hrl").
--export([prop_eleveldb_backend/0]).
 -endif.
 
 -define(API_VERSION, 1).
@@ -1334,49 +1333,11 @@ to_from_object_nonts4_key_test() ->
     ?assertEqual({Bucket, Key}, {Bucket2, Key2}).
 
 
--ifdef(EQC).
-prop_eleveldb_backend() ->
-    Path = riak_kv_test_util:get_test_dir("eleveldb-backend"),
-    ?SETUP(fun() ->
-                   application:load(sasl),
-                   application:set_env(sasl, sasl_error_logger, {file, Path ++ "/riak_kv_eleveldb_backend_eqc_sasl.log"}),
-                   error_logger:tty(false),
-                   error_logger:logfile({open, Path ++ "/riak_kv_eleveldb_backend_eqc.log"}),
-                   fun() -> ?_assertCmd("rm -rf " ++ Path ++ "/*") end
-           end,
-           backend_eqc:prop_backend(?MODULE, false, [{data_root, Path}])).
-
-eqc_test_() ->
-    {spawn,
-     [{inorder,
-       [{setup,
-         fun setup/0,
-         fun cleanup/1,
-         [
-          {timeout, 180,
-           [?_assertEqual(true,
-                          backend_eqc:test(?MODULE, false,
-                                           [{data_root,
-                                             "test/eleveldb-backend"}]))]}
-         ]}]}]}.
-
-setup() ->
-    application:load(sasl),
-    application:set_env(sasl, sasl_error_logger, {file, "riak_kv_eleveldb_backend_eqc_sasl.log"}),
-    error_logger:tty(false),
-    error_logger:logfile({open, "riak_kv_eleveldb_backend_eqc.log"}),
-
-    ok.
-
-cleanup(_) ->
-    ?_assertCmd("rm -rf test/eleveldb-backend").
-
-
 %%
 %% Test unrolling of sext decoder against bucket/keys from various versions of Riak.
 %%
 eqc_encoder_test() ->
-    ?assertEqual(true, eqc:quickcheck(eqc:testing_time(2, prop_object_encoder_roundtrips()))).
+    ?assertEqual(true, proper:quickcheck(proper:numtests(200, prop_object_encoder_roundtrips()))).
 
 bucket_name() -> non_empty(binary()).
 bucket_type() -> non_empty(binary()).
@@ -1409,5 +1370,4 @@ prop_object_encoder_roundtrips() ->
                 true
             end).
 
--endif. % EQC
 -endif.
