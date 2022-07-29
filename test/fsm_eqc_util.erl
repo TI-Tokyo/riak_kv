@@ -1,9 +1,7 @@
 -module(fsm_eqc_util).
 -compile([export_all, nowarn_export_all]).
 
--ifdef(EQC).
-
--include_lib("eqc/include/eqc.hrl").
+-include_lib("proper/include/proper.hrl").
 -define(RING_KEY, riak_ring).
 
 longer_list(K, G) ->
@@ -296,5 +294,3 @@ fake_rng(N) ->
         {'$gen_cast', {set, NewN}} ->
             fake_rng(NewN)
     end.
-
--endif. % EQC

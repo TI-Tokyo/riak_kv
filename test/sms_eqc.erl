@@ -21,10 +21,7 @@
 %% @doc Quickcheck test for the sms streaming merge sort module code.
 -module(sms_eqc).
 
--ifdef(EQC).
-
--include_lib("eqc/include/eqc.hrl").
--include_lib("eqc/include/eqc_statem.hrl").
+-include_lib("proper/include/proper.hrl").
 -include_lib("eunit/include/eunit.hrl").
 -compile([export_all, nowarn_export_all]).
 
@@ -37,6 +34,12 @@
         received = [] :: [{integer(), [integer()]}] % Sorted received inputs [Num], a call to sms
         }).
 
+do_test() ->
+    test(100).
+
+test(N) ->
+    proper:quickcheck(numtests(N, sms_prop())).
+
 % Basicaly create one sms with a list of sources,
 % then issue commands appending ordered data from those sources
 % verifying at each point that it returns data that is safe to consume without
@@ -45,8 +48,8 @@ sms_prop() ->
     ?FORALL(Cmds, commands(?MODULE),
             begin
             {H, S, R} = run_commands(?MODULE, Cmds),
-            eqc_gen:with_parameter(show_states, true,
-                                   eqc_statem:pretty_commands(?MODULE, Cmds,
+            proper_gen:with_parameter(show_states, true,
+                                   proper_statem:pretty_commands(?MODULE, Cmds,
                                                               {H, S, R}, R == ok))
         end).
 
@@ -184,5 +187,3 @@ next_state(S = #state{received=Received, sources=Sources}, V, {call, _, sms, _})
 %% Done has no side effects, it should just return all buffered received values.
 next_state(S, _V, {call, _, done,_}) ->
     S.
-
--endif. % EQC

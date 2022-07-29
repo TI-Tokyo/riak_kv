@@ -1,4 +1,4 @@
-.PHONY: compile rel cover test dialyzer eqc
+.PHONY: compile rel cover test dialyzer
 REBAR=./rebar3
 
 compile:
@@ -13,10 +13,7 @@ cover: test
 
 test: compile
 	$(REBAR) as test do eunit
-
-eqc:
-	$(REBAR) eqc
-
+	@rm -rf riak_kv_compile_tab*.dets undefined/* data.* log.*
 
 dialyzer:
 	$(REBAR) dialyzer

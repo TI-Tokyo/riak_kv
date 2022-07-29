@@ -15,8 +15,7 @@
 
 -module(get_fsm_eqc).
 
--ifdef(EQC).
--include_lib("eqc/include/eqc.hrl").
+-include_lib("proper/include/proper.hrl").
 -include_lib("eunit/include/eunit.hrl").
 -include("include/riak_kv_vnode.hrl").
 
@@ -29,7 +28,7 @@
          {r, quorum},
          {pr, 0}]).
 -define(QC_OUT(P),
-        eqc:on_output(fun(Str, Args) -> io:format(user, Str, Args) end, P)).
+        proper:on_output(fun(Str, Args) -> io:format(user, Str, Args) end, P)).
 
 -record(state, {n,
                 r,
@@ -97,14 +96,14 @@ coverage_test() ->
 prepare() ->
     fsm_eqc_util:start_mock_servers().
 
-test() ->
-    test(10000).
+do_test() ->
+    test(1000).
 
 test(N) ->
-    quickcheck(numtests(N, prop_basic_get())).
+    proper:quickcheck(numtests(N, prop_basic_get())).
 
 check() ->
-    check(prop_basic_get(), current_counterexample()).
+    proper:check(prop_basic_get(), proper:current_counterexample()).
 
 %%====================================================================
 %% Generators
@@ -606,7 +605,3 @@ expect(H, State = #state{n = N, real_r = R, real_pr = PR, deleted = Deleted, not
                            merge_heads(Lineage, Heads))
             end
     end.
-
-
-
--endif. % EQC

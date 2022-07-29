@@ -22,8 +22,7 @@
 
 -module(kv_crdt_eqc).
 
--ifdef(EQC).
--include_lib("eqc/include/eqc.hrl").
+-include_lib("proper/include/proper.hrl").
 -include_lib("eunit/include/eunit.hrl").
 -include("include/riak_kv_types.hrl").
 -include("src/riak_kv_wm_raw.hrl").
@@ -35,14 +34,23 @@
 
 -define(BUCKET, <<"b">>).
 -define(KEY, <<"k">>).
--define(NUMTESTS, 500).
+-define(NUMTESTS, 100).
 -define(QC_OUT(P),
-        eqc:on_output(fun(Str, Args) ->
+        proper:on_output(fun(Str, Args) ->
                               io:format(user, Str, Args) end, P)).
 
 %%====================================================================
 %% properties
 %%====================================================================
+
+do_test() ->
+    test(?NUMTESTS).
+
+test(N) ->
+    error_logger:tty(false),
+    proper:quickcheck(numtests(N, prop_value())),
+    proper:quickcheck(numtests(N, prop_merge())),
+    proper:quickcheck(numtests(N, prop_update())).
 
 prop_value() ->
     ?FORALL(RObj, riak_object(),
@@ -290,6 +298,4 @@ pncounter() ->
 
 clock() ->
     {int(), nat()}.
-
--endif. % EQC
 

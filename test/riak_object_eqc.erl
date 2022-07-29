@@ -21,9 +21,8 @@
 %%
 %% -------------------------------------------------------------------
 -module(riak_object_eqc).
--ifdef(EQC).
 
--include_lib("eqc/include/eqc.hrl").
+-include_lib("proper/include/proper.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
 -compile([export_all, nowarn_export_all]).
@@ -53,13 +52,12 @@ binary_version() ->
 %% Shell helpers
 %%====================================================================
 
-test() ->
+do_test() ->
     test(100).
 
 test(N) ->
-    quickcheck(numtests(N, prop_roundtrip())).
+    error_logger:tty(false),
+    proper:quickcheck(numtests(N, prop_roundtrip())).
 
 check() ->
-    check(prop_roundtrip(), current_counterexample()).
-
--endif. %% EQC
+    proper:check(prop_roundtrip(), proper:current_counterexample()).
