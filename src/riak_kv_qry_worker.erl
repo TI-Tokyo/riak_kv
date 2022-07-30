@@ -106,7 +106,7 @@ handle_call(_, _, State) ->
 -spec handle_cast(term(), #state{}) -> {noreply, #state{}}.
 %% @private
 handle_cast(Msg, State) ->
-    ?LOG_WARNING("Not handling cast message ~p", [Msg]),
+    ?LOG_INFO("Not handling cast message ~p", [Msg]),
     {noreply, State}.
 
 %% @private
@@ -355,7 +355,7 @@ add_subquery_result(SubQId, Chunk, #state{sub_qrys = SubQs,
                 ThisChunkData = erlang:external_size(Chunk),
                 State#state{result            = QueryResult,
                             total_query_data  = TotalQueryData + ThisChunkData,
-                            total_query_rows  = TotalQueryRows + rows_in_chunk(Chunk),
+                            total_query_rows  = TotalQueryRows + length(Chunk),
                             n_subqueries_done = NSubqueriesDone + 1,
                             n_running_fsms    = NRunning - 1,
                             sub_qrys          = NSubQ}
@@ -375,43 +375,19 @@ run_select_on_chunk(SubQId, Chunk, #state{qry = Query,
                                           result = QueryResult1,
                                           qbuf_ref = QBufRef}) ->
 
-    %% Return decoded_results for this chunk.  We delegate this to a
-    %% helper function that determines whether the results have
-    %% already been decoded by the sending vnode
-
-    DecodedChunk = get_decoded_results(Chunk),
-
     SelClause = sql_select_clause(Query),
     case sql_select_calc_type(Query) of
         rows ->
-            run_select_on_rows_chunk(SubQId, SelClause, DecodedChunk, QueryResult1, QBufRef);
+            run_select_on_rows_chunk(SubQId, SelClause, Chunk, QueryResult1, QBufRef);
         aggregate ->
             %% query buffers don't enter at this stage: QueryResult is always a
             %% single row for aggregate SELECTs
-            run_select_on_aggregate_chunk(SelClause, DecodedChunk, QueryResult1);
+            run_select_on_aggregate_chunk(SelClause, Chunk, QueryResult1);
         group_by ->
             %% ditto
-            run_select_on_group(Query, SelClause, DecodedChunk, QueryResult1)
+            run_select_on_group(Query, SelClause, Chunk, QueryResult1)
     end.
 
-%% ------------------------------------------------------------
-%% Helper function to return decoded query results for the current
-%% Chunk:
-%%
-%%   if already decoded, simply returns the decoded data
-%%
-%%   if not, decodes and returns
-%% ------------------------------------------------------------
-
-get_decoded_results({decoded, Chunk}) ->
-    Chunk;
-get_decoded_results(Chunk) ->
-    decode_results(lists:flatten(Chunk)).
-
-rows_in_chunk({decoded, Chunk}) ->
-    length(Chunk);
-rows_in_chunk(Chunk) ->
-    length(Chunk).
 
 
 %%
@@ -542,9 +518,9 @@ prepare_final_results(#state{qbuf_ref = QBufRef,
             %% the query buffer is gone: we can still retry (should we, really?)
             cancel_error_query(bad_qbuf_ref, State)
     catch
-        Error:Reason ->
-            ?LOG_WARNING("Failed to fetch data from qbuf ~p: ~p:~p",
-                         [QBufRef, Error, Reason]),
+        Error:Reason:ST ->
+            ?LOG_ERROR("Failed to fetch data from qbuf ~p: ~p:~p ST:~p",
+                       [QBufRef, Error, Reason, ST]),
             cancel_error_query({qbuf_internal_error, "qbuf manager died/restarted mid-query"}, State)
     end;
 
@@ -620,21 +596,32 @@ estimate_query_size_limit_applies_to_aggregating_queries_test() ->
       #state{qry = ?SQL_SELECT{'SELECT' = #riak_sel_clause_v1{calc_type = group_by}},
              result            = BigData,
              max_query_data    = erlang:external_size(BigData) - 1,
-             sub_qrys          = lists:seq(1, 100)}).
+             sub_qrys          = lists:seq(1, 100)},
+     [passing, cancelled, cancelled]).
 
 estimate_query_size_limit_applies_to_regular_queries_test() ->
     check_states(
       #state{qry = ?SQL_SELECT{'SELECT' = #riak_sel_clause_v1{calc_type = rows}},
              total_query_data  = 10,
              max_query_data    = 30,
-             sub_qrys          = lists:seq(1, 100)}).
+             sub_qrys          = lists:seq(1, 100)},
+     [passing, cancelled, cancelled]).
 
-check_states(State) ->
+estimate_query_size_with_empty_first_chunks_test() ->
+    check_states(
+      #state{qry = ?SQL_SELECT{'SELECT' = #riak_sel_clause_v1{calc_type = rows}},
+             result            = [],
+             total_query_rows  = 0,
+             max_query_data    = 1000,
+             sub_qrys          = lists:seq(1, 100)},
+     [passing, passing, passing]).
+
+check_states(State, [Out1, Out2, Out3]) ->
     lists:foreach(
       fun({StateN, Outcome}) -> ok = check_states2(StateN, Outcome) end,
-      [{State#state{n_subqueries_done = 1}, passing},
-       {State#state{n_subqueries_done = 2}, cancelled},
-       {State#state{n_subqueries_done = 3}, cancelled}]).
+      [{State#state{n_subqueries_done = 1}, Out1},
+       {State#state{n_subqueries_done = 2}, Out2},
+       {State#state{n_subqueries_done = 3}, Out3}]).
 
 check_states2(State, passing) ->
     ?assertEqual(estimate_query_size(State), State);
