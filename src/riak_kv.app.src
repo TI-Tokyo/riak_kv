@@ -25,7 +25,7 @@
                   redbug,
                   recon,
                   riakc,
-                  riakhttpc,
+                  rhc,
                   riak_ql,
                   jam,
                   msgpack
