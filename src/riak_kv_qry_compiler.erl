@@ -1068,7 +1068,7 @@ hash_timestamp_to_quanta(QField, QSize, QUnit, QIndex, Where1) ->
             %% the end_inclusive flag because the end key is not used to hash
             {ok, make_wheres(Where2, QField, Min2, Max1, Boundaries)};
         false ->
-            lager:info("query spans too many quanta (~b, max ~b)", [NQuanta, MaxQueryQuanta]),
+            logger:info("query spans too many quanta (~b, max ~b)", [NQuanta, MaxQueryQuanta]),
             {error, {too_many_subqueries, NQuanta, MaxQueryQuanta}}
     end.
 
