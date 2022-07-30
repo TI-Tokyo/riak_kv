@@ -660,7 +660,7 @@ do_reap_expired_qbufs(#state{qbufs = QBufs0,
                   case ExpiresOn < Now of
                       true ->
                           ok = kill_ldb(RootPath, Table, LdbRef),
-                          ?LOG_DEBUG("Reaped expired qbuf ~p", [Table]),
+                          ?LOG_DEBUG("Reaped expired qbuf ~s", [Table]),
                           false;
                       false ->
                           true
