@@ -809,7 +809,7 @@ init_state(DataRoot, Config) ->
     end,
 
     %% Generate a debug message with the options we'll use for each operation
-    ?LOG_DEBUG("Datadir ~s options for LevelDB: ~p\n",
+    ?LOG_DEBUG("Datadir ~s options for LevelDB: ~p",
                 [DataRoot, [{open, OpenOpts}, {read, ReadOpts}, {write, WriteOpts}, {fold, FoldOpts}]]),
     #state { data_root = DataRoot,
              open_opts = OpenOpts,
@@ -837,7 +837,7 @@ open_db(State0, RetriesLeft, _) ->
             case lists:prefix("IO error: lock ", OpenErr) of
                 true ->
                     SleepFor = app_helper:get_env(riak_kv, eleveldb_open_retry_delay, 2000),
-                    ?LOG_DEBUG("Leveldb backend retrying ~p in ~p ms after error ~s\n",
+                    ?LOG_DEBUG("Leveldb backend retrying ~p in ~p ms after error ~s",
                                 [State0#state.data_root, SleepFor, OpenErr]),
                     timer:sleep(SleepFor),
                     open_db(State0, RetriesLeft - 1, Reason);
@@ -1331,6 +1331,7 @@ to_from_object_nonts4_key_test() ->
     {Bucket, Key} = {{<<"fa">>, <<"fa">>}, [2]},
     {Bucket2, Key2} = from_object_key(to_object_key(Bucket, Key)),
     ?assertEqual({Bucket, Key}, {Bucket2, Key2}).
+
 
 
 %%
