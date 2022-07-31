@@ -502,12 +502,12 @@ get_col_names2(_, Name) ->
 -type select_column_clause_folder_acc() :: {set:set(), #riak_sel_clause_v1{}, list(invdist_fn_precompiled_spec())}.
 
 -record(single_sel_column, {
-          calc_type        :: select_result_type(),
-          initial_state    :: any(),
-          col_return_types :: [riak_pb_ts_codec:ldbvalue()],
-          col_name         :: riak_pb_ts_codec:tscolumnname(),
-          clause           :: function(),
-          finaliser        :: [function()],
+          calc_type         :: select_result_type(),
+          initial_state     :: any(),
+          col_return_types  :: [riak_pb_ts_codec:ldbvalue()] | undefined,
+          col_name          :: riak_pb_ts_codec:tscolumnname() | undefined,
+          clause            :: function(),
+          finaliser         :: [function()] | undefined,
           inverdist_fn = [] :: [invdist_fn_precompiled_spec()]
          }).
 
@@ -1001,8 +1001,6 @@ col_index_and_type_of(Fields, ColumnName) ->
     end.
 
 %%
--spec expand_where(riak_ql_ddl:filter(), #key_v1{}) ->
-                          {ok, [where_props()]} | {error, atom()}.
 expand_where(Where, PartitionKey) ->
     case find_quantum_field_index_in_key(PartitionKey) of
         {QField, QSize, QUnit, QIndex} ->

@@ -418,9 +418,6 @@ do_batch_put(QBufRef, Data, #state{qbufs      = QBufs0,
             end
     end.
 
--spec add_chunk(#qbuf{}, [data_row()],
-                non_neg_integer(), non_neg_integer(), non_neg_integer()) ->
-                       {ok, #qbuf{}, non_neg_integer()} | {error, total_qbuf_size_limit_reached | riak_kv_qry_buffers_ldb:errors()}.
 add_chunk(#qbuf{inmem_buffer  = InmemBuffer0,
                 orig_qry      = ?SQL_SELECT{'ORDER BY' = OrderBy},
                 chunks_got    = ChunksGot0,
