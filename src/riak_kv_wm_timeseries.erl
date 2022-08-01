@@ -43,6 +43,10 @@
 
 -module(riak_kv_wm_timeseries).
 
+-ifdef(OTP_23).
+-compile([{nowarn_deprecated_function, [{http_uri,decode,1}]}]).
+-endif.
+
 %% webmachine resource exports
 -export([
          init/1,
