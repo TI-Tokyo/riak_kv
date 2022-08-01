@@ -55,7 +55,7 @@ new_table(Table, Root) ->
               ],
     case eleveldb:open(Path, Options) of
         {ok, LdbRef} ->
-            ?LOG_DEBUG("new LdbRef ~p in ~p", [LdbRef, Path]),
+            ?LOG_DEBUG("new LdbRef ~p in ~s", [LdbRef, Path]),
             {ok, LdbRef};
         {error, {Atom, _Message} = LdbError} ->
             ?LOG_ERROR("qbuf eleveldb:open(~s) failed: ~p", [Path, LdbError]),
@@ -67,7 +67,7 @@ new_table(Table, Root) ->
 delete_table(Table, LdbRef, Root) ->
     ok = eleveldb:close(LdbRef),
     Path = filename:join(Root, Table),
-    ?LOG_DEBUG("deleting LdbRef ~p in ~p", [LdbRef, Path]),
+    ?LOG_DEBUG("deleting LdbRef ~p in ~s", [LdbRef, Path]),
     riak_kv_ts_util:rm_rf(Path),
     ok.
 

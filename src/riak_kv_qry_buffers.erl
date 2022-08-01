@@ -452,7 +452,6 @@ add_chunk(#qbuf{inmem_buffer  = InmemBuffer0,
                                total_records = TotalRecords0 + length(Data),
                                last_accessed = os:timestamp(),
                                all_chunks_received = AllChunksReceived},
-            ?LOG_DEBUG("adding chunk ~b of ~b to ldb", [ChunksGot, ChunksNeed]),
             store_chunk(
               QBuf1,
               %% both the existing accumulated chunks as well as the
@@ -670,7 +669,7 @@ do_reap_expired_qbufs(#state{qbufs = QBufs0,
                   case ExpiresOn < Now of
                       true ->
                           ok = kill_ldb(RootPath, Table, LdbRef),
-                          ?LOG_INFO("Reaped incompletely filled qbuf ~p", [Table]),
+                          ?LOG_INFO("Reaped partially filled qbuf ~p", [Table]),
                           false;
                       false ->
                           true
