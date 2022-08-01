@@ -81,17 +81,17 @@ submit(#riak_sql_describe_v1{}, DDL) ->
 submit(#riak_sql_show_create_table_v1{}, ?DDL{table = Table} = DDL) ->
     Props = riak_core_bucket:get_bucket({Table, Table}),
     riak_ql_show_create_table:show_create_table(DDL, Props);
-submit(SQL = #riak_sql_insert_v1{}, ignored) ->
+submit(SQL = #riak_sql_insert_v1{}, _ignored) ->
     do_insert(SQL);
 submit(SQL = ?SQL_SELECT{}, DDL) ->
     do_select(SQL, DDL);
-submit(#riak_sql_show_tables_v1{}, ignored) ->
+submit(#riak_sql_show_tables_v1{}, _ignored) ->
     do_show_tables();
-submit(#riak_sql_alter_table_v1{} = Q, ignored) ->
+submit(#riak_sql_alter_table_v1{} = Q, _ignored) ->
     do_alter_table(Q);
 submit(#riak_sql_explain_query_v1{'EXPLAIN' = Select}, DDL) ->
     do_explain(DDL, Select);
-submit(#riak_sql_delete_query_v1{} = Q, ignored) ->
+submit(#riak_sql_delete_query_v1{} = Q, _ignored) ->
     do_delete(Q).
 
 %% ---------------------
