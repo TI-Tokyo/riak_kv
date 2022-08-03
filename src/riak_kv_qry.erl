@@ -768,7 +768,7 @@ validate_xlate_insert_to_putdata_too_many_values_test() ->
     Positions = [3, 1, 2, 4],
     Result = xlate_insert_to_putdata(Values, Positions, Empty, [double, varchar, varchar, binary]),
     ?assertEqual(
-        {error,too_many_insert_values},
+        {error, too_many_insert_values},
         Result
     ).
 
@@ -784,7 +784,7 @@ validate_xlate_insert_to_putdata_unexpected_identifier_test() ->
     %% human-readable message:
     %% {error,{1003,<<"Invalid data found at row index(es) 1">>}}
     ?assertEqual(
-        {error,too_many_insert_values},
+        {error, too_many_insert_values},
         Result
     ).
 

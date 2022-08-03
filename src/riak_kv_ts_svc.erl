@@ -440,11 +440,11 @@ sub_tsqueryreq(_Mod, DDL = ?DDL{table = Table}, SQL, State) ->
         {error, qry_worker_timeout} ->
             %% the eleveldb process didn't send us any response after
             %% 10 sec (hardcoded in riak_kv_qry), and probably died
-            {reply, make_rpberrresp(?E_TIMEOUT, "no response from backend"), State};
+            {reply, make_rpberrresp(?E_TIMEOUT, "No response from backend"), State};
         {error, backend_timeout} ->
             %% the eleveldb process did manage to send us a timeout
             %% response
-            {reply, make_rpberrresp(?E_TIMEOUT, "backend timeout"), State};
+            {reply, make_rpberrresp(?E_TIMEOUT, "Backend timeout"), State};
 
         %% this one comes from riak_kv_qry_worker
         {error, divide_by_zero} ->
@@ -453,8 +453,8 @@ sub_tsqueryreq(_Mod, DDL = ?DDL{table = Table}, SQL, State) ->
         %% from riak_kv_qry
         {error, {invalid_data, BadRowIdxs}} ->
             {reply, make_validate_rows_error_resp(BadRowIdxs), State};
-        {error, {too_many_insert_values, BadRowIdxs}} ->
-            {reply, make_too_many_insert_values_resp(BadRowIdxs), State};
+        {error, too_many_insert_values} ->
+            {reply, make_too_many_insert_values_resp(), State};
         {error, {undefined_fields, BadFields}} ->
             {reply, make_undefined_field_in_insert_resp(BadFields), State};
         {error, {identifier_unexpected, Identifier}} ->
@@ -573,13 +573,12 @@ make_validate_rows_error_resp(BadRowIdxs) ->
     BadRowsString = string:join([integer_to_list(I) || I <- BadRowIdxs],", "),
     make_rpberrresp(
       ?E_IRREG,
-      flat_format("Invalid data found at row index(es) ~s", [BadRowsString])).
+      flat_format("Invalid data at column(s) ~s", [BadRowsString])).
 
-make_too_many_insert_values_resp(BadRowIdxs) ->
-    BadRowsString = string:join([integer_to_list(I) || I <- BadRowIdxs],", "),
+make_too_many_insert_values_resp() ->
     make_rpberrresp(
       ?E_BAD_QUERY,
-      flat_format("too many values in row index(es) ~s", [BadRowsString])).
+      flat_format("too many values", [])).
 
 make_undefined_field_in_insert_resp(BadFields) ->
     make_rpberrresp(
