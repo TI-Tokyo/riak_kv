@@ -693,7 +693,7 @@ flat_format(Format, Args) ->
     lists:flatten(io_lib:format(Format, Args)).
 
 sql_lex_parse(Sql) when is_binary(Sql) ->
-    sql_lex_parse(binary_to_list(Sql));
+    sql_lex_parse(unicode:characters_to_nfc_list(Sql));
 sql_lex_parse(Sql) ->
     riak_ql_parser:parse(riak_ql_lexer:get_tokens(Sql)).
 
