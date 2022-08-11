@@ -84,9 +84,6 @@
 -define(MAGIC, 53).      %% Magic number, as opposed to 131 for Erlang term-to-binary magic
                          %% Shanley's(11) + Joe's(42)
 -define(EMPTY_VTAG_BIN, <<"e">>).
-%% sub-encoding, selecting between binary_to_term and msgpack:decode (used for TS data)
--define(MSGPACK_MAGIC, 2). %% Magic number for msgpack encoding
--define(ERLT2B_MAGIC, 3). %% Magic number for erlang term_to_binary encoding
 
 -export([new/3, new/4, newts/4, ensure_robject/1, ancestors/1, reconcile/2, equal/2, remove_dominated/1]).
 -export([increment_vclock/2, increment_vclock/3, prune_vclock/3, vclock_descends/2, all_actors/1]).
@@ -1626,22 +1623,15 @@ decode_maybe_binary(<<_Other:8, Bin/binary>>) ->
 
 
 sub_encode(Bin, erlang) ->
-    <<?ERLT2B_MAGIC:8/integer, (term_to_binary(Bin))/binary>>;
+    term_to_binary(Bin);
 sub_encode(Bin, msgpack) ->
-    <<?MSGPACK_MAGIC:8/integer, (msgpack:pack(Bin, [{spec, old}]))/binary>>.
+    msgpack:pack(Bin, [{spec, old}]).
 
-sub_decode(<<?ERLT2B_MAGIC:8/integer, Bin/binary>>) ->
+sub_decode(<<131:8/integer, _/binary>> = Bin) ->
     binary_to_term(Bin);
-sub_decode(<<?MSGPACK_MAGIC:8/integer, Bin/binary>>) ->
-    {ok, Unpacked} = msgpack:unpack(Bin, [{spec, old}]),
-    Unpacked;
 sub_decode(Bin) ->
-    try
-        binary_to_term(Bin)
-    catch
-        _:_ ->
-            Bin
-    end.
+    {ok, Unpacked} = msgpack:unpack(Bin, [{spec, old}]),
+    Unpacked.
 
 
 %% Update X-Riak-VTag and X-Riak-Last-Modified in the object's metadata, if
