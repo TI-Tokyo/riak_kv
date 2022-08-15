@@ -85,6 +85,10 @@
                          %% Shanley's(11) + Joe's(42)
 -define(EMPTY_VTAG_BIN, <<"e">>).
 
+-define(ENCODING_ERLB2C, 0).
+-define(ENCODING_NONE, 1).
+-define(ENCODING_MSGPACK, 2).
+
 -export([new/3, new/4, newts/4, ensure_robject/1, ancestors/1, reconcile/2, equal/2, remove_dominated/1]).
 -export([increment_vclock/2, increment_vclock/3, prune_vclock/3, vclock_descends/2, all_actors/1]).
 -export([actor_counter/2]).
@@ -1494,9 +1498,11 @@ sib_of_binary(<<ValLen:32/integer,
 
 val_encoding_meta(<<>>, MDList) ->
     MDList;
-val_encoding_meta(<<0, _Rest/binary>>, MDList) ->
+val_encoding_meta(<<?ENCODING_NONE, _Rest/binary>>, MDList) ->
     MDList;
-val_encoding_meta(<<1, _Rest/binary>>, MDList) ->
+val_encoding_meta(<<?ENCODING_ERLB2C, _Rest/binary>>, MDList) ->
+    MDList;
+val_encoding_meta(<<?ENCODING_MSGPACK, _Rest/binary>>, MDList) ->
     MDList;
 val_encoding_meta(<<Other:8, _Rest/binary>>, MDList) ->
     [{?MD_VAL_ENCODING, Other} | MDList].
@@ -1547,7 +1553,7 @@ new_v1(Vclock, Siblings, Enc) ->
 
 bin_content(#r_content{metadata=Meta0, value=Val}, Enc) ->
     {TypeTag, Meta} = determine_binary_type(Val, Meta0),
-    ValBin = encode_maybe_binary(Val, TypeTag, Enc),
+    ValBin = encode(Val, TypeTag, Enc),
     ValLen = byte_size(ValBin),
     MetaBin = meta_bin(Meta, Enc),
     MetaLen = byte_size(MetaBin),
@@ -1587,22 +1593,30 @@ fold_meta_to_bin(?MD_DELETED, "true", Acc) ->
     fold_meta_to_bin(?MD_DELETED, true, Acc);
 fold_meta_to_bin(?MD_DELETED, _, {{Vt,_Del,Lm, _Enc}, RestBin}) ->
     {{Vt, <<0>>, Lm, _Enc}, RestBin};
-fold_meta_to_bin(Key, Value, {{_Vt, _Del, _Lm, Enc} = Elems, RestBin}) ->
-    ValueBin = encode_maybe_binary(Value, Enc),
+fold_meta_to_bin(Key, Value, {{_Vt, _Del, _Lm, _Enc} = Elems, RestBin}) ->
+    ValueBin = encode_maybe_binary(Value),
     ValueLen = byte_size(ValueBin),
-    KeyBin = encode_maybe_binary(Key, Enc),
+    KeyBin = encode_maybe_binary(Key),
     KeyLen = byte_size(KeyBin),
     MetaBin = <<KeyLen:32/integer, KeyBin/binary, ValueLen:32/integer, ValueBin/binary>>,
     {Elems, <<RestBin/binary, MetaBin/binary>>}.
 
-encode_maybe_binary(Value, Enc) when is_binary(Value) ->
-    encode_maybe_binary(Value, 1, Enc);
-encode_maybe_binary(Value, Enc) when not is_binary(Value) ->
-    encode_maybe_binary(Value, 0, Enc).
-encode_maybe_binary(Value, TypeTag, _Enc) when is_binary(Value) ->
+encode(Bin, TypeTag, erlang) ->
+    encode_maybe_binary(Bin, TypeTag);
+encode(Bin, _, msgpack) ->
+    encode_msgpack(Bin).
+
+encode_msgpack(Bin) ->
+    <<?ENCODING_MSGPACK, (msgpack:pack(Bin, [{spec, old}]))/binary>>.
+
+encode_maybe_binary(Value) when is_binary(Value) ->
+    encode_maybe_binary(Value, 1);
+encode_maybe_binary(Value) when not is_binary(Value) ->
+    encode_maybe_binary(Value, 0).
+encode_maybe_binary(Value, TypeTag) when is_binary(Value) ->
     <<TypeTag, Value/binary>>;
-encode_maybe_binary(Value, 0, Enc) when not is_binary(Value) ->
-    <<0, (sub_encode(Value, Enc))/binary>>.
+encode_maybe_binary(Value, 0) when not is_binary(Value) ->
+    <<?ENCODING_ERLB2C, (term_to_binary(Value))/binary>>.
 
 determine_binary_type(Val, Meta) when is_binary(Val) ->
     case dict:find(?MD_VAL_ENCODING, Meta) of
@@ -1614,22 +1628,17 @@ determine_binary_type(_Val, Meta) ->
 
 decode_maybe_binary(<<>>) ->
     head_only;
-decode_maybe_binary(<<1, Bin/binary>>) ->
+decode_maybe_binary(<<?ENCODING_NONE, Bin/binary>>) ->
     Bin;
-decode_maybe_binary(<<0, Bin/binary>>) ->
-    sub_decode(Bin);
+decode_maybe_binary(<<?ENCODING_ERLB2C, Bin/binary>>) ->
+    binary_to_term(Bin);
+decode_maybe_binary(<<?ENCODING_MSGPACK, Bin/binary>>) ->
+    decode_msgpack(Bin);
 decode_maybe_binary(<<_Other:8, Bin/binary>>) ->
     Bin.
 
 
-sub_encode(Bin, erlang) ->
-    term_to_binary(Bin);
-sub_encode(Bin, msgpack) ->
-    msgpack:pack(Bin, [{spec, old}]).
-
-sub_decode(<<131:8/integer, _/binary>> = Bin) ->
-    binary_to_term(Bin);
-sub_decode(Bin) ->
+decode_msgpack(Bin) ->
     {ok, Unpacked} = msgpack:unpack(Bin, [{spec, old}]),
     Unpacked.
 
@@ -2258,6 +2267,8 @@ pack_obj_test() ->
     ObjErl = from_binary(<<"bucket">>, <<"key">>, PackedErl),
     ObjMsg = from_binary(<<"bucket">>, <<"key">>, PackedMsg),
     ?assertEqual(Obj, ObjErl),
+    io:format("ObjErl ~9999p\n", [ObjErl]),
+    io:format("ObjMsg ~9999p\n", [ObjMsg]),
     ?assertEqual(Obj, ObjMsg).
 
 dotted_values_reconcile() ->
