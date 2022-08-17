@@ -122,7 +122,8 @@ handle_info({{_, QId}, done}, #state{ qid = QId } = State) ->
 handle_info({{SubQId, QId}, {results, Chunk}}, #state{qid = QId} = State) ->
     {noreply, throttling_spawn_index_fsms(
                 estimate_query_size(
-                  add_subquery_result(SubQId, Chunk, State)))};
+                  add_subquery_result(
+                    SubQId, [maybe_strip_column_names(R) || R <- Chunk], State)))};
 
 handle_info({{SubQId, QId}, {error, Reason} = Error},
             #state{receiver_pid = ReceiverPid,
@@ -564,6 +565,18 @@ sql_select_clause(?SQL_SELECT{'SELECT' = #riak_sel_clause_v1{clause = Clause}}) 
 
 sql_select_group_by(?SQL_SELECT{ group_by = GroupBy }) ->
     GroupBy.
+
+maybe_strip_column_names([]) ->
+    [];
+maybe_strip_column_names([A|_] = Row)
+  when is_tuple(A) ->
+    ?LOG_DEBUG("Stripping column names in ~p", [Row]),
+    [V || {_, V} <- Row];
+maybe_strip_column_names(ThreeZeroVersionRow) ->
+    ?LOG_DEBUG("Not Stripping ~p", [ThreeZeroVersionRow]),
+    ThreeZeroVersionRow.
+
+
 
 %%%===================================================================
 %%% Unit tests
