@@ -737,6 +737,7 @@ is_table_supported(_, << >>) ->
     true;
 is_table_supported(DDLRecCap, Table) when is_binary(Table) ->
     Mod = riak_ql_ddl:make_module_name(Table),
+    {module, Mod} = code:ensure_loaded(Mod),
     MinCap = Mod:get_min_required_ddl_cap(),
     MinCap /= disabled andalso is_ddl_version_supported(MinCap, DDLRecCap).
 
