@@ -299,7 +299,7 @@
 ]}.
 
 %% @doc Deferred reap on failure
-%% Should one or more primaries be unavilable the reap following delete will
+%% Should one or more primaries be unavailable the reap following delete will
 %% not be triggered.  Rather than being ignored, it can be deferred by enabling
 %% defer_reap_on_failure.  This will queue the reap on the reaper untill all
 %% primaries are available.  The reaper queue will be erased on restart, so

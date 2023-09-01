@@ -630,13 +630,13 @@ maybe_delete(
         _ ->
             ?DTRACE(Trace, ?C_GET_FSM_MAYBE_DELETE, [0],
                     ["maybe_delete", "nop"]),
-            maybe_defer_reap(BKey, TombObj),
+            maybe_queue_reap(BKey, TombObj),
             nop
     end.
 
--spec maybe_defer_reap(
+-spec maybe_queue_reap(
     {riak_object:bucket(), riak_object:key()}, riak_object:object()) -> ok.
-maybe_defer_reap(BKey, TombstoneObj) ->
+maybe_queue_reap(BKey, TombstoneObj) ->
     case app_helper:get_env(riak_kv, delete_mode, 3000) of
         keep ->
             ok;
