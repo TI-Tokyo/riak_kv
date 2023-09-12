@@ -1188,14 +1188,14 @@ to_binary_version(Vsn, _B, _K, Obj = #r_object{}) ->
 binary_version(<<131,_/binary>>) -> v0;
 binary_version(<<?MAGIC:8/integer, 1:8/integer, _/binary>>) -> v1.
 
+-type repl_ref() ::
+    {reap,
+        {riak_object:bucket(), riak_object:key(),
+            vclock:vclock(), erlang:timestamp()}}.
+
 %% @doc Encode for nextgen_repl
 -spec nextgenrepl_encode(
-    repl_v1,
-    riak_object()|
-        {reap,
-            {riak_object:bucket(), riak_object:key(),
-            vclock:vclock(), erlang:timestamp()}},
-    boolean()) -> binary().
+    repl_v1, riak_object()|repl_ref(), boolean()) -> binary().
 nextgenrepl_encode(repl_v1, {reap, {B, K, TC, LMD}}, _ToCompress) ->
     ObjBK = nextgenrepl_binarykey(B, K),
     TCBin = term_to_binary(TC),
@@ -1234,12 +1234,7 @@ nextgenrepl_binarykey(B, K) ->
     <<0:32/integer, BS:32/integer, B/binary, KS:32/integer, K/binary>>.
 
 %% @doc Deocde for nextgenrepl
--spec nextgenrepl_decode(
-    binary()) ->
-        riak_object()|
-        {reap,
-            {riak_object:bucket(), riak_object:key(),
-                vclock:vclock(), erlang:timestamp()}}.
+-spec nextgenrepl_decode(binary()) -> riak_object()|repl_ref().
 nextgenrepl_decode(<<1:4/integer, C:1/integer, R:1/integer, _:2/integer,
                         0:32/integer, BL:32/integer, B:BL/binary,
                         KL:32/integer, K:KL/binary,
