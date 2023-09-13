@@ -721,10 +721,10 @@ repl_fetcher(WorkItem) ->
                             {tomb, FetchSplit, PushSplit, ModSplit});
             {ok, RObj} ->
                 SWFetched = os:timestamp(),
+                {ok, LMD} = riak_client:push(RObj, false, [], LocalClient),
                 SWPushed = os:timestamp(),
                 FetchSplit = timer:now_diff(SWFetched, SW),
                 PushSplit = timer:now_diff(SWPushed, SWFetched),
-                {ok, LMD} = riak_client:push(RObj, false, [], LocalClient),
                 ModSplit =timer:now_diff(SWPushed, LMD),
                 ok = riak_kv_stat:update(ngrrepl_object),
                 done_work(WorkItem, true,
