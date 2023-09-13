@@ -64,6 +64,11 @@
 
 -type reap_reference() ::
     {{riak_object:bucket(), riak_object:key()}, vclock:vclock(), boolean()}.
+    %% the reap reference is {Bucket, Key, Clock (of tombstone), Forward}.  The
+    %% Forward boolean() indicates if this reap should be replicated if
+    %% riak_kv.repl_reap is true.  When a reap is received via replication
+    %% Forward should be set to false, to prevent reaps from perpetually
+    %% circulating
 -type job_id() :: pos_integer().
 
 -export_type([reap_reference/0, job_id/0]).

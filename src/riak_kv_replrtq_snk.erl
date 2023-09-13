@@ -725,7 +725,7 @@ repl_fetcher(WorkItem) ->
                 SWPushed = os:timestamp(),
                 FetchSplit = timer:now_diff(SWFetched, SW),
                 PushSplit = timer:now_diff(SWPushed, SWFetched),
-                ModSplit =timer:now_diff(SWPushed, LMD),
+                ModSplit = timer:now_diff(SWPushed, LMD),
                 ok = riak_kv_stat:update(ngrrepl_object),
                 done_work(WorkItem, true,
                             {object, FetchSplit, PushSplit, ModSplit});
