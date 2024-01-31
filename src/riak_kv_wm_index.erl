@@ -557,7 +557,14 @@ encode_results_tester(Results, mochijson2) ->
     JsonKeys2 = {struct, [{?Q_RESULTS, [{struct, [{Val, Key}]} || {Val, Key} <- Results]}]},
     mochijson2:encode(JsonKeys2);
 encode_results_tester(Results, thoas_iodata) ->
-    thoas:encode_to_iodata(#{?Q_RESULTS => Results}).
+    thoas:encode_to_iodata(#{?Q_RESULTS => lists:map(fun({T, K}) -> [{T, K}] end, Results)}).
+
+compare_encode_test() ->
+    Results = large_results(10),
+    Mjson = encode_results_tester(Results, mochijson2),
+    Thoas = encode_results_tester(Results, thoas_iodata),
+    ?assert(mochijson2:decode(Mjson) == mochijson2:decode(Thoas)),
+    ?assert(thoas:decode(Mjson) == thoas:decode(Thoas)).
 
 encoder_test_() ->
     {timeout, 600, fun encode_tester/0}.
@@ -599,13 +606,13 @@ encode_tester() ->
     encode_tester(mochijson2, ResultSetsLarge),
     encode_tester(thoas_iodata, ResultSetsLarge),
 
-    % garbage_collect(),
-    % io:format(user, "~n~nTesting huge result sets: ~n", []),
-    % ResultSetsHuge =
-    %     [{<<"8M">>, large_results(8000000)},
-    %         {<<"13M">>, large_results(130000000)}],
-    % encode_tester(mochijson2, ResultSetsHuge),
-    % encode_tester(thoas_iodata, ResultSetsHuge),
+    garbage_collect(),
+    io:format(user, "~n~nTesting huge result sets: ~n", []),
+    ResultSetsHuge =
+        [{<<"8M">>, large_results(8000000)},
+            {<<"13M">>, large_results(13000000)}],
+    encode_tester(mochijson2, ResultSetsHuge),
+    encode_tester(thoas_iodata, ResultSetsHuge),
 
     ok.
 
