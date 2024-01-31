@@ -482,12 +482,12 @@ handle_all_in_memory_index_query(RD, Ctx) ->
     %% Do the index lookup...
     case riak_client:get_index(Bucket, Query, Opts, Client) of
         {ok, Results} ->
-            Continuation = make_continuation(MaxResults, 
-                                                Results, 
-                                                length(Results)),
-            JsonResults = encode_results(ReturnTerms, 
-                                            Results, 
-                                            Continuation),
+            Continuation =
+                make_continuation(
+                    MaxResults, Results, length(Results)),
+            JsonResults =
+                encode_results(
+                    ReturnTerms,  Results, Continuation),
             {JsonResults, RD, Ctx};
         {error, timeout} ->
             {{halt, 503},
@@ -541,3 +541,104 @@ make_continuation(MaxResults, Results, MaxResults) ->
     riak_index:make_continuation(Results);
 make_continuation(_, _, _)  ->
     undefined.
+
+
+
+
+%% ===================================================================
+%% EUnit tests
+%% ===================================================================
+
+-ifdef(TEST).
+
+-include_lib("eunit/include/eunit.hrl").
+
+encode_results_tester(Results, mochijson2) ->
+    JsonKeys2 = {struct, [{?Q_RESULTS, [{struct, [{Val, Key}]} || {Val, Key} <- Results]}]},
+    mochijson2:encode(JsonKeys2);
+encode_results_tester(Results, thoas_iodata) ->
+    thoas:encode_to_iodata(#{?Q_RESULTS => Results}).
+
+encoder_test_() ->
+    {timeout, 600, fun encode_tester/0}.
+
+encode_tester() ->
+    io:format(user, "~n~nTesting small result sets: ~n", []),
+    ResultSetsSmall =
+        [{<<"1K">>, large_results(1000)},
+            {<<"2K">>, large_results(2000)},
+            {<<"3K">>, large_results(3000)},
+            {<<"5K">>, large_results(5000)},
+            {<<"8K">>, large_results(8000)},
+            {<<"13K">>, large_results(13000)},
+            {<<"21K">>, large_results(21000)},
+            {<<"34K">>, large_results(34000)},
+            {<<"55K">>, large_results(55000)}],
+    encode_tester(mochijson2, ResultSetsSmall),
+    encode_tester(thoas_iodata, ResultSetsSmall),
+
+    garbage_collect(),
+
+    io:format(user, "~n~nTesting mid result sets: ~n", []),
+    ResultSetsMid =
+        [{<<"100K">>, large_results(100000)},
+            {<<"200K">>, large_results(200000)},
+            {<<"300K">>, large_results(300000)},
+            {<<"500K">>, large_results(500000)}],
+    encode_tester(mochijson2, ResultSetsMid),
+    encode_tester(thoas_iodata, ResultSetsMid),
+
+    garbage_collect(),
+    
+    io:format(user, "~n~nTesting large result sets: ~n", []),
+    ResultSetsLarge =
+        [{<<"1M">>, large_results(1000000)},
+            {<<"2M">>, large_results(2000000)},
+            {<<"3M">>, large_results(3000000)},
+            {<<"5M">>, large_results(5000000)}],
+    encode_tester(mochijson2, ResultSetsLarge),
+    encode_tester(thoas_iodata, ResultSetsLarge),
+
+    % garbage_collect(),
+    % io:format(user, "~n~nTesting huge result sets: ~n", []),
+    % ResultSetsHuge =
+    %     [{<<"8M">>, large_results(8000000)},
+    %         {<<"13M">>, large_results(130000000)}],
+    % encode_tester(mochijson2, ResultSetsHuge),
+    % encode_tester(thoas_iodata, ResultSetsHuge),
+
+    ok.
+
+encode_tester(Lib, ResultSets) ->
+    garbage_collect(),
+    
+    io:format(user, "~nTesting lib ~p~n", [Lib]),
+    TotalTime =
+        lists:sum(
+            lists:map(
+                fun({Tag, RS}) ->
+                    {TC, _Json} =
+                        timer:tc(fun() -> encode_results_tester(RS, Lib) end),
+                    io:format(
+                        user,
+                        "Result set of ~s in ~wms ",
+                        [Tag, TC div 1000]),
+                    TC
+                end,
+                ResultSets
+            )
+        ),
+    io:format(user, "Total time ~wms~n", [TotalTime div 1000]).
+
+large_results(N) ->
+    lists:map(
+        fun(I) -> {generate_term(I), generate_key(I)} end,
+        lists:seq(1, N)).
+
+generate_term(I) ->
+    iolist_to_binary(io_lib:format("q~9..0B", [I])).
+
+generate_key(K) ->
+    iolist_to_binary(io_lib:format("k~9..0B", [rand:uniform(K)])).
+
+-endif.
