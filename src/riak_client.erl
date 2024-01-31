@@ -1162,8 +1162,10 @@ wait_for_query_results(ReqId, Timeout) ->
 wait_for_query_results(ReqId, Timeout, Acc) ->
     receive
         {ReqId, done} -> {ok, lists:flatten(lists:reverse(Acc))};
-        {ReqId,{results, Res}} -> wait_for_query_results(ReqId, Timeout, [Res | Acc]);
-        {ReqId, Error} -> {error, Error}
+        {ReqId, {results, Res}} ->
+            wait_for_query_results(ReqId, Timeout, [Res | Acc]);
+        {ReqId, {error, Error}} -> {error, Error};
+        {ReqId, UnexpectedMsg} -> {error, UnexpectedMsg}
     after Timeout ->
             {error, timeout}
     end.
@@ -1175,7 +1177,8 @@ wait_for_query_results(ReqId, Timeout, Acc) ->
 wait_for_fold_results(ReqId, Timeout) ->
     receive
         {ReqId, {results, Results}} -> {ok, Results};
-        {ReqId, Error} -> {error, Error}
+        {ReqId, {error, Error}} -> {error, Error};
+        {ReqId, UnexpectedMsg} -> {error, UnexpectedMsg}
     after Timeout ->
         {error, timeout}
     end.
