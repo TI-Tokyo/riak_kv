@@ -564,20 +564,29 @@ thoas_encode_results(ReturnTerms, Results, Continuation) ->
             true ->
                 {?Q_RESULTS, fun({T, K}) -> [{T, K}] end};
             false ->
-                {?Q_KEYS, fun({_T, K}) -> K end}
+                case Results of
+                    [{_FT, _FK}|_Rest] ->
+                        {?Q_KEYS, fun({_T, K}) -> K end};
+                    _ ->
+                        {?Q_KEYS, none}
+                end
         end,
     case Continuation of
         undefined ->
             thoas:encode_to_iodata(
-                #{ResultKey => lists:map(MapFun, Results)}
+                #{ResultKey => map_results(MapFun, Results)}
             );
         _ ->
             thoas:encode_to_iodata(
-                #{ResultKey => lists:map(MapFun, Results),
+                #{ResultKey => map_results(MapFun, Results),
                     ?Q_2I_CONTINUATION => Continuation}
             )
     end.
 
+map_results(none, Results) ->
+    Results;
+map_results(MapFun, Results) ->
+    lists:map(MapFun, Results).
 
 encode_results(ReturnTerms, Results) ->
     encode_results(ReturnTerms, Results, undefined).
