@@ -1509,3 +1509,27 @@
     {datatype, {flag, enabled, disabled}},
     {default, disabled}
 ]}.
+
+%% @doc Default Secondary Index Timeout (milliseconds)
+%% Set the default timeout for running secondary index queries in millisceconds
+%% This is the time to run the query, and collate the results - the encoding of
+%% those results for dispatch back to the client is outside of the scope of
+%% this timeout.  Setting to 0 (default) implies no timeout.
+%% On hitting the timeout a 503 error will be returned on the HTTP API
+{mapping, "secondary_index_timeout", "riak_kv.secondary_index_timeout", [
+  {datatype, integer},
+  {default, 0}
+]}.
+
+%% @doc Json library for 2i results
+%% Prior to Riak KV 3.2.1 the mochijson2 library was used to json encode 2i
+%% results.  For larger results, the performance of this library is slower
+%% when compared to alternatives (e.g. thoas).  The Thoas library is now the
+%% default - but may return keys in a different order (i.e. the continuation
+%% key may now be before the results key).  To reverse back to mochijson, then
+%% reset here.
+{mapping, "secondary_index_json", "riak_kv.secondary_index_json", [
+  {datatype, {enum, [thoas, mochijson]}},
+  {default, thoas}
+]}.
+

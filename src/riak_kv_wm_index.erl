@@ -56,16 +56,22 @@
 
 %% webmachine resource exports
 -export([
-         init/1,
-         service_available/2,
-         is_authorized/2,
-         forbidden/2,
-         malformed_request/2,
-         content_types_provided/2,
-         encodings_provided/2,
-         resource_exists/2,
-         produce_index_results/2
-        ]).
+    init/1,
+    service_available/2,
+    is_authorized/2,
+    forbidden/2,
+    malformed_request/2,
+    content_types_provided/2,
+    encodings_provided/2,
+    resource_exists/2,
+    produce_index_results/2
+]).
+-export([
+    mochijson_encode_results/2,
+    mochijson_encode_results/3,
+    thoas_encode_results/2,
+    thoas_encode_results/3
+]).
 
 -record(ctx, {
           client,       %% riak_client() - the store client
@@ -81,6 +87,8 @@
           security       %% security context
          }).
 -type context() :: #ctx{}.
+
+-define(DEFAULT_JSON_ENCODING, thoas).
 
 -include_lib("kernel/include/logger.hrl").
 
@@ -502,30 +510,6 @@ handle_all_in_memory_index_query(RD, Ctx) ->
     end.
 
 
-encode_results(ReturnTerms, Results) ->
-    encode_results(ReturnTerms, Results, undefined).
-
-encode_results(true, Results, Continuation) ->
-    JsonKeys2 = {struct, [{?Q_RESULTS, [{struct, [{Val, Key}]} || {Val, Key} <- Results]}] ++
-                     mochify_continuation(Continuation)},
-    mochijson2:encode(JsonKeys2);
-encode_results(false, Results, Continuation) ->
-    JustTheKeys = filter_values(Results),
-    JsonKeys1 = {struct, [{?Q_KEYS, JustTheKeys}] ++ mochify_continuation(Continuation)},
-    mochijson2:encode(JsonKeys1).
-
-mochify_continuation(undefined) ->
-    [];
-mochify_continuation(Continuation) ->
-    [{?Q_2I_CONTINUATION, Continuation}].
-
-filter_values([]) ->
-    [];
-filter_values([{_, _} | _T]=Results) ->
-    [K || {_V, K} <- Results];
-filter_values(Results) ->
-    Results.
-
 %% @doc Like `lists:last/1' but doesn't choke on an empty list
 -spec last_result([] | list()) -> term() | undefined.
 last_result([]) ->
@@ -542,6 +526,72 @@ make_continuation(MaxResults, Results, MaxResults) ->
 make_continuation(_, _, _)  ->
     undefined.
 
+%% ===================================================================
+%% JSON Encoding implementations
+%% ===================================================================
+
+mochijson_encode_results(ReturnTerms, Results) ->
+    mochijson_encode_results(ReturnTerms, Results, undefined).
+
+mochijson_encode_results(true, Results, Continuation) ->
+    JsonKeys2 = {struct, [{?Q_RESULTS, [{struct, [{Val, Key}]} || {Val, Key} <- Results]}] ++
+                        mochify_continuation(Continuation)},
+    mochijson2:encode(JsonKeys2);
+mochijson_encode_results(false, Results, Continuation) ->
+    JustTheKeys = filter_values(Results),
+    JsonKeys1 = {struct, [{?Q_KEYS, JustTheKeys}] ++ mochify_continuation(Continuation)},
+    mochijson2:encode(JsonKeys1).
+    
+mochify_continuation(undefined) ->
+    [];
+mochify_continuation(Continuation) ->
+    [{?Q_2I_CONTINUATION, Continuation}].
+
+filter_values([]) ->
+    [];
+filter_values([{_, _} | _T]=Results) ->
+    [K || {_V, K} <- Results];
+filter_values(Results) ->
+    Results.
+
+
+thoas_encode_results(ReturnTerms, Results) ->
+    thoas_encode_results(ReturnTerms, Results, undefined).
+
+thoas_encode_results(ReturnTerms, Results, Continuation) ->
+    {ResultKey, MapFun} =
+        case ReturnTerms of
+            true ->
+                {?Q_RESULTS, fun({T, K}) -> [{T, K}] end};
+            false ->
+                {?Q_KEYS, fun({_T, K}) -> K end}
+        end,
+    case Continuation of
+        undefined ->
+            thoas:encode_to_iodata(
+                #{ResultKey => lists:map(MapFun, Results)}
+            );
+        _ ->
+            thoas:encode_to_iodata(
+                #{ResultKey => lists:map(MapFun, Results),
+                    ?Q_2I_CONTINUATION => Continuation}
+            )
+    end.
+
+
+encode_results(ReturnTerms, Results) ->
+    encode_results(ReturnTerms, Results, undefined).
+
+encode_results(ReturnTerms, Results, Continuation) ->
+    Library =
+        app_helper:get_env(
+            riak_kv, secondary_index_json, ?DEFAULT_JSON_ENCODING),
+    case Library of
+        thoas ->
+            thoas_encode_results(ReturnTerms, Results, Continuation);
+        mochijson ->
+            mochijson_encode_results(ReturnTerms, Results, Continuation)
+    end.
 
 
 
@@ -553,18 +603,31 @@ make_continuation(_, _, _)  ->
 
 -include_lib("eunit/include/eunit.hrl").
 
-encode_results_tester(Results, mochijson2) ->
-    JsonKeys2 = {struct, [{?Q_RESULTS, [{struct, [{Val, Key}]} || {Val, Key} <- Results]}]},
-    mochijson2:encode(JsonKeys2);
-encode_results_tester(Results, thoas_iodata) ->
-    thoas:encode_to_iodata(#{?Q_RESULTS => lists:map(fun({T, K}) -> [{T, K}] end, Results)}).
 
 compare_encode_test() ->
     Results = large_results(10),
-    Mjson = encode_results_tester(Results, mochijson2),
-    Thoas = encode_results_tester(Results, thoas_iodata),
-    ?assert(mochijson2:decode(Mjson) == mochijson2:decode(Thoas)),
-    ?assert(thoas:decode(Mjson) == thoas:decode(Thoas)).
+    ThoasA = thoas_encode_results(true, Results),
+    MjsonA = mochijson_encode_results(true, Results),
+    ?assert(mochijson2:decode(MjsonA) == mochijson2:decode(ThoasA)),
+    ?assert(thoas:decode(MjsonA) == thoas:decode(ThoasA)),
+    Continuation = make_continuation(10, Results, 10),
+    ThoasB = thoas_encode_results(true, Results, Continuation),
+    MjsonB = mochijson_encode_results(true, Results, Continuation),
+    {struct, MDecodeThoasB} = mochijson2:decode(ThoasB),
+    {struct, MDecodeMjsonB} = mochijson2:decode(MjsonB),
+    ?assert(lists:sort(MDecodeThoasB) == lists:sort(MDecodeMjsonB)),
+    ?assert(thoas:decode(MjsonB) == thoas:decode(ThoasB)),
+    ThoasC = thoas_encode_results(false, Results),
+    MjsonC = mochijson_encode_results(false, Results),
+    ?assert(mochijson2:decode(MjsonC) == mochijson2:decode(ThoasC)),
+    ?assert(thoas:decode(MjsonC) == thoas:decode(ThoasC)),
+    ThoasD = thoas_encode_results(false, Results, Continuation),
+    MjsonD = mochijson_encode_results(false, Results, Continuation),
+    {struct, MDecodeThoasD} = mochijson2:decode(ThoasD),
+    {struct, MDecodeMjsonD} = mochijson2:decode(MjsonD),
+    ?assert(lists:sort(MDecodeThoasD) == lists:sort(MDecodeMjsonD)),
+    ?assert(thoas:decode(MjsonD) == thoas:decode(ThoasD))
+    .
 
 encoder_test_() ->
     {timeout, 600, fun encode_tester/0}.
@@ -581,8 +644,8 @@ encode_tester() ->
             {<<"21K">>, large_results(21000)},
             {<<"34K">>, large_results(34000)},
             {<<"55K">>, large_results(55000)}],
-    encode_tester(mochijson2, ResultSetsSmall),
-    encode_tester(thoas_iodata, ResultSetsSmall),
+    encode_tester(mochijson, ResultSetsSmall),
+    encode_tester(thoas, ResultSetsSmall),
 
     garbage_collect(),
 
@@ -592,8 +655,8 @@ encode_tester() ->
             {<<"200K">>, large_results(200000)},
             {<<"300K">>, large_results(300000)},
             {<<"500K">>, large_results(500000)}],
-    encode_tester(mochijson2, ResultSetsMid),
-    encode_tester(thoas_iodata, ResultSetsMid),
+    encode_tester(mochijson, ResultSetsMid),
+    encode_tester(thoas, ResultSetsMid),
 
     garbage_collect(),
     
@@ -603,21 +666,28 @@ encode_tester() ->
             {<<"2M">>, large_results(2000000)},
             {<<"3M">>, large_results(3000000)},
             {<<"5M">>, large_results(5000000)}],
-    encode_tester(mochijson2, ResultSetsLarge),
-    encode_tester(thoas_iodata, ResultSetsLarge),
+    encode_tester(mochijson, ResultSetsLarge),
+    encode_tester(thoas, ResultSetsLarge),
 
-    garbage_collect(),
-    io:format(user, "~n~nTesting huge result sets: ~n", []),
-    ResultSetsHuge =
-        [{<<"8M">>, large_results(8000000)},
-            {<<"13M">>, large_results(13000000)}],
-    encode_tester(mochijson2, ResultSetsHuge),
-    encode_tester(thoas_iodata, ResultSetsHuge),
+    % garbage_collect(),
+    % io:format(user, "~n~nTesting huge result sets: ~n", []),
+    % ResultSetsHuge =
+    %     [{<<"8M">>, large_results(8000000)},
+    %         {<<"13M">>, large_results(13000000)}],
+    % encode_tester(mochijson, ResultSetsHuge),
+    % encode_tester(thoas, ResultSetsHuge),
 
     ok.
 
 encode_tester(Lib, ResultSets) ->
     garbage_collect(),
+    Fun =
+        case Lib of
+            mochijson ->
+                fun mochijson_encode_results/2;
+            thoas ->
+                fun thoas_encode_results/2
+        end,
     
     io:format(user, "~nTesting lib ~p~n", [Lib]),
     TotalTime =
@@ -625,7 +695,7 @@ encode_tester(Lib, ResultSets) ->
             lists:map(
                 fun({Tag, RS}) ->
                     {TC, _Json} =
-                        timer:tc(fun() -> encode_results_tester(RS, Lib) end),
+                        timer:tc(fun() -> Fun(true, RS) end),
                     io:format(
                         user,
                         "Result set of ~s in ~wms ",
