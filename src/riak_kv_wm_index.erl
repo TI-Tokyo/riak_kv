@@ -689,7 +689,6 @@ encode_tester() ->
     ok.
 
 encode_tester(Lib, ResultSets) ->
-    garbage_collect(),
     Fun =
         case Lib of
             mochijson ->
@@ -703,6 +702,7 @@ encode_tester(Lib, ResultSets) ->
         lists:sum(
             lists:map(
                 fun({Tag, RS}) ->
+                    garbage_collect(),
                     {TC, _Json} =
                         timer:tc(fun() -> Fun(true, RS) end),
                     io:format(

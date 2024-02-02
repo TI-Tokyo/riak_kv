@@ -556,50 +556,62 @@ finish(clean, State=#state{from={raw, ReqId, ClientPid}}) ->
 %% External functions
 %% ===================================================================
 
--spec json_encode_results(query_types(), query_return()) -> iolist().
+-spec json_encode_results(
+    query_types()|dispatched_count, query_return()) -> iolist().
 %% @doc
 %% Encode the results of a query in JSON
 %% Expected this will be called from the webmachine module that needs to
 %% generate the response
 json_encode_results(merge_root_nval, Root) ->
-    RootEnc = base64:encode_to_string(Root),
-    Keys = {struct, [{<<"root">>, RootEnc}]},
-    mochijson2:encode(Keys);
+    Keys = #{<<"root">> => base64:encode_to_string(Root)},
+    thoas:encode_to_iodata(Keys);
 json_encode_results(merge_branch_nval, Branches) ->
-    Keys = {struct, [{<<"branches">>, [{struct, [{<<"branch-id">>, BranchId},
-                                                 {<<"branch">>, base64:encode_to_string(BranchBin)}]
-                                       } || {BranchId, BranchBin} <- Branches]
-                     }]},
-    mochijson2:encode(Keys);
+    Keys =
+        #{<<"branches">> =>
+            lists:map(
+                fun({BranchId, BranchBin}) -> 
+                    #{<<"branch-id">> => BranchId,
+                        <<"branch">> => base64:encode_to_string(BranchBin)}
+                end,
+                Branches)},
+    thoas:encode_to_iodata(Keys);
 json_encode_results(fetch_clocks_nval, KeysNClocks) ->
     encode_keys_and_clocks(KeysNClocks);
 json_encode_results(merge_tree_range, Tree) ->
-    ExportedTree = leveled_tictac:export_tree(Tree),
-    JsonKeys1 = {struct, [{<<"tree">>, ExportedTree}]},
-    mochijson2:encode(JsonKeys1);
+    {struct, 
+        [{<<"level1">>, EncodedL1}, 
+            {<<"level2">>, {struct, EncodedL2}}]} =
+        leveled_tictac:export_tree(Tree),
+    thoas:encode_to_iodata(
+        #{<<"tree">> =>
+            #{<<"level1">> => EncodedL1, <<"level2">> => EncodedL2}});
 json_encode_results(fetch_clocks_range, KeysNClocks) ->
     encode_keys_and_clocks(KeysNClocks);
+json_encode_results(dispatched_count, Count) ->
+    R = #{<<"dispatched_count">> => Count},
+    thoas:encode_to_iodata(R);
 json_encode_results(repl_keys_range, ReplResult) ->
-    R = {struct, [{<<"dispatched_count">>, element(2, ReplResult)}]},
-    mochijson2:encode(R);
+    json_encode_results(dispatched_count, element(2, ReplResult));
 json_encode_results(repair_keys_range, ReplResult) ->
-    R = {struct, [{<<"dispatched_count">>, element(2, ReplResult)}]},
-    mochijson2:encode(R);
+    json_encode_results(repl_keys_range, ReplResult);
 json_encode_results(find_keys, Result) ->
-    Keys = {struct, [{<<"results">>, [{struct, encode_find_key(Key, Int)} || {_Bucket, Key, Int} <- Result]}
-                    ]},
-    mochijson2:encode(Keys);
+    Keys =
+        #{<<"results">> =>
+            lists:map(
+                fun({_B, Key, Int}) -> encode_find_key(Key, Int) end,
+                Result)},
+    thoas:encode_to_iodata(Keys);
 json_encode_results(find_tombs, Result) ->
     json_encode_results(find_keys, Result);
 json_encode_results(reap_tombs, Count) ->
-    mochijson2:encode({struct, [{<<"dispatched_count">>, Count}]});
+    json_encode_results(dispatched_count, Count);
 json_encode_results(erase_keys, Count) ->
-    mochijson2:encode({struct, [{<<"dispatched_count">>, Count}]});
+    json_encode_results(dispatched_count, Count);
 json_encode_results(object_stats, Stats) ->
-    mochijson2:encode({struct, Stats});
+    thoas:encode_to_iodata(Stats);
 json_encode_results(list_buckets, BucketList) ->
     EncodedList = lists:map(fun encode_bucket/1, BucketList),
-    mochijson2:encode({struct, [{<<"results">>, EncodedList}]}).
+    thoas:encode_to_iodata(#{<<"results">> => EncodedList}).
 
 
 -spec pb_encode_results(query_types(), query_definition(), query_return())
@@ -735,30 +747,30 @@ convert_level2_element({Index, Bin}) ->
 
 -spec encode_keys_and_clocks(keys_clocks()) -> iolist().
 encode_keys_and_clocks(KeysNClocks) ->
-    Keys = {struct, [{<<"keys-clocks">>,
-                      [{struct, encode_key_and_clock(Bucket, Key, Clock)} || {Bucket, Key, Clock} <- KeysNClocks]
-                     }]},
-    mochijson2:encode(Keys).
+    Keys = 
+        #{<<"keys-clocks">>
+            => lists:map(fun encode_key_and_clock/1, KeysNClocks)},
+    thoas:encode_to_iodata(Keys).
 
 encode_find_key(Key, Value) ->
-    [{<<"key">>, Key},
-     {<<"value">>, Value}].
+    #{<<"key">> => Key, <<"value">> => Value}.
 
 encode_bucket({Type, Bucket}) ->
-    {struct, 
-        [{<<"bucket-type">>, Type}, {<<"bucket">>, Bucket}]};
+    #{<<"bucket-type">> => Type, <<"bucket">> => Bucket};
 encode_bucket(Bucket) ->
-    {struct, [{<<"bucket">>, Bucket}]}.
+    #{<<"bucket">> => Bucket}.
 
-encode_key_and_clock({Type, Bucket}, Key, Clock) ->
-    [{<<"bucket-type">>, Type},
-     {<<"bucket">>, Bucket},
-     {<<"key">>, Key},
-     {<<"clock">>, base64:encode_to_string(riak_object:encode_vclock(Clock))}];
-encode_key_and_clock(Bucket, Key, Clock) ->
-    [{<<"bucket">>, Bucket},
-     {<<"key">>, Key},
-     {<<"clock">>, base64:encode_to_string(riak_object:encode_vclock(Clock))}].
+encode_key_and_clock({{Type, Bucket}, Key, Clock}) ->
+    #{<<"bucket-type">> => Type,
+        <<"bucket">> => Bucket,
+        <<"key">> => Key,
+        <<"clock">> =>
+            base64:encode_to_string(riak_object:encode_vclock(Clock))};
+encode_key_and_clock({Bucket, Key, Clock}) ->
+    #{<<"bucket">> => Bucket,
+        <<"key">> => Key,
+        <<"clock">> =>
+            base64:encode_to_string(riak_object:encode_vclock(Clock))}.
 
 -spec hash_function(hash_method()) ->
                         pre_hash|fun((vclock:vclock()) -> non_neg_integer()).
