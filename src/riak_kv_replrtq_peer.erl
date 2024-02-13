@@ -43,8 +43,8 @@
 -type discovery_peer() ::
     {riak_kv_replrtq_snk:queue_name(), [riak_kv_replrtq_snk:peer_info()]}.
 
--define(DISCOVERY_TIMEOUT_SECONDS, 60).
--define(UPDATE_TIMEOUT_SECONDS, 60).
+-define(DISCOVERY_TIMEOUT_SECONDS, 300).
+-define(UPDATE_TIMEOUT_SECONDS, 300).
 -define(AUTO_DISCOVERY_MAXIMUM_SECONDS, 900).
 -define(AUTO_DISCOVERY_MINIMUM_SECONDS, 60).
 
@@ -68,7 +68,7 @@ update_discovery(QueueName) ->
         ?DISCOVERY_TIMEOUT_SECONDS * 1000).
 
 -spec update_workers(pos_integer(), pos_integer()) -> boolean().
-update_workers(WorkerCount, PerPeerLimit) ->
+update_workers(WorkerCount, PerPeerLimit) when PerPeerLimit =< WorkerCount ->
     gen_server:call(
         ?MODULE,
         {update_workers, WorkerCount, PerPeerLimit},
@@ -145,6 +145,11 @@ handle_info({scheduled_discovery, QueueName}, State) ->
             ?AUTO_DISCOVERY_MAXIMUM_SECONDS),
     Delay = rand:uniform(max(1, MaxDelay - MinDelay)) + MinDelay,
     _ = schedule_discovery(QueueName, self(), Delay),
+    {noreply, State};
+handle_info({Ref, {error, HTTPClientError}}, State) when is_reference(Ref) ->
+    ?LOG_INFO(
+        "Client error caught - error ~p returned after timeout",
+        [HTTPClientError]),
     {noreply, State}.
 
 terminate(_Reason, _State) ->
@@ -181,46 +186,48 @@ do_discovery(QueueName, PeerInfo, Type) ->
     {SnkWorkerCount, PerPeerLimit} = riak_kv_replrtq_snk:get_worker_counts(),
     StartDelayMS = riak_kv_replrtq_snk:starting_delay(),
     CurrentPeers = 
-        case Type of
-            count_change ->
+        case {Type, riak_kv_replrtq_snk:current_peers(QueueName)} of
+            {count_change, _} ->
                 %% Ignore current peers, to update worker counts, so all
                 %% discovered peers will have their worker counts updated as
                 %% the list returned from discover_peers/2 will never match
                 %% the atom count_change.
                 count_change;
-            _ ->
+            {_, PeerList} when is_list(PeerList) ->
                 lists:usort(
                     lists:map(
                         fun({ID, _D, H, P, Prot}) ->
                             {ID, StartDelayMS, H, P, Prot}
                         end,
-                        riak_kv_replrtq_snk:current_peers(QueueName)))
+                        PeerList));
+            {_, SnkResponse} ->
+                ?LOG_INFO(
+                    "Peer Discovery disabled as snk status ~w", [SnkResponse]),
+                SnkResponse
         end,
-    case discover_peers(PeerInfo, StartDelayMS) of
-        CurrentPeers ->
+    case {discover_peers(PeerInfo, StartDelayMS), CurrentPeers} of
+        {CurrentPeers, CurrentPeers} ->
             ?LOG_INFO("Type=~w discovery led to no change", [Type]),
             false;
-        [] ->
+        {[], CurrentPeers} when is_list(CurrentPeers) ->
             ?LOG_INFO("Type=~w discovery led to reset of peers", [Type]),
-            riak_kv_replrtq_snk:add_snkqueue(QueueName,
-                PeerInfo,
-                SnkWorkerCount,
-                PerPeerLimit),
+            riak_kv_replrtq_snk:add_snkqueue(
+                QueueName, PeerInfo, SnkWorkerCount, PerPeerLimit),
             false;
-        DiscoveredPeers ->
-            case CurrentPeers of
-                count_change ->
-                    ok;
-                CurrentPeers when is_list(CurrentPeers) ->
-                    ?LOG_INFO(
-                        "Type=~w discovery old_peers=~w new_peers=~w",
-                        [Type, length(CurrentPeers), length(DiscoveredPeers)])
-            end,
-            riak_kv_replrtq_snk:add_snkqueue(QueueName,
-                DiscoveredPeers,
-                SnkWorkerCount,
-                PerPeerLimit),
-            true
+        {DiscoveredPeers, count_change} ->
+            riak_kv_replrtq_snk:add_snkqueue(
+                QueueName, DiscoveredPeers, SnkWorkerCount, PerPeerLimit),
+            true;
+        {DiscoveredPeers, _} when is_list(CurrentPeers) ->
+            ?LOG_INFO(
+                "Type=~w discovery old_peers=~w new_peers=~w",
+                [Type, length(CurrentPeers), length(DiscoveredPeers)]),
+                riak_kv_replrtq_snk:add_snkqueue(
+                    QueueName, DiscoveredPeers, SnkWorkerCount, PerPeerLimit),
+            true;
+        {_, _} ->
+            ?LOG_INFO("Type=~w discovery led to no change", [Type]),
+            false
     end.
 
 -spec discover_peers(list(riak_kv_replrtq_snk:peer_info()), pos_integer())
