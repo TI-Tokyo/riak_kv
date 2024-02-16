@@ -31,6 +31,7 @@
         handle_call/3,
         handle_cast/2,
         handle_info/2,
+        handle_continue/2,
         terminate/2,
         code_change/3]).
 
@@ -67,7 +68,7 @@
 -define(STARTING_DELAYMS, 8).
 -define(MAX_SUCCESS_DELAYMS, 1024).
 -define(ON_ERROR_DELAYMS, 65536).
--define(INACTIVITY_TIMEOUT_MS, 60000).
+-define(INITIAL_TIMEOUT_MS, 60000).
 -define(DEFAULT_WORKERCOUNT, 1).
 
 -record(sink_work, {queue_name :: queue_name(),
@@ -140,10 +141,10 @@
     % Modified time by bucket - second, minute, hour, day, longer}
 
 -type reply_tuple() ::
-    {queue_empty, non_neg_integer()} |
-        {tomb, non_neg_integer(), non_neg_integer(), non_neg_integer()} |
-        {object, non_neg_integer(), non_neg_integer(), non_neg_integer()} |
-        {error, any(), any()}.
+    {queue_empty, non_neg_integer()}|
+    {tomb, non_neg_integer(), non_neg_integer(), non_neg_integer()}|
+    {object, non_neg_integer(), non_neg_integer(), non_neg_integer()}|
+    {error, any(), any()}.
 
 -export_type([peer_info/0, queue_name/0]).
 
@@ -210,19 +211,22 @@ add_snkqueue(QueueName, Peers, WorkerCount) ->
 %% number of workers overall
 -spec add_snkqueue(queue_name(), list(peer_info()),
                     pos_integer(), pos_integer()) -> ok.
-add_snkqueue(QueueName, Peers, WorkerCount, PerPeerLimit) 
-                                            when PerPeerLimit =< WorkerCount ->
-    gen_server:call(?MODULE,
-                    {add, QueueName, Peers, WorkerCount, PerPeerLimit}).
+add_snkqueue(
+        QueueName, Peers, WorkerCount, PerPeerLimit) 
+        when PerPeerLimit =< WorkerCount ->
+    gen_server:call(
+        ?MODULE,
+        {add, QueueName, Peers, WorkerCount, PerPeerLimit},
+        infinity).
 
 
 %% @doc
 %% Return the current list of peers being used by this snk host, and the
 %% settings currently being used for this host and he workers per peer. 
 %% Returns undefined if there are currently no peers defined.
--spec current_peers(queue_name()) -> list(peer_info())|undefined.
+-spec current_peers(queue_name()) -> list(peer_info())|suspended|disabled.
 current_peers(QueueName) ->
-    gen_server:call(?MODULE, {current_peers, QueueName}).
+    gen_server:call(?MODULE, {current_peers, QueueName}, infinity).
 
 
 %% @doc
@@ -238,47 +242,27 @@ set_workercount(QueueName, WorkerCount) ->
 %% @doc
 %% Change the number of concurrent workers whilst limiting the number of
 %% workers per peer
--spec set_workercount(queue_name(), pos_integer(), pos_integer())
-                                                            -> ok|not_found.
-set_workercount(QueueName, WorkerCount, PerPeerLimit)
-                                            when PerPeerLimit =< WorkerCount ->
-    gen_server:call(?MODULE,
-                    {worker_count, QueueName, WorkerCount, PerPeerLimit}).
+-spec set_workercount(
+    queue_name(), pos_integer(), pos_integer()) -> ok|not_found.
+set_workercount(
+        QueueName, WorkerCount, PerPeerLimit)
+        when PerPeerLimit =< WorkerCount ->
+    gen_server:call(
+        ?MODULE,
+        {worker_count, QueueName, WorkerCount, PerPeerLimit},
+        infinity
+    ).
+
 
 %%%============================================================================
 %%% gen_server callbacks
 %%%============================================================================
 
 init([]) ->
-    SinkEnabled =
-        app_helper:get_env(riak_kv, replrtq_enablesink, false),
+    SinkEnabled = app_helper:get_env(riak_kv, replrtq_enablesink, false),
     case SinkEnabled of
         true ->
-            SinkPeers =
-                app_helper:get_env(riak_kv, replrtq_sinkpeers, ""),
-            DefaultQueue =
-                app_helper:get_env(riak_kv, replrtq_sinkqueue),
-            SnkQueuePeerInfo = tokenise_peers(DefaultQueue, SinkPeers),
-            {SnkWorkerCount, PerPeerLimit} = get_worker_counts(),
-            Iteration = 1,
-            MapPeerInfoFun =
-                fun({SnkQueueName, SnkPeerInfo}) ->
-                    {SnkQueueLength, SnkWorkQueue} =
-                        determine_workitems(SnkQueueName,
-                                            Iteration,
-                                            SnkPeerInfo,
-                                            SnkWorkerCount,
-                                            min(SnkWorkerCount, PerPeerLimit)),
-                    SnkW =
-                        #sink_work{queue_name = SnkQueueName,
-                                    work_queue = SnkWorkQueue,
-                                    minimum_queue_length = SnkQueueLength,
-                                    peer_list = SnkPeerInfo,
-                                    max_worker_count = SnkWorkerCount},
-                    {SnkQueueName, Iteration, SnkW}
-                end,
-            Work = lists:map(MapPeerInfoFun, SnkQueuePeerInfo),
-            {ok, #state{enabled = true, work = Work}, ?INACTIVITY_TIMEOUT_MS};
+            {ok, #state{}, {continue, initialise_work}};
         false ->
             {ok, #state{}}
     end.
@@ -358,11 +342,21 @@ handle_call({worker_count, QueueN, WorkerCount, PerPeerLimit}, _From, State) ->
             {reply, ok, State#state{work = W0, iteration = Iteration}}
     end;
 handle_call({current_peers, QueueN}, _From, State) ->
-    case lists:keyfind(QueueN, 1, State#state.work) of
-        false ->
-            {reply, undefined, State};
-        {QueueN, _I, SinkWork} ->
-            {reply, SinkWork#sink_work.peer_list, State}
+    case State#state.enabled of
+        true ->
+            case lists:keyfind(QueueN, 1, State#state.work) of
+                false ->
+                    {reply, [], State};
+                {QueueN, _I, SinkWork} ->
+                    case SinkWork#sink_work.suspended of
+                        false ->
+                            {reply, SinkWork#sink_work.peer_list, State};
+                        _ ->
+                            {reply, suspended, State}
+                    end
+            end;
+        _ ->
+            {reply, disabled, State}
     end.
 
 
@@ -416,7 +410,7 @@ handle_cast({requeue_work, WorkItem}, State) ->
             {noreply, State}
     end.
 
-handle_info(timeout, State) ->
+handle_info(deferred_start, State) ->   
     prompt_work(),
     erlang:send_after(?LOG_TIMER_SECONDS * 1000, self(), log_stats),
     {noreply, State};
@@ -433,6 +427,34 @@ handle_info(log_stats, State) ->
 handle_info({prompt_requeue, WorkItem}, State) ->
     requeue_work(WorkItem),
     {noreply, State}.
+
+handle_continue(initialise_work, State) ->
+    SinkPeers =
+        app_helper:get_env(riak_kv, replrtq_sinkpeers, ""),
+    DefaultQueue =
+        app_helper:get_env(riak_kv, replrtq_sinkqueue),
+    SnkQueuePeerInfo = tokenise_peers(DefaultQueue, SinkPeers),
+    {SnkWorkerCount, PerPeerLimit} = get_worker_counts(),
+    Iteration = 1,
+    MapPeerInfoFun =
+        fun({SnkQueueName, SnkPeerInfo}) ->
+            {SnkQueueLength, SnkWorkQueue} =
+                determine_workitems(SnkQueueName,
+                                    Iteration,
+                                    SnkPeerInfo,
+                                    SnkWorkerCount,
+                                    min(SnkWorkerCount, PerPeerLimit)),
+            SnkW =
+                #sink_work{queue_name = SnkQueueName,
+                            work_queue = SnkWorkQueue,
+                            minimum_queue_length = SnkQueueLength,
+                            peer_list = SnkPeerInfo,
+                            max_worker_count = SnkWorkerCount},
+            {SnkQueueName, Iteration, SnkW}
+        end,
+    Work = lists:map(MapPeerInfoFun, SnkQueuePeerInfo),
+    erlang:send_after(?INITIAL_TIMEOUT_MS, self(), deferred_start),
+    {noreply, State#state{enabled = true, work = Work}}.
 
 terminate(_Reason, State) ->
     WorkItems = lists:map(fun(SW) -> element(3, SW) end, State#state.work),
@@ -714,9 +736,9 @@ repl_fetcher(WorkItem) ->
                 SWFetched = os:timestamp(),
                 {ok, LMD} = riak_client:push(RObj, false, [], LocalClient),
                 SWPushed = os:timestamp(),
-                ModSplit = timer:now_diff(SWPushed, LMD),
                 FetchSplit = timer:now_diff(SWFetched, SW),
                 PushSplit = timer:now_diff(SWPushed, SWFetched),
+                ModSplit = timer:now_diff(SWPushed, LMD),
                 ok = riak_kv_stat:update(ngrrepl_object),
                 done_work(WorkItem, true,
                             {object, FetchSplit, PushSplit, ModSplit});
@@ -741,9 +763,16 @@ repl_fetcher(WorkItem) ->
                 done_work(UpdWorkItem, false, {error, error, remote_error})
         end
     catch
-        Type:Exception ->
-            ?LOG_WARNING("Snk worker failed at Peer ~w due to ~w error ~w",
-                            [Peer, Type, Exception]),
+        Type:Exception:Stk ->
+            ?LOG_WARNING(
+                "Snk worker failed at Peer ~w due to ~w error ~w",
+                [Peer, Type, Exception]),
+            case app_helper:get_env(riak_kv, log_snk_stacktrace, false) of
+                true ->
+                    ?LOG_WARNING("Snk worker failed due to ~p", [Stk]);
+                _ ->
+                    ok
+            end,
             RemoteFun(close),
             UpdWorkItem0 = setelement(3, WorkItem, RenewClientFun()),
             ok = riak_kv_stat:update(ngrrepl_error),
@@ -788,8 +817,9 @@ add_success({{success, Success}, F, FT, PT, RT, MT}) ->
 add_failure({S, {failure, Failure}, FT, PT, RT, MT}) ->
     {S, {failure, Failure + 1}, FT, PT, RT, MT}.
 
--spec add_repltime(queue_stats(),
-                    {integer(), integer(), integer()}) -> queue_stats().
+-spec add_repltime(
+    queue_stats(), {non_neg_integer(), non_neg_integer(), non_neg_integer()})
+    -> queue_stats().
 add_repltime({S, 
                 F,
                 {replfetch_time, FT}, {replpush_time, PT}, {replmod_time, RT},
@@ -801,7 +831,7 @@ add_repltime({S,
         {replmod_time, RT + RT0},
         MT}.
 
--spec add_modtime(queue_stats(), integer()) -> queue_stats().
+-spec add_modtime(queue_stats(), non_neg_integer()) -> queue_stats().
 add_modtime({S, F, FT, PT, RT, MT}, ModTime) ->
     E = mod_split_element(ModTime div 1000) +  1,
     C = element(E, MT),
