@@ -64,6 +64,7 @@
                         snap_prefold,
                         flush_put,
                         hot_backup,
+                        size,
                         leveled]).
 -define(API_VERSION, 1).
 -define(BUCKET_SDG, <<"MD">>).
@@ -613,13 +614,38 @@ status(_State) ->
     % mean an immediate response (and how frequently is this called?)
     [].
 
-%% @doc Get the data_size for this leveled backend
--spec data_size(state()) -> undefined | {non_neg_integer(), objects}.
-data_size(_State) ->
-    % TODO: not yet implemented
-    % We can run the bucket stats query getting all stats, but this would not
-    % mean an immediate response (and how frequently is this called?)
-    undefined.
+%% @doc Get an estimate of the data_size for this leveled backend
+-spec data_size(state()) ->
+    undefined |
+    {non_neg_integer(), objects} |
+    {fun(() -> {non_neg_integer(), objects}), dynamic}.
+data_size(#state{bookie=Bookie}) ->
+    TictacTreeSize = 1024 * 1024,
+    SegmentCount = 64,
+    TreePortion = (32 * 1024) div SegmentCount,
+    %% There are 1024 * 1024 hashes in the tree, but only the trailing 15 bits
+    %% of each hash are of interest in the leveled backend. This means there
+    %% are 32 * 1024 unique segments in the backend - so taking 32 unique
+    %% segments will result in counting 1 in 1024 keys.
+    %% Normally segment_lists are used in aae_folds, and they filter after the
+    %% key has been returned using the full segment - but we have no filter
+    %% here.  So 1 segment is 1:(128 * 256) not 1:(1024 * 1024) 
+    %% See leveled perf_SUITE tests
+    RandomSegment = rand:uniform(TictacTreeSize - SegmentCount) - 1,
+    F =
+        fun() ->
+            {async, DataSizeGuesser} =
+                leveled_bookie:book_headfold(
+                    Bookie,
+                    ?RIAK_TAG,
+                    {fun(_B, _K, _V, AccC) ->  AccC + TreePortion end, 0},
+                    false,
+                    true,
+                    lists:seq(RandomSegment, RandomSegment + SegmentCount - 1)
+                ),
+            {DataSizeGuesser(), objects}
+        end,
+    {F, dynamic}.
 
 
 %% @doc Register an asynchronous callback
