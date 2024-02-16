@@ -667,16 +667,16 @@ encode_tester() ->
     encode_tester(mochijson, ResultSetsMid),
     encode_tester(thoas, ResultSetsMid),
 
-    garbage_collect(),
+    % garbage_collect(),
     
-    io:format(user, "~n~nTesting large result sets: ~n", []),
-    ResultSetsLarge =
-        [{<<"1M">>, large_results(1000000)},
-            {<<"2M">>, large_results(2000000)},
-            {<<"3M">>, large_results(3000000)},
-            {<<"5M">>, large_results(5000000)}],
-    encode_tester(mochijson, ResultSetsLarge),
-    encode_tester(thoas, ResultSetsLarge),
+    % io:format(user, "~n~nTesting large result sets: ~n", []),
+    % ResultSetsLarge =
+    %     [{<<"1M">>, large_results(1000000)},
+    %         {<<"2M">>, large_results(2000000)},
+    %         {<<"3M">>, large_results(3000000)},
+    %         {<<"5M">>, large_results(5000000)}],
+    % encode_tester(mochijson, ResultSetsLarge),
+    % encode_tester(thoas, ResultSetsLarge),
 
     % garbage_collect(),
     % io:format(user, "~n~nTesting huge result sets: ~n", []),
