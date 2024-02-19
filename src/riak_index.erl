@@ -503,14 +503,11 @@ decode_continuation(undefined) ->
 decode_continuation(Bin) ->
     binary_to_term(base64:decode(Bin)).
 
-%% @doc add the `timeout' option tuple to the
-%% `Opts' proplist. if `Timeout' is undefined
-%% then the `app.config' property
-%% `{riak_kv, seconady_index timeout}' is used
-%% If that config property is defined, then
-%% a default of `infinity'  is used.
-%% We use `infinity' as the default to
-%% match the behavior pre 1.4
+%% @doc add the `timeout' option tuple to the `Opts' proplist. if `Timeout' is
+%% undefined then the `app.config' property `{riak_kv, seconady_index timeout}'
+%% is used.  If that config property is undefined, then a default of `infinity'
+%% (a timeout of 0 will be translated to infinity) is used.
+%% We use `infinity' as the default to match the behavior pre 1.4
 add_timeout_opt(undefined, Opts) ->
     Timeout =
         app_helper:get_env(

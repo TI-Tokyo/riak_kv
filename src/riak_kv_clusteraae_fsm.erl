@@ -593,7 +593,7 @@ json_encode_results(dispatched_count, Count) ->
 json_encode_results(repl_keys_range, ReplResult) ->
     json_encode_results(dispatched_count, element(2, ReplResult));
 json_encode_results(repair_keys_range, ReplResult) ->
-    json_encode_results(repl_keys_range, ReplResult);
+    json_encode_results(dispatched_count, element(2, ReplResult));
 json_encode_results(find_keys, Result) ->
     Keys =
         #{<<"results">> =>
