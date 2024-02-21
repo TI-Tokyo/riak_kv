@@ -585,6 +585,10 @@ otp_encode_results(false, Results, Continuation) ->
 
 results_encode({Term, Key}, Encode) when is_binary(Term), is_binary(Key) ->
     ["{", [Encode(Term, Encode), $: | Encode(Key, Encode)], "}"];
+results_encode({Term, Key}, Encode) when is_integer(Term), is_binary(Key) ->
+    ["{",
+        [Encode(integer_to_binary(Term), Encode), $: | Encode(Key, Encode)],
+        "}"];
 results_encode(Result, Encode) ->
     riak_kv_wm_otpjson:encode_value(Result, Encode).
 
@@ -636,7 +640,12 @@ compare_encode_test() ->
     MjsonD = mochijson_encode_results(false, Results, Continuation),
     {struct, MDecodeOTPjsonD} = mochijson2:decode(OTPjsonD),
     {struct, MDecodeMjsonD} = mochijson2:decode(MjsonD),
-    ?assert(lists:sort(MDecodeOTPjsonD) == lists:sort(MDecodeMjsonD))
+    ?assert(lists:sort(MDecodeOTPjsonD) == lists:sort(MDecodeMjsonD)),
+    IntIdxResults = [{1, <<"K1">>}, {2, <<"K2">>}],
+    OTPjsonE = otp_encode_results(true, IntIdxResults),
+    MjsonE = mochijson_encode_results(true, IntIdxResults),
+    ?assert(mochijson2:decode(MjsonE) == mochijson2:decode(OTPjsonE))
+
     .
 
 encoder_test_() ->
