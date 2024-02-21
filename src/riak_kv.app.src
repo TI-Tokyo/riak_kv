@@ -27,7 +27,6 @@
                   recon,
                   riakc,
                   rhc,
-                  thoas,
                   bitcask
                  ]},
   {registered, []},

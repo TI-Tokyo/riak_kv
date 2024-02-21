@@ -69,8 +69,6 @@
 -export([
     mochijson_encode_results/2,
     mochijson_encode_results/3,
-    thoas_encode_results/2,
-    thoas_encode_results/3,
     otp_encode_results/2,
     otp_encode_results/3,
     results_encode/2,
@@ -92,7 +90,7 @@
          }).
 -type context() :: #ctx{}.
 
--define(DEFAULT_JSON_ENCODING, thoas).
+-define(DEFAULT_JSON_ENCODING, otp).
 
 -include_lib("kernel/include/logger.hrl").
 
@@ -559,34 +557,6 @@ filter_values(Results) ->
     Results.
 
 
-thoas_encode_results(ReturnTerms, Results) ->
-    thoas_encode_results(ReturnTerms, Results, undefined).
-
-thoas_encode_results(ReturnTerms, Results, Continuation) ->
-    {ResultKey, MapFun} =
-        case ReturnTerms of
-            true ->
-                {?Q_RESULTS, fun({T, K}) -> [{T, K}] end};
-            false ->
-                case Results of
-                    [{_FT, _FK}|_Rest] ->
-                        {?Q_KEYS, fun({_T, K}) -> K end};
-                    _ ->
-                        {?Q_KEYS, none}
-                end
-        end,
-    case Continuation of
-        undefined ->
-            thoas:encode_to_iodata(
-                #{ResultKey => map_results(MapFun, Results)}
-            );
-        _ ->
-            thoas:encode_to_iodata(
-                #{ResultKey => map_results(MapFun, Results),
-                    ?Q_2I_CONTINUATION => Continuation}
-            )
-    end.
-
 otp_encode_results(ReturnTerms, Results) ->
     otp_encode_results(ReturnTerms, Results, undefined).
 
@@ -623,11 +593,6 @@ keys_encode({_Term, Key}, Encode) when is_binary(Key) ->
 keys_encode(Object, Encode) ->
     riak_kv_wm_otpjson:encode_value(Object, Encode).
 
-map_results(none, Results) ->
-    Results;
-map_results(MapFun, Results) ->
-    lists:map(MapFun, Results).
-
 encode_results(ReturnTerms, Results) ->
     encode_results(ReturnTerms, Results, undefined).
 
@@ -636,8 +601,6 @@ encode_results(ReturnTerms, Results, Continuation) ->
         app_helper:get_env(
             riak_kv, secondary_index_json, ?DEFAULT_JSON_ENCODING),
     case Library of
-        thoas ->
-            thoas_encode_results(ReturnTerms, Results, Continuation);
         mochijson ->
             mochijson_encode_results(ReturnTerms, Results, Continuation);
         otp ->
@@ -655,54 +618,25 @@ encode_results(ReturnTerms, Results, Continuation) ->
 -include_lib("eunit/include/eunit.hrl").
 
 
-compare_encode_thoas_test() ->
+compare_encode_test() ->
     Results = large_results(10),
-    ThoasA = thoas_encode_results(true, Results),
+    OTPjsonA = otp_encode_results(true, Results),
     MjsonA = mochijson_encode_results(true, Results),
-    ?assert(mochijson2:decode(MjsonA) == mochijson2:decode(ThoasA)),
-    ?assert(thoas:decode(MjsonA) == thoas:decode(ThoasA)),
+    ?assert(mochijson2:decode(MjsonA) == mochijson2:decode(OTPjsonA)),
     Continuation = make_continuation(10, Results, 10),
-    ThoasB = thoas_encode_results(true, Results, Continuation),
+    OTPjsonB = otp_encode_results(true, Results, Continuation),
     MjsonB = mochijson_encode_results(true, Results, Continuation),
-    {struct, MDecodeThoasB} = mochijson2:decode(ThoasB),
+    {struct, MDecodeOTPjsonB} = mochijson2:decode(OTPjsonB),
     {struct, MDecodeMjsonB} = mochijson2:decode(MjsonB),
-    ?assert(lists:sort(MDecodeThoasB) == lists:sort(MDecodeMjsonB)),
-    ?assert(thoas:decode(MjsonB) == thoas:decode(ThoasB)),
-    ThoasC = thoas_encode_results(false, Results),
+    ?assert(lists:sort(MDecodeOTPjsonB) == lists:sort(MDecodeMjsonB)),
+    OTPjsonC = otp_encode_results(false, Results),
     MjsonC = mochijson_encode_results(false, Results),
-    ?assert(mochijson2:decode(MjsonC) == mochijson2:decode(ThoasC)),
-    ?assert(thoas:decode(MjsonC) == thoas:decode(ThoasC)),
-    ThoasD = thoas_encode_results(false, Results, Continuation),
+    ?assert(mochijson2:decode(MjsonC) == mochijson2:decode(OTPjsonC)),
+    OTPjsonD = otp_encode_results(false, Results, Continuation),
     MjsonD = mochijson_encode_results(false, Results, Continuation),
-    {struct, MDecodeThoasD} = mochijson2:decode(ThoasD),
+    {struct, MDecodeOTPjsonD} = mochijson2:decode(OTPjsonD),
     {struct, MDecodeMjsonD} = mochijson2:decode(MjsonD),
-    ?assert(lists:sort(MDecodeThoasD) == lists:sort(MDecodeMjsonD)),
-    ?assert(thoas:decode(MjsonD) == thoas:decode(ThoasD))
-    .
-
-compare_encode_otp_test() ->
-    Results = large_results(10),
-    ThoasA = otp_encode_results(true, Results),
-    MjsonA = mochijson_encode_results(true, Results),
-    ?assert(mochijson2:decode(MjsonA) == mochijson2:decode(ThoasA)),
-    ?assert(thoas:decode(MjsonA) == thoas:decode(ThoasA)),
-    Continuation = make_continuation(10, Results, 10),
-    ThoasB = otp_encode_results(true, Results, Continuation),
-    MjsonB = mochijson_encode_results(true, Results, Continuation),
-    {struct, MDecodeThoasB} = mochijson2:decode(ThoasB),
-    {struct, MDecodeMjsonB} = mochijson2:decode(MjsonB),
-    ?assert(lists:sort(MDecodeThoasB) == lists:sort(MDecodeMjsonB)),
-    ?assert(thoas:decode(MjsonB) == thoas:decode(ThoasB)),
-    ThoasC = otp_encode_results(false, Results),
-    MjsonC = mochijson_encode_results(false, Results),
-    ?assert(mochijson2:decode(MjsonC) == mochijson2:decode(ThoasC)),
-    ?assert(thoas:decode(MjsonC) == thoas:decode(ThoasC)),
-    ThoasD = otp_encode_results(false, Results, Continuation),
-    MjsonD = mochijson_encode_results(false, Results, Continuation),
-    {struct, MDecodeThoasD} = mochijson2:decode(ThoasD),
-    {struct, MDecodeMjsonD} = mochijson2:decode(MjsonD),
-    ?assert(lists:sort(MDecodeThoasD) == lists:sort(MDecodeMjsonD)),
-    ?assert(thoas:decode(MjsonD) == thoas:decode(ThoasD))
+    ?assert(lists:sort(MDecodeOTPjsonD) == lists:sort(MDecodeMjsonD))
     .
 
 encoder_test_() ->
@@ -711,10 +645,11 @@ encoder_test_() ->
 encode_tester() ->
     timer:sleep(100), % awkward silence to tidy screen output
     encode_implementation_tester(mochijson2),
-    encode_implementation_tester(thoas),
     encode_implementation_tester(otp).
 
 encode_implementation_tester(Imp) ->
+    garbage_collect(),
+
     io:format(user, "~n~nTesting Implementation ~w~n", [Imp]),
     ResultSetsTiny =
         [{<<"1K">>, large_results(1000)},
@@ -722,7 +657,7 @@ encode_implementation_tester(Imp) ->
             {<<"3K">>, large_results(3000)},
             {<<"5K">>, large_results(5000)},
             {<<"8K">>, large_results(8000)}],
-    encode_tester(Imp, ResultSetsTiny),
+    encode_tester(Imp, ResultSetsTiny, microseconds),
 
     garbage_collect(),
 
@@ -731,7 +666,7 @@ encode_implementation_tester(Imp) ->
             {<<"21K">>, large_results(21000)},
             {<<"34K">>, large_results(34000)},
             {<<"55K">>, large_results(55000)}],
-    encode_tester(Imp, ResultSetsSmall),
+    encode_tester(Imp, ResultSetsSmall, milliseconds),
 
     garbage_collect(),
 
@@ -740,34 +675,41 @@ encode_implementation_tester(Imp) ->
             {<<"200K">>, large_results(200000)},
             {<<"300K">>, large_results(300000)},
             {<<"500K">>, large_results(500000)}],
-    encode_tester(Imp, ResultSetsMid),
+    encode_tester(Imp, ResultSetsMid, milliseconds),
 
-    garbage_collect(),
+    % garbage_collect(),
     
-    ResultSetsLarge =
-        [{<<"1M">>, large_results(1000000)},
-            {<<"2M">>, large_results(2000000)},
-            {<<"3M">>, large_results(3000000)},
-            {<<"5M">>, large_results(5000000)}],
-    encode_tester(Imp, ResultSetsLarge),
+    % ResultSetsLarge =
+    %     [{<<"1M">>, large_results(1000000)},
+    %         {<<"2M">>, large_results(2000000)},
+    %         {<<"3M">>, large_results(3000000)},
+    %         {<<"5M">>, large_results(5000000)}],
+    % encode_tester(Imp, ResultSetsLarge, milliseconds),
 
-    garbage_collect(),
-    ResultSetsHuge =
-        [{<<"8M">>, large_results(8000000)},
-            {<<"13M">>, large_results(13000000)}],
-    encode_tester(Imp, ResultSetsHuge),
+    % garbage_collect(),
+    % ResultSetsHuge =
+    %     [{<<"8M">>, large_results(8000000)}],
+    % encode_tester(Imp, ResultSetsHuge, milliseconds),
 
-    garbage_collect(),
+    % garbage_collect(),
+    % ResultSetsSuperSize =
+    %     [{<<"13M">>, large_results(13000000)}],
+    % encode_tester(Imp, ResultSetsSuperSize, milliseconds),
 
     ok.
 
-encode_tester(Lib, ResultSets) ->
+encode_tester(Lib, ResultSets, Unit) ->
+    Divisor =
+        case Unit of
+            microseconds ->
+                1;
+            milliseconds ->
+                1000
+        end,
     Fun =
         case Lib of
             mochijson2 ->
                 fun mochijson_encode_results/2;
-            thoas ->
-                fun thoas_encode_results/2;
             otp ->
                 fun otp_encode_results/2
         end,
@@ -781,14 +723,14 @@ encode_tester(Lib, ResultSets) ->
                         timer:tc(fun() -> Fun(true, RS) end),
                     io:format(
                         user,
-                        "Result set of ~s in ~wms ",
-                        [Tag, TC div 1000]),
+                        "Result set of ~s in ~w ~p ",
+                        [Tag, TC div Divisor, Unit]),
                     TC
                 end,
                 ResultSets
             )
         ),
-    io:format(user, "Total time ~wms~n", [TotalTime div 1000]).
+    io:format(user, "Total time ~w ~p~n", [TotalTime div Divisor, Unit]).
 
 large_results(N) ->
     lists:map(
