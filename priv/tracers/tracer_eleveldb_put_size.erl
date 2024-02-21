@@ -40,7 +40,7 @@ start(Interval) ->
     {started, TPid}.
 
 stop() ->
-    dbg:stop_clear(),
+    riak_core_tracer:stop_and_clear(),
     catch exit(element(2,dbg:get_tracer()), kill),
     stopped.
 

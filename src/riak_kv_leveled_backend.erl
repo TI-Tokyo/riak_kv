@@ -66,9 +66,6 @@
                         hot_backup,
                         leveled]).
 -define(API_VERSION, 1).
--define(BUCKET_SDG, <<"MD">>).
--define(KEY_SDG, <<"SHUDOWN_GUID">>).
--define(TAG_SDG, o).
 
 -define(PAUSE_TIME, 1).
     % The time in ms to pause if the leveled_bookie asks for backoff.
@@ -76,6 +73,8 @@
     % originally so that one could signal to slowdown PUTs, whilst still 
     % accepting HEAD/GET/FOLD requests).  There is no neat way of doing this
     % so we will back everything off.
+
+-type regex() :: {re_pattern, term(), term(), term(), term()}.
 
 -record(state, {bookie :: pid(),
                 reference :: reference(),
@@ -232,13 +231,10 @@ head(Bucket, Key, #state{bookie=Bookie}=State) ->
             {error, not_found, State}
     end.
 
-%% @doc Insert an object into the leveled backend.
--type index_spec() :: {add, Index, SecondaryKey} |
-                        {remove, Index, SecondaryKey}.
 
 -spec flush_put(riak_object:bucket(),
                     riak_object:key(),
-                    [index_spec()],
+                    [riak_kv_backend:index_spec()],
                     binary(),
                     state()) ->
                          {ok, state()} |
@@ -249,7 +245,7 @@ flush_put(Bucket, Key, IndexSpecs, Val, State) ->
 
 -spec put(riak_object:bucket(),
                     riak_object:key(),
-                    [index_spec()],
+                    [riak_kv_backend:index_spec()],
                     binary(),
                     state()) ->
                          {ok, state()} |
@@ -261,7 +257,7 @@ put(Bucket, Key, IndexSpecs, Val, State) ->
 %% @doc Delete an object from the leveled backend
 -spec delete(riak_object:bucket(),
                 riak_object:key(),
-                [index_spec()],
+                [riak_kv_backend:index_spec()],
                 state()) ->
                     {ok, state()} |
                     {error, term(), state()}.
@@ -648,7 +644,7 @@ callback(Ref, UnexpectedCallback, State) ->
 
 
 -spec dollarkey_foldfun(
-    riak_kv_backend:fold_keys_fun(), boolean(), re:mp()|undefined)
+    riak_kv_backend:fold_keys_fun(), boolean(), regex()|undefined)
         -> riak_kv_backend:fold_objects_fun().
 dollarkey_foldfun(FoldKeysFun, ReadTombs, TermRegex) ->
     FilteredFoldKeysFun =
@@ -712,7 +708,7 @@ log_fragmentation(Allocator) ->
 %% flush_put or put has been called
 -spec do_put(riak_object:bucket(),
                     riak_object:key(),
-                    [index_spec()],
+                    [riak_kv_backend:index_spec()],
                     binary(),
                     boolean(),
                     state()) ->
