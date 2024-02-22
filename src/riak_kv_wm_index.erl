@@ -622,11 +622,16 @@ encode_results(ReturnTerms, Results, Continuation) ->
 -include_lib("eunit/include/eunit.hrl").
 
 
+otp_decode(JsonIOL) ->
+    riak_kv_wm_otpjson:decode(iolist_to_binary(JsonIOL)).
+
 compare_encode_test() ->
     Results = large_results(10),
     OTPjsonA = otp_encode_results(true, Results),
     MjsonA = mochijson_encode_results(true, Results),
     ?assert(mochijson2:decode(MjsonA) == mochijson2:decode(OTPjsonA)),
+    ?assert(otp_decode(MjsonA) == otp_decode(OTPjsonA)),
+    ?assert(iolist_to_binary(MjsonA) == iolist_to_binary(OTPjsonA)),
     Continuation = make_continuation(10, Results, 10),
     OTPjsonB = otp_encode_results(true, Results, Continuation),
     MjsonB = mochijson_encode_results(true, Results, Continuation),
@@ -644,7 +649,9 @@ compare_encode_test() ->
     IntIdxResults = [{1, <<"K1">>}, {2, <<"K2">>}],
     OTPjsonE = otp_encode_results(true, IntIdxResults),
     MjsonE = mochijson_encode_results(true, IntIdxResults),
-    ?assert(mochijson2:decode(MjsonE) == mochijson2:decode(OTPjsonE))
+    ?assert(mochijson2:decode(MjsonE) == mochijson2:decode(OTPjsonE)),
+    ?assert(otp_decode(MjsonE) == otp_decode(OTPjsonE)),
+    ?assert(iolist_to_binary(MjsonE) == iolist_to_binary(OTPjsonE))
 
     .
 
