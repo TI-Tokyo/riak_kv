@@ -561,23 +561,23 @@ otp_encode_results(ReturnTerms, Results) ->
     otp_encode_results(ReturnTerms, Results, undefined).
 
 otp_encode_results(true, Results, undefined) ->
-    riak_kv_wm_otpjson:encode(
+    riak_kv_wm_json:encode(
         #{?Q_RESULTS_BIN => Results},
         fun results_encode/2
     );
 otp_encode_results(true, Results, Continuation) ->
-    riak_kv_wm_otpjson:encode(
+    riak_kv_wm_json:encode(
         #{?Q_RESULTS_BIN => Results,
             ?Q_2I_CONTINUATION_BIN => Continuation},
         fun results_encode/2
     );
 otp_encode_results(false, Results, undefined) ->
-    riak_kv_wm_otpjson:encode(
+    riak_kv_wm_json:encode(
         #{?Q_KEYS_BIN => Results},
         fun keys_encode/2
     );
 otp_encode_results(false, Results, Continuation) ->
-    riak_kv_wm_otpjson:encode(
+    riak_kv_wm_json:encode(
         #{?Q_KEYS_BIN => Results,
             ?Q_2I_CONTINUATION_BIN => Continuation},
         fun keys_encode/2
@@ -590,12 +590,12 @@ results_encode({Term, Key}, Encode) when is_integer(Term), is_binary(Key) ->
         [Encode(integer_to_binary(Term), Encode), $: | Encode(Key, Encode)],
         "}"];
 results_encode(Result, Encode) ->
-    riak_kv_wm_otpjson:encode_value(Result, Encode).
+    riak_kv_wm_json:encode_value(Result, Encode).
 
 keys_encode({_Term, Key}, Encode) when is_binary(Key) ->
-    riak_kv_wm_otpjson:encode_value(Key, Encode);
+    riak_kv_wm_json:encode_value(Key, Encode);
 keys_encode(Object, Encode) ->
-    riak_kv_wm_otpjson:encode_value(Object, Encode).
+    riak_kv_wm_json:encode_value(Object, Encode).
 
 encode_results(ReturnTerms, Results) ->
     encode_results(ReturnTerms, Results, undefined).
@@ -623,7 +623,7 @@ encode_results(ReturnTerms, Results, Continuation) ->
 
 
 otp_decode(JsonIOL) ->
-    riak_kv_wm_otpjson:decode(iolist_to_binary(JsonIOL)).
+    riak_kv_wm_json:decode(iolist_to_binary(JsonIOL)).
 
 compare_encode_test() ->
     Results = large_results(10),
