@@ -18,7 +18,7 @@
 %% %CopyrightEnd%
 %% % @format
 %%
--module(json).
+-module(riak_kv_wm_json).
 -moduledoc """
 A library for encoding and decoding JSON.
 
@@ -80,7 +80,69 @@ standards. The decoder is tested using [JSONTestSuite](https://github.com/nst/JS
     string/6
 ]}).
 
--include("json.hrl").
+%% ===================================================================
+%% Compatibility changes
+%% ===================================================================
+
+-include("riak_kv_wm_json.hrl").
+
+%% @doc
+%% For backwards compatibility some additional helper functions required:
+%% - use of float_to_binary/2 needs to be replaced with format_float, that may
+%% not return reliable results in OTP versions < 25
+%% - use of error/3 needs to be replaced with extended_error/3 which will not
+%% provide additional information about position in OTP versions < 24
+%% - the OTP 26 type dynamic() is replaced with term() in earlier versions
+%% 
+%% As -doc is not supported pre OTP 27, these doc references have been
+%% commented
+%% 
+%% The do_encode_map/2 function uses a map comprehension, and as this is not
+%% supported prior to OTP 26, this is replaced with a map:fold/3
+
+-if(?OTP_RELEASE < 26).
+-type dynamic() :: term().
+-endif.
+
+-if(?OTP_RELEASE >= 25).
+format_float(Float) -> float_to_binary(Float, [short]).
+-else.
+% Results may be unpredictable for encioding floats
+% Bodged as no float encoding required in Riak
+format_float(Float) -> float_to_binary(Float).
+-endif.
+
+-spec extended_error(
+    {atom(), binary()}, none, non_neg_integer()) -> no_return().
+-if(?OTP_RELEASE >= 24).
+extended_error(Error, none, Position) ->
+    error(Error, none, error_info(Position)).
+
+error_info(Skip) ->
+    [{error_info, #{cause => #{position => Skip}}}].
+-else.
+extended_error(Error, none, _Position) ->
+    error(Error, none).
+-endif.
+
+-if(?OTP_RELEASE >= 26).
+do_encode_map(Map, Encode) when is_function(Encode, 2) ->
+    encode_object([[$,, key(Key, Encode), $: | Encode(Value, Encode)] || Key := Value <- Map]).
+-else.
+do_encode_map(Map, Encode) when is_function(Encode, 2) ->
+    encode_object(
+        maps:fold(
+            fun(Key, Value, Acc) ->
+                [[$,, key(Key, Encode), $: | Encode(Value, Encode)]|Acc]
+            end,
+            [],
+            Map)
+    ).
+-endif.
+
+%% ===================================================================
+
+
 -define(UTF8_ACCEPT, 0).
 -define(UTF8_REJECT, 12).
 
@@ -90,9 +152,9 @@ standards. The decoder is tested using [JSONTestSuite](https://github.com/nst/JS
 
 -type encoder() :: fun((dynamic(), encoder()) -> iodata()).
 
--doc """
-Simple JSON value encodeable with `json:encode/1`.
-""".
+% -doc """
+% Simple JSON value encodeable with `json:encode/1`.
+% """.
 -type encode_value() ::
     integer()
     | float()
@@ -105,68 +167,68 @@ Simple JSON value encodeable with `json:encode/1`.
 
 -type encode_map(Value) :: #{binary() | atom() | integer() => Value}.
 
--doc """
-Generates JSON corresponding to `Term`.
+% -doc """
+% Generates JSON corresponding to `Term`.
 
-Supports basic data mapping:
+% Supports basic data mapping:
 
-| **Erlang**             | **JSON** |
-|------------------------|----------|
-| `integer() \| float()` | Number   |
-| `true \| false `       | Boolean  |
-| `null`                 | Null     |
-| `binary()`             | String   |
-| `atom()`               | String   |
-| `list()`               | Array    |
-| `#{binary() => _}`     | Object   |
-| `#{atom() => _}`       | Object   |
-| `#{integer() => _}`    | Object   |
+% | **Erlang**             | **JSON** |
+% |------------------------|----------|
+% | `integer() \| float()` | Number   |
+% | `true \| false `       | Boolean  |
+% | `null`                 | Null     |
+% | `binary()`             | String   |
+% | `atom()`               | String   |
+% | `list()`               | Array    |
+% | `#{binary() => _}`     | Object   |
+% | `#{atom() => _}`       | Object   |
+% | `#{integer() => _}`    | Object   |
 
-This is equivalent to `encode(Term, fun json:encode_value/2)`.
+% This is equivalent to `encode(Term, fun json:encode_value/2)`.
 
-## Examples
+% ## Examples
 
-```erlang
-> iolist_to_binary(json:encode(#{foo => <<"bar">>})).
-<<"{\"foo\":\"bar\"}">>
-```
-""".
+% ```erlang
+% > iolist_to_binary(json:encode(#{foo => <<"bar">>})).
+% <<"{\"foo\":\"bar\"}">>
+% ```
+% """.
 -spec encode(encode_value()) -> iodata().
 encode(Term) -> encode(Term, fun do_encode/2).
 
--doc """
-Generates JSON corresponding to `Term`.
+% -doc """
+% Generates JSON corresponding to `Term`.
 
-Can be customised with the `Encoder` callback.
-The callback will be recursively called for all the data
-to be encoded and is expected to return the corresponding
-encoded JSON as iodata.
+% Can be customised with the `Encoder` callback.
+% The callback will be recursively called for all the data
+% to be encoded and is expected to return the corresponding
+% encoded JSON as iodata.
 
-Various `encode_*` functions in this module can be used
-to help in constructing such callbacks.
+% Various `encode_*` functions in this module can be used
+% to help in constructing such callbacks.
 
-## Examples
+% ## Examples
 
-An encoder that uses a heuristic to differentiate object-like
-lists of key-value pairs from plain lists:
+% An encoder that uses a heuristic to differentiate object-like
+% lists of key-value pairs from plain lists:
 
-```erlang
-> encoder([{_, _} | _] = Value, Encode) -> json:encode_key_value_list(Value, Encode);
-> encoder(Other, Encode) -> json:encode_value(Other, Encode).
-> custom_encode(Value) -> json:encode(Value, fun(Value, Encode) -> encoder(Value, Encode) end).
-> iolist_to_binary(custom_encode([{a, []}, {b, 1}])).
-<<"{\"a\":[],\"b\":1}">>
-```
-""".
+% ```erlang
+% > encoder([{_, _} | _] = Value, Encode) -> json:encode_key_value_list(Value, Encode);
+% > encoder(Other, Encode) -> json:encode_value(Other, Encode).
+% > custom_encode(Value) -> json:encode(Value, fun(Value, Encode) -> encoder(Value, Encode) end).
+% > iolist_to_binary(custom_encode([{a, []}, {b, 1}])).
+% <<"{\"a\":[],\"b\":1}">>
+% ```
+% """.
 -spec encode(dynamic(), encoder()) -> iodata().
 encode(Term, Encoder) when is_function(Encoder, 2) ->
     Encoder(Term, Encoder).
 
--doc """
-Default encoder used by `json:encode/1`.
+% -doc """
+% Default encoder used by `json:encode/1`.
 
-Recursively calls `Encode` on all the values in `Value`.
-""".
+% Recursively calls `Encode` on all the values in `Value`.
+% """.
 -spec encode_value(dynamic(), encoder()) -> iodata().
 encode_value(Value, Encode) ->
     do_encode(Value, Encode).
@@ -187,35 +249,35 @@ do_encode(Value, Encode) when is_map(Value) ->
 do_encode(Other, _Encode) ->
     error({unsupported_type, Other}).
 
--doc """
-Default encoder for atoms used by `json:encode/1`.
+% -doc """
+% Default encoder for atoms used by `json:encode/1`.
 
-Encodes the atom `null` as JSON `null`,
-atoms `true` and `false` as JSON booleans,
-and everything else as JSON strings calling the `Encode`
-callback with the corresponding binary.
-""".
+% Encodes the atom `null` as JSON `null`,
+% atoms `true` and `false` as JSON booleans,
+% and everything else as JSON strings calling the `Encode`
+% callback with the corresponding binary.
+% """.
 -spec encode_atom(atom(), encoder()) -> iodata().
 encode_atom(null, _Encode) -> <<"null">>;
 encode_atom(true, _Encode) -> <<"true">>;
 encode_atom(false, _Encode) -> <<"false">>;
 encode_atom(Other, Encode) -> Encode(atom_to_binary(Other, utf8), Encode).
 
--doc """
-Default encoder for integers as JSON numbers used by `json:encode/1`.
-""".
+% -doc """
+% Default encoder for integers as JSON numbers used by `json:encode/1`.
+% """.
 -spec encode_integer(integer()) -> iodata().
 encode_integer(Integer) -> integer_to_binary(Integer).
 
--doc """
-Default encoder for floats as JSON numbers used by `json:encode/1`.
-""".
+% -doc """
+% Default encoder for floats as JSON numbers used by `json:encode/1`.
+% """.
 -spec encode_float(float()) -> iodata().
-encode_float(Float) -> float_to_binary(Float, [short]).
+encode_float(Float) -> format_float(Float).
 
--doc """
-Default encoder for lists as JSON arrays used by `json:encode/1`.
-""".
+% -doc """
+% Default encoder for lists as JSON arrays used by `json:encode/1`.
+% """.
 -spec encode_list(list(), encoder()) -> iodata().
 encode_list(List, Encode) when is_list(List) ->
     do_encode_list(List, Encode).
@@ -228,53 +290,50 @@ do_encode_list([First | Rest], Encode) when is_function(Encode, 2) ->
 list_loop([], _Encode) -> "]";
 list_loop([Elem | Rest], Encode) -> [$,, Encode(Elem, Encode) | list_loop(Rest, Encode)].
 
--doc """
-Default encoder for maps as JSON objects used by `json:encode/1`.
+% -doc """
+% Default encoder for maps as JSON objects used by `json:encode/1`.
 
-Accepts maps with atom, binary, integer, or float keys.
-""".
+% Accepts maps with atom, binary, integer, or float keys.
+% """.
 -spec encode_map(encode_map(dynamic()), encoder()) -> iodata().
 encode_map(Map, Encode) when is_map(Map) ->
     do_encode_map(Map, Encode).
 
-do_encode_map(Map, Encode) when is_function(Encode, 2) ->
-    encode_object([[$,, key(Key, Encode), $: | Encode(Value, Encode)] || Key := Value <- Map]).
+% -doc """
+% Encoder for maps as JSON objects.
 
--doc """
-Encoder for maps as JSON objects.
+% Accepts maps with atom, binary, integer, or float keys.
+% Verifies that no duplicate keys will be produced in the
+% resulting JSON object.
 
-Accepts maps with atom, binary, integer, or float keys.
-Verifies that no duplicate keys will be produced in the
-resulting JSON object.
+% ## Errors
 
-## Errors
-
-Raises `error({duplicate_key, Key})` if there are duplicates.
-""".
+% Raises `error({duplicate_key, Key})` if there are duplicates.
+% """.
 -spec encode_map_checked(map(), encoder()) -> iodata().
 encode_map_checked(Map, Encode) ->
     do_encode_checked(maps:to_list(Map), Encode).
 
--doc """
-Encoder for lists of key-value pairs as JSON objects.
+% -doc """
+% Encoder for lists of key-value pairs as JSON objects.
 
-Accepts lists with atom, binary, integer, or float keys.
-""".
+% Accepts lists with atom, binary, integer, or float keys.
+% """.
 -spec encode_key_value_list([{term(), term()}], encoder()) -> iodata().
 encode_key_value_list(List, Encode) when is_function(Encode, 2) ->
     encode_object([[$,, key(Key, Encode), $: | Encode(Value, Encode)] || {Key, Value} <- List]).
 
--doc """
-Encoder for lists of key-value pairs as JSON objects.
+% -doc """
+% Encoder for lists of key-value pairs as JSON objects.
 
-Accepts lists with atom, binary, integer, or float keys.
-Verifies that no duplicate keys will be produced in the
-resulting JSON object.
+% Accepts lists with atom, binary, integer, or float keys.
+% Verifies that no duplicate keys will be produced in the
+% resulting JSON object.
 
-## Errors
+% ## Errors
 
-Raises `error({duplicate_key, Key})` if there are duplicates.
-""".
+% Raises `error({duplicate_key, Key})` if there are duplicates.
+% """.
 -spec encode_key_value_list_checked([{term(), term()}], encoder()) -> iodata().
 encode_key_value_list_checked(List, Encode) ->
     do_encode_checked(List, Encode).
@@ -306,28 +365,28 @@ key(Key, _Encode) when is_float(Key) -> [$", encode_float(Key), $"].
 encode_object([]) -> <<"{}">>;
 encode_object([[_Comma | Entry] | Rest]) -> ["{", Entry, Rest, "}"].
 
--doc """
-Default encoder for binaries as JSON strings used by `json:encode/1`.
+% -doc """
+% Default encoder for binaries as JSON strings used by `json:encode/1`.
 
-## Errors
+% ## Errors
 
-* `error(unexpected_end)` if the binary contains incomplete UTF-8 sequences.
-* `error({invalid_byte, Byte})` if the binary contains invalid UTF-8 sequences.
-""".
+% * `error(unexpected_end)` if the binary contains incomplete UTF-8 sequences.
+% * `error({invalid_byte, Byte})` if the binary contains invalid UTF-8 sequences.
+% """.
 -spec encode_binary(binary()) -> iodata().
 encode_binary(Bin) when is_binary(Bin) ->
     escape_binary(Bin).
 
--doc """
-Encoder for binaries as JSON strings producing pure-ASCII JSON.
+% -doc """
+% Encoder for binaries as JSON strings producing pure-ASCII JSON.
 
-For any non-ASCII unicode character, a corresponding `\\uXXXX` sequence is used.
+% For any non-ASCII unicode character, a corresponding `\\uXXXX` sequence is used.
 
-## Errors
+% ## Errors
 
-* `error(unexpected_end)` if the binary contains incomplete UTF-8 sequences.
-* `error({invalid_byte, Byte})` if the binary contains invalid UTF-8 sequences.
-""".
+% * `error(unexpected_end)` if the binary contains incomplete UTF-8 sequences.
+% * `error({invalid_byte, Byte})` if the binary contains invalid UTF-8 sequences.
+% """.
 -spec encode_binary_escape_all(binary()) -> iodata().
 encode_binary_escape_all(Bin) when is_binary(Bin) ->
     escape_all(Bin).
@@ -513,12 +572,10 @@ utf8s0() ->
         72,84,84,84,96,12,12,12,12,12,12,12,12,12,12,12
     }.
 
+-spec invalid_byte(binary(), non_neg_integer()) -> no_return().
 invalid_byte(Bin, Skip) ->
     Byte = binary:at(Bin, Skip),
-    error({invalid_byte, Byte}, none, error_info(Skip)).
-
-error_info(Skip) ->
-    [{error_info, #{cause => #{position => Skip}}}].
+    extended_error({invalid_byte, Byte}, none, Skip).
 
 %%
 %% Decoding implementation
@@ -574,31 +631,31 @@ error_info(Skip) ->
     | list(decode_value())
     | #{binary() => decode_value()}.
 
--doc """
-Parses a JSON value from `Binary`.
+% -doc """
+% Parses a JSON value from `Binary`.
 
-Supports basic data mapping:
+% Supports basic data mapping:
 
-| **JSON** | **Erlang**             |
-|----------|------------------------|
-| Number   | `integer() \| float()` |
-| Boolean  | `true \| false`        |
-| Null     | `null`                 |
-| String   | `binary()`             |
-| Object   | `#{binary() => _}`     |
+% | **JSON** | **Erlang**             |
+% |----------|------------------------|
+% | Number   | `integer() \| float()` |
+% | Boolean  | `true \| false`        |
+% | Null     | `null`                 |
+% | String   | `binary()`             |
+% | Object   | `#{binary() => _}`     |
 
-## Errors
+% ## Errors
 
-* `error(unexpected_end)` if `Binary` contains incomplete JSON value
-* `error({invalid_byte, Byte})` if `Binary` contains unexpected byte or invalid UTF-8 byte
-* `error({invalid_sequence, Bytes})` if `Binary` contains invalid UTF-8 escape
+% * `error(unexpected_end)` if `Binary` contains incomplete JSON value
+% * `error({invalid_byte, Byte})` if `Binary` contains unexpected byte or invalid UTF-8 byte
+% * `error({invalid_sequence, Bytes})` if `Binary` contains invalid UTF-8 escape
 
-## Example
+% ## Example
 
-```erlang
-> json:decode(<<"{\"foo\": 1}">>).
-#{<<"foo">> => 1}
-""".
+% ```erlang
+% > json:decode(<<"{\"foo\": 1}">>).
+% #{<<"foo">> => 1}
+% """.
 -spec decode(binary()) -> decode_value().
 decode(Binary) when is_binary(Binary) ->
     case value(Binary, Binary, 0, ok, [], #decode{}) of
@@ -606,48 +663,48 @@ decode(Binary) when is_binary(Binary) ->
         {_, _, Rest} -> unexpected(Rest, 0)
     end.
 
--doc """
-Parses a JSON value from `Binary`.
+% -doc """
+% Parses a JSON value from `Binary`.
 
-Similar to `decode/1` except the decoding process
-can be customized with the callbacks specified in
-`Decoders`. The callbacks will use the `Acc` value
-as the initial accumulator.
+% Similar to `decode/1` except the decoding process
+% can be customized with the callbacks specified in
+% `Decoders`. The callbacks will use the `Acc` value
+% as the initial accumulator.
 
-Any leftover, unparsed data in `Binary` will be returned.
+% Any leftover, unparsed data in `Binary` will be returned.
 
-## Default callbacks
+% ## Default callbacks
 
-All callbacks are optional. If not provided, they will fall back to
-implementations used by the `decode/1` function:
+% All callbacks are optional. If not provided, they will fall back to
+% implementations used by the `decode/1` function:
 
-* for `array_start`: `fun(_) -> [] end`
-* for `array_push`: `fun(Elem, Acc) -> [Elem | Acc] end`
-* for `array_finish`: `fun(Acc, OldAcc) -> {lists:reverse(Acc), OldAcc} end`
-* for `object_start`: `fun(_) -> [] end`
-* for `object_push`: `fun(Key, Value, Acc) -> [{Key, Value} | Acc] end`
-* for `object_finish`: `fun(Acc, OldAcc) -> {maps:from_list(Acc), OldAcc} end`
-* for `float`: `fun erlang:binary_to_float/1`
-* for `integer`: `fun erlang:binary_to_integer/1`
-* for `string`: `fun (Value) -> Value end`
-* for `null`: the atom `null`
+% * for `array_start`: `fun(_) -> [] end`
+% * for `array_push`: `fun(Elem, Acc) -> [Elem | Acc] end`
+% * for `array_finish`: `fun(Acc, OldAcc) -> {lists:reverse(Acc), OldAcc} end`
+% * for `object_start`: `fun(_) -> [] end`
+% * for `object_push`: `fun(Key, Value, Acc) -> [{Key, Value} | Acc] end`
+% * for `object_finish`: `fun(Acc, OldAcc) -> {maps:from_list(Acc), OldAcc} end`
+% * for `float`: `fun erlang:binary_to_float/1`
+% * for `integer`: `fun erlang:binary_to_integer/1`
+% * for `string`: `fun (Value) -> Value end`
+% * for `null`: the atom `null`
 
-## Errors
+% ## Errors
 
-* `error(unexpected_end)` if `Binary` contains incomplete JSON value
-* `error({invalid_byte, Byte})` if `Binary` contains unexpected byte or invalid UTF-8 byte
-* `error({invalid_sequence, Bytes})` if `Binary` contains invalid UTF-8 escape
+% * `error(unexpected_end)` if `Binary` contains incomplete JSON value
+% * `error({invalid_byte, Byte})` if `Binary` contains unexpected byte or invalid UTF-8 byte
+% * `error({invalid_sequence, Bytes})` if `Binary` contains invalid UTF-8 escape
 
-## Example
+% ## Example
 
-Decoding object keys as atoms:
+% Decoding object keys as atoms:
 
-```erlang
-> Push = fun(Key, Value, Acc) -> [{binary_to_existing_atom(Key), Value} | Acc] end.
-> json:decode(<<"{\"foo\": 1}">>, ok, #{object_push => Push}).
-{#{foo => 1},ok,<<>>}
-```
-""".
+% ```erlang
+% > Push = fun(Key, Value, Acc) -> [{binary_to_existing_atom(Key), Value} | Acc] end.
+% > json:decode(<<"{\"foo\": 1}">>, ok, #{object_push => Push}).
+% {#{foo => 1},ok,<<>>}
+% ```
+% """.
 -spec decode(binary(), dynamic(), decoders()) ->
     {Result :: dynamic(), Acc :: dynamic(), binary()}.
 decode(Binary, Acc, Decoders) when is_binary(Binary) ->
@@ -1082,4 +1139,4 @@ unexpected(Original, Skip) ->
 
 -spec unexpected_sequence(binary(), non_neg_integer()) -> no_return().
 unexpected_sequence(Value, Skip) ->
-    error({unexpected_sequence, Value}, none, error_info(Skip)).
+    extended_error({unexpected_sequence, Value}, none, Skip).
