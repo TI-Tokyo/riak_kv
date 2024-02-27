@@ -18,7 +18,17 @@
 %% %CopyrightEnd%
 %% % @format
 %%
--module(riak_kv_wm_otpjson).
+-module(riak_kv_wm_json).
+-moduledoc """
+A library for encoding and decoding JSON.
+
+This module implements EEP68.
+
+Both encoder and decoder fully conform to
+[RFC 8259](https://tools.ietf.org/html/rfc8259) and
+[ECMA 404](http://www.ecma-international.org/publications/standards/Ecma-404.htm)
+standards. The decoder is tested using [JSONTestSuite](https://github.com/nst/JSONTestSuite).
+""".
 
 -dialyzer(no_improper_lists).
 
@@ -36,7 +46,7 @@
     encode_binary/1,
     encode_binary_escape_all/1
 ]).
--export_type([encoder/0, simple_encode_value/0]).
+-export_type([encoder/0, encode_value/0]).
 
 -export([
     decode/1, decode/3
@@ -49,28 +59,90 @@
     object_start_fun/0,
     object_push_fun/0,
     object_finish_fun/0,
-    decoders/0
+    decoders/0,
+    decode_value/0
 ]).
 
 -compile(warn_missing_spec).
 
--compile(
-    {inline, [
-        encode_atom/2,
-        encode_integer/1,
-        encode_float/1,
-        encode_object/1,
-        escape/1,
-        escape_binary/1,
-        escape_all/1,
-        utf8t/0,
-        utf8s/0,
-        utf8s0/0,
-        multibyte_size/1
-    ]}
-).
+-compile({inline, [
+    encode_atom/2,
+    encode_integer/1,
+    encode_float/1,
+    encode_object/1,
+    escape/1,
+    escape_binary/1,
+    escape_all/1,
+    utf8t/0,
+    utf8s/0,
+    utf8s0/0,
+    hex_to_int/4,
+    string/6
+]}).
 
--include("riak_kv_wm_otpjson.hrl").
+%% ===================================================================
+%% Compatibility changes
+%% ===================================================================
+
+-include("riak_kv_wm_json.hrl").
+
+%% @doc
+%% For backwards compatibility some additional helper functions required:
+%% - use of float_to_binary/2 needs to be replaced with format_float, that may
+%% not return reliable results in OTP versions < 25
+%% - use of error/3 needs to be replaced with extended_error/3 which will not
+%% provide additional information about position in OTP versions < 24
+%% - the OTP 26 type dynamic() is replaced with term() in earlier versions
+%% 
+%% As -doc is not supported pre OTP 27, these doc references have been
+%% commented
+%% 
+%% The do_encode_map/2 function uses a map comprehension, and as this is not
+%% supported prior to OTP 26, this is replaced with a map:fold/3
+
+-if(?OTP_RELEASE < 26).
+-type dynamic() :: term().
+-endif.
+
+-if(?OTP_RELEASE >= 25).
+format_float(Float) -> float_to_binary(Float, [short]).
+-else.
+% Results may be unpredictable for encioding floats
+% Bodged as no float encoding required in Riak
+format_float(Float) -> float_to_binary(Float).
+-endif.
+
+-spec extended_error(
+    {atom(), binary()}, none, non_neg_integer()) -> no_return().
+-if(?OTP_RELEASE >= 24).
+extended_error(Error, none, Position) ->
+    error(Error, none, error_info(Position)).
+
+error_info(Skip) ->
+    [{error_info, #{cause => #{position => Skip}}}].
+-else.
+extended_error(Error, none, _Position) ->
+    error(Error, none).
+-endif.
+
+-if(?OTP_RELEASE >= 26).
+do_encode_map(Map, Encode) when is_function(Encode, 2) ->
+    encode_object([[$,, key(Key, Encode), $: | Encode(Value, Encode)] || Key := Value <- Map]).
+-else.
+do_encode_map(Map, Encode) when is_function(Encode, 2) ->
+    encode_object(
+        maps:fold(
+            fun(Key, Value, Acc) ->
+                [[$,, key(Key, Encode), $: | Encode(Value, Encode)]|Acc]
+            end,
+            [],
+            Map)
+    ).
+-endif.
+
+%% ===================================================================
+
+
 -define(UTF8_ACCEPT, 0).
 -define(UTF8_REJECT, 12).
 
@@ -78,59 +150,85 @@
 %% Encoding implementation
 %%
 
--if(?OTP_RELEASE < 26).
--type dynamic() :: term().
--endif.
-
 -type encoder() :: fun((dynamic(), encoder()) -> iodata()).
 
--type simple_encode_value() ::
+% -doc """
+% Simple JSON value encodeable with `json:encode/1`.
+% """.
+-type encode_value() ::
     integer()
     | float()
     | boolean()
     | null
     | binary()
     | atom()
-    | list(simple_encode_value())
-    | #{binary() | atom() | integer() => simple_encode_value()}.
+    | list(encode_value())
+    | encode_map(encode_value()).
 
-% @doc
+-type encode_map(Value) :: #{binary() | atom() | integer() => Value}.
+
+% -doc """
 % Generates JSON corresponding to `Term`.
 
 % Supports basic data mapping:
 
-% | **Erlang**            | **JSON** |
-% |-----------------------|----------|
-% | integer() \\| float() | Number   |
-% | true \\| false        | Boolean  |
-% | null                  | Null     |
-% | binary()              | String   |
-% | atom()                | String   |
-% | list()                | Array    |
-% | #{binary() => _}      | Object   |
-% | #{atom() => _}        | Object   |
-% | #{integer() => _}     | Object   |
+% | **Erlang**             | **JSON** |
+% |------------------------|----------|
+% | `integer() \| float()` | Number   |
+% | `true \| false `       | Boolean  |
+% | `null`                 | Null     |
+% | `binary()`             | String   |
+% | `atom()`               | String   |
+% | `list()`               | Array    |
+% | `#{binary() => _}`     | Object   |
+% | `#{atom() => _}`       | Object   |
+% | `#{integer() => _}`    | Object   |
 
 % This is equivalent to `encode(Term, fun json:encode_value/2)`.
 
--spec encode(simple_encode_value()) -> iodata().
+% ## Examples
+
+% ```erlang
+% > iolist_to_binary(json:encode(#{foo => <<"bar">>})).
+% <<"{\"foo\":\"bar\"}">>
+% ```
+% """.
+-spec encode(encode_value()) -> iodata().
 encode(Term) -> encode(Term, fun do_encode/2).
 
-% @doc
+% -doc """
 % Generates JSON corresponding to `Term`.
 
 % Can be customised with the `Encoder` callback.
 % The callback will be recursively called for all the data
 % to be encoded and is expected to return the corresponding
-% encoded values.
+% encoded JSON as iodata.
 
 % Various `encode_*` functions in this module can be used
 % to help in constructing such callbacks.
 
+% ## Examples
+
+% An encoder that uses a heuristic to differentiate object-like
+% lists of key-value pairs from plain lists:
+
+% ```erlang
+% > encoder([{_, _} | _] = Value, Encode) -> json:encode_key_value_list(Value, Encode);
+% > encoder(Other, Encode) -> json:encode_value(Other, Encode).
+% > custom_encode(Value) -> json:encode(Value, fun(Value, Encode) -> encoder(Value, Encode) end).
+% > iolist_to_binary(custom_encode([{a, []}, {b, 1}])).
+% <<"{\"a\":[],\"b\":1}">>
+% ```
+% """.
 -spec encode(dynamic(), encoder()) -> iodata().
 encode(Term, Encoder) when is_function(Encoder, 2) ->
     Encoder(Term, Encoder).
 
+% -doc """
+% Default encoder used by `json:encode/1`.
+
+% Recursively calls `Encode` on all the values in `Value`.
+% """.
 -spec encode_value(dynamic(), encoder()) -> iodata().
 encode_value(Value, Encode) ->
     do_encode(Value, Encode).
@@ -151,25 +249,35 @@ do_encode(Value, Encode) when is_map(Value) ->
 do_encode(Other, _Encode) ->
     error({unsupported_type, Other}).
 
+% -doc """
+% Default encoder for atoms used by `json:encode/1`.
+
+% Encodes the atom `null` as JSON `null`,
+% atoms `true` and `false` as JSON booleans,
+% and everything else as JSON strings calling the `Encode`
+% callback with the corresponding binary.
+% """.
 -spec encode_atom(atom(), encoder()) -> iodata().
 encode_atom(null, _Encode) -> <<"null">>;
 encode_atom(true, _Encode) -> <<"true">>;
 encode_atom(false, _Encode) -> <<"false">>;
 encode_atom(Other, Encode) -> Encode(atom_to_binary(Other, utf8), Encode).
 
+% -doc """
+% Default encoder for integers as JSON numbers used by `json:encode/1`.
+% """.
 -spec encode_integer(integer()) -> iodata().
 encode_integer(Integer) -> integer_to_binary(Integer).
 
+% -doc """
+% Default encoder for floats as JSON numbers used by `json:encode/1`.
+% """.
 -spec encode_float(float()) -> iodata().
--if(?OTP_RELEASE >= 25).
-encode_float(Float) -> float_to_binary(Float, [short]).
--else.
-% Results may be unpredictable for encioding floats
-% Bodged as no float encoding required in Riak
-encode_float(Float) -> float_to_binary(Float).
--endif.
+encode_float(Float) -> format_float(Float).
 
-
+% -doc """
+% Default encoder for lists as JSON arrays used by `json:encode/1`.
+% """.
 -spec encode_list(list(), encoder()) -> iodata().
 encode_list(List, Encode) when is_list(List) ->
     do_encode_list(List, Encode).
@@ -182,28 +290,50 @@ do_encode_list([First | Rest], Encode) when is_function(Encode, 2) ->
 list_loop([], _Encode) -> "]";
 list_loop([Elem | Rest], Encode) -> [$,, Encode(Elem, Encode) | list_loop(Rest, Encode)].
 
--spec encode_map(map(), encoder()) -> iodata().
+% -doc """
+% Default encoder for maps as JSON objects used by `json:encode/1`.
+
+% Accepts maps with atom, binary, integer, or float keys.
+% """.
+-spec encode_map(encode_map(dynamic()), encoder()) -> iodata().
 encode_map(Map, Encode) when is_map(Map) ->
     do_encode_map(Map, Encode).
 
-do_encode_map(Map, Encode) when is_function(Encode, 2) ->
-    encode_object(
-        maps:fold(
-            fun(Key, Value, Acc) ->
-                [[$,, key(Key, Encode), $: | Encode(Value, Encode)]|Acc]
-            end,
-            [],
-            Map)
-    ).
+% -doc """
+% Encoder for maps as JSON objects.
 
+% Accepts maps with atom, binary, integer, or float keys.
+% Verifies that no duplicate keys will be produced in the
+% resulting JSON object.
+
+% ## Errors
+
+% Raises `error({duplicate_key, Key})` if there are duplicates.
+% """.
 -spec encode_map_checked(map(), encoder()) -> iodata().
 encode_map_checked(Map, Encode) ->
     do_encode_checked(maps:to_list(Map), Encode).
 
+% -doc """
+% Encoder for lists of key-value pairs as JSON objects.
+
+% Accepts lists with atom, binary, integer, or float keys.
+% """.
 -spec encode_key_value_list([{term(), term()}], encoder()) -> iodata().
 encode_key_value_list(List, Encode) when is_function(Encode, 2) ->
     encode_object([[$,, key(Key, Encode), $: | Encode(Value, Encode)] || {Key, Value} <- List]).
 
+% -doc """
+% Encoder for lists of key-value pairs as JSON objects.
+
+% Accepts lists with atom, binary, integer, or float keys.
+% Verifies that no duplicate keys will be produced in the
+% resulting JSON object.
+
+% ## Errors
+
+% Raises `error({duplicate_key, Key})` if there are duplicates.
+% """.
 -spec encode_key_value_list_checked([{term(), term()}], encoder()) -> iodata().
 encode_key_value_list_checked(List, Encode) ->
     do_encode_checked(List, Encode).
@@ -235,15 +365,33 @@ key(Key, _Encode) when is_float(Key) -> [$", encode_float(Key), $"].
 encode_object([]) -> <<"{}">>;
 encode_object([[_Comma | Entry] | Rest]) -> ["{", Entry, Rest, "}"].
 
+% -doc """
+% Default encoder for binaries as JSON strings used by `json:encode/1`.
+
+% ## Errors
+
+% * `error(unexpected_end)` if the binary contains incomplete UTF-8 sequences.
+% * `error({invalid_byte, Byte})` if the binary contains invalid UTF-8 sequences.
+% """.
 -spec encode_binary(binary()) -> iodata().
 encode_binary(Bin) when is_binary(Bin) ->
     escape_binary(Bin).
 
+% -doc """
+% Encoder for binaries as JSON strings producing pure-ASCII JSON.
+
+% For any non-ASCII unicode character, a corresponding `\\uXXXX` sequence is used.
+
+% ## Errors
+
+% * `error(unexpected_end)` if the binary contains incomplete UTF-8 sequences.
+% * `error({invalid_byte, Byte})` if the binary contains invalid UTF-8 sequences.
+% """.
 -spec encode_binary_escape_all(binary()) -> iodata().
 encode_binary_escape_all(Bin) when is_binary(Bin) ->
     escape_all(Bin).
 
-escape_binary(Bin) -> escape_binary_ascii(Bin, [$\"], Bin, 0, 0).
+escape_binary(Bin) -> escape_binary_ascii(Bin, [$"], Bin, 0, 0).
 
 escape_binary_ascii(Binary, Acc, Orig, Skip, Len) ->
     case Binary of
@@ -276,9 +424,11 @@ escape_binary(<<Byte, Rest/binary>>, Acc, Orig, Skip, Len) ->
     end;
 escape_binary(_, _Acc, Orig, 0, _Len) ->
     [$", Orig, $"];
+escape_binary(_, Acc, _Orig, _Skip, 0) ->
+    [Acc, $"];
 escape_binary(_, Acc, Orig, Skip, Len) ->
     Part = binary_part(Orig, Skip, Len),
-    [Acc, Part, $\"].
+    [Acc, Part, $"].
 
 escape_binary_utf8(<<Byte, Rest/binary>>, Acc, Orig, Skip, Len, State0) ->
     Type = element(Byte + 1, utf8t()),
@@ -289,10 +439,6 @@ escape_binary_utf8(<<Byte, Rest/binary>>, Acc, Orig, Skip, Len, State0) ->
     end;
 escape_binary_utf8(_, _Acc, Orig, Skip, Len, _State) ->
     unexpected(Orig, Skip + Len + 1).
-
-multibyte_size(Char) when Char =< 16#7FF -> 2;
-multibyte_size(Char) when Char =< 16#FFFF -> 3;
-multibyte_size(_Char) -> 4.
 
 escape_all(Bin) -> escape_all_ascii(Bin, [$"], Bin, 0, 0).
 
@@ -322,6 +468,8 @@ escape_all(<<Char/utf8, Rest/bits>>, Acc, Orig, Skip, Len) ->
     escape_char(Rest, [Acc | Part], Orig, Skip + Len, Char);
 escape_all(<<>>, _Acc, Orig, 0, _Len) ->
     [$", Orig, $"];
+escape_all(<<>>, Acc, _Orig, _Skip, 0) ->
+    [Acc, $"];
 escape_all(<<>>, Acc, Orig, Skip, Len) ->
     Part = binary_part(Orig, Skip, Len),
     [Acc, Part, $"];
@@ -387,7 +535,6 @@ escape(_) -> no.
 %% This is an adapted table from "Flexible and Economical UTF-8 Decoding" by Bjoern Hoehrmann.
 %% http://bjoern.hoehrmann.de/utf-8/decoder/dfa/
 
-%% erlfmt-ignore
 %% Map character to character class
 utf8t() ->
     {
@@ -401,7 +548,6 @@ utf8t() ->
        10,3,3,3,3,3,3,3,3,3,3,3,3,4,3,3, 11,6,6,6,5,8,8,8,8,8,8,8,8,8,8,8
     }.
 
-%% erlfmt-ignore
 %% Transition table mapping combination of state & class to next state
 utf8s() ->
     {
@@ -412,7 +558,6 @@ utf8s() ->
         12,36,12,12,12,12,12,12,12,12,12,12
     }.
 
-%% erlfmt-ignore
 %% Optimisation for 1st byte direct state lookup,
 %% we know starting state is 0 and ASCII bytes were already handled
 utf8s0() ->
@@ -427,45 +572,30 @@ utf8s0() ->
         72,84,84,84,96,12,12,12,12,12,12,12,12,12,12,12
     }.
 
--if(?OTP_RELEASE >= 24).
+-spec invalid_byte(binary(), non_neg_integer()) -> no_return().
 invalid_byte(Bin, Skip) ->
     Byte = binary:at(Bin, Skip),
-    error({invalid_byte, Byte}, none, error_info(Skip)).
-
-error_info(Skip) ->
-    [{error_info, #{cause => #{position => Skip}}}].
--else.
-invalid_byte(Bin, Skip) ->
-    Byte = binary:at(Bin, Skip),
-    error({invalid_byte, Byte}, none).
--endif.
+    extended_error({invalid_byte, Byte}, none, Skip).
 
 %%
 %% Decoding implementation
 %%
 
-% We use integers instead of atoms for better codegen
--define(ARRAY, 0).
--define(OBJECT, 1).
-
--define(is_1_to_9(X), X =:= $1; X =:= $2; X =:= $3; X =:= $4; X =:= $5; X =:= $6; X =:= $7; X =:= $8; X =:= $9).
--define(is_0_to_9(X), X =:= $0; ?is_1_to_9(X)).
--define(is_ws(X), X =:= $\s; X =:= $\t; X =:= $\r; X =:= $\n).
+-define(ARRAY, array).
+-define(OBJECT, object).
 
 -type from_binary_fun() :: fun((binary()) -> dynamic()).
 -type array_start_fun() :: fun((Acc :: dynamic()) -> ArrayAcc :: dynamic()).
 -type array_push_fun() :: fun((Value :: dynamic(), Acc :: dynamic()) -> NewAcc :: dynamic()).
--type array_finish_fun() :: fun((ArrayAcc :: dynamic()) -> dynamic()).
+-type array_finish_fun() :: fun((ArrayAcc :: dynamic(), OldAcc :: dynamic()) -> {dynamic(), dynamic()}).
 -type object_start_fun() :: fun((Acc :: dynamic()) -> ObjectAcc :: dynamic()).
 -type object_push_fun() :: fun((Key :: dynamic(), Value :: dynamic(), Acc :: dynamic()) -> NewAcc :: dynamic()).
--type object_finish_fun() :: fun((ObjectAcc :: dynamic()) -> dynamic()).
+-type object_finish_fun() :: fun((ObjectAcc :: dynamic(), OldAcc :: dynamic()) -> {dynamic(), dynamic()}).
 
 -type decoders() :: #{
-    empty_array => term(),
     array_start => array_start_fun(),
     array_push => array_push_fun(),
     array_finish => array_finish_fun(),
-    empty_object => term(),
     object_start => object_start_fun(),
     object_push => object_push_fun(),
     object_finish => object_finish_fun(),
@@ -476,14 +606,12 @@ invalid_byte(Bin, Skip) ->
 }.
 
 -record(decode, {
-    empty_array = [] :: term(),
     array_start :: array_start_fun() | undefined,
     array_push :: array_push_fun() | undefined,
-    array_finish = fun lists:reverse/1 :: array_finish_fun(),
-    empty_object = #{} :: term(),
+    array_finish :: array_finish_fun() | undefined,
     object_start :: object_start_fun() | undefined,
     object_push :: object_push_fun() | undefined,
-    object_finish = fun maps:from_list/1 :: object_finish_fun(),
+    object_finish :: object_finish_fun() | undefined,
     float = fun erlang:binary_to_float/1 :: from_binary_fun(),
     integer = fun erlang:binary_to_integer/1 :: from_binary_fun(),
     string :: from_binary_fun() | undefined,
@@ -494,36 +622,48 @@ invalid_byte(Bin, Skip) ->
 -type stack() :: [?ARRAY | ?OBJECT | binary() | acc()].
 -type decode() :: #decode{}.
 
--type simple_decode_value() ::
+-type decode_value() ::
     integer()
     | float()
     | boolean()
     | null
     | binary()
-    | list(simple_decode_value())
-    | #{binary() => simple_decode_value()}.
+    | list(decode_value())
+    | #{binary() => decode_value()}.
 
-% @doc 
+% -doc """
 % Parses a JSON value from `Binary`.
 
 % Supports basic data mapping:
 
-% | **JSON** | **Erlang**            |
-% |----------|-----------------------|
-% | Number   | integer() \\| float() |
-% | Boolean  | true \\| false        |
-% | Null     | null                  |
-% | String   | binary()              |
-% | Object   | #{binary() => _}      |
+% | **JSON** | **Erlang**             |
+% |----------|------------------------|
+% | Number   | `integer() \| float()` |
+% | Boolean  | `true \| false`        |
+% | Null     | `null`                 |
+% | String   | `binary()`             |
+% | Object   | `#{binary() => _}`     |
 
--spec decode(binary()) -> simple_decode_value().
+% ## Errors
+
+% * `error(unexpected_end)` if `Binary` contains incomplete JSON value
+% * `error({invalid_byte, Byte})` if `Binary` contains unexpected byte or invalid UTF-8 byte
+% * `error({invalid_sequence, Bytes})` if `Binary` contains invalid UTF-8 escape
+
+% ## Example
+
+% ```erlang
+% > json:decode(<<"{\"foo\": 1}">>).
+% #{<<"foo">> => 1}
+% """.
+-spec decode(binary()) -> decode_value().
 decode(Binary) when is_binary(Binary) ->
     case value(Binary, Binary, 0, ok, [], #decode{}) of
         {Result, _Acc, <<>>} -> Result;
         {_, _, Rest} -> unexpected(Rest, 0)
     end.
 
-% @doc
+% -doc """
 % Parses a JSON value from `Binary`.
 
 % Similar to `decode/1` except the decoding process
@@ -533,36 +673,55 @@ decode(Binary) when is_binary(Binary) ->
 
 % Any leftover, unparsed data in `Binary` will be returned.
 
+% ## Default callbacks
+
+% All callbacks are optional. If not provided, they will fall back to
+% implementations used by the `decode/1` function:
+
+% * for `array_start`: `fun(_) -> [] end`
+% * for `array_push`: `fun(Elem, Acc) -> [Elem | Acc] end`
+% * for `array_finish`: `fun(Acc, OldAcc) -> {lists:reverse(Acc), OldAcc} end`
+% * for `object_start`: `fun(_) -> [] end`
+% * for `object_push`: `fun(Key, Value, Acc) -> [{Key, Value} | Acc] end`
+% * for `object_finish`: `fun(Acc, OldAcc) -> {maps:from_list(Acc), OldAcc} end`
+% * for `float`: `fun erlang:binary_to_float/1`
+% * for `integer`: `fun erlang:binary_to_integer/1`
+% * for `string`: `fun (Value) -> Value end`
+% * for `null`: the atom `null`
+
+% ## Errors
+
+% * `error(unexpected_end)` if `Binary` contains incomplete JSON value
+% * `error({invalid_byte, Byte})` if `Binary` contains unexpected byte or invalid UTF-8 byte
+% * `error({invalid_sequence, Bytes})` if `Binary` contains invalid UTF-8 escape
+
 % ## Example
 
 % Decoding object keys as atoms:
 
 % ```erlang
-% Push = fun(Key, Value, Acc) -> [{binary_to_existing_atom(Key), Value} | Acc] end,
-% json:decode(Data, ok, #{object_push => Push})
+% > Push = fun(Key, Value, Acc) -> [{binary_to_existing_atom(Key), Value} | Acc] end.
+% > json:decode(<<"{\"foo\": 1}">>, ok, #{object_push => Push}).
+% {#{foo => 1},ok,<<>>}
 % ```
-
+% """.
 -spec decode(binary(), dynamic(), decoders()) ->
     {Result :: dynamic(), Acc :: dynamic(), binary()}.
 decode(Binary, Acc, Decoders) when is_binary(Binary) ->
     Decode = maps:fold(fun parse_decoder/3, #decode{}, Decoders),
     value(Binary, Binary, 0, Acc, [], Decode).
 
-parse_decoder(empty_array, Value, Decode) ->
-    Decode#decode{empty_array = Value};
 parse_decoder(array_start, Fun, Decode) when is_function(Fun, 1) ->
     Decode#decode{array_start = Fun};
 parse_decoder(array_push, Fun, Decode) when is_function(Fun, 2) ->
     Decode#decode{array_push = Fun};
-parse_decoder(array_finish, Fun, Decode) when is_function(Fun, 1) ->
+parse_decoder(array_finish, Fun, Decode) when is_function(Fun, 2) ->
     Decode#decode{array_finish = Fun};
-parse_decoder(empty_object, Value, Decode) ->
-    Decode#decode{empty_object = Value};
 parse_decoder(object_start, Fun, Decode) when is_function(Fun, 1) ->
     Decode#decode{object_start = Fun};
 parse_decoder(object_push, Fun, Decode) when is_function(Fun, 3) ->
     Decode#decode{object_push = Fun};
-parse_decoder(object_finish, Fun, Decode) when is_function(Fun, 1) ->
+parse_decoder(object_finish, Fun, Decode) when is_function(Fun, 2) ->
     Decode#decode{object_finish = Fun};
 parse_decoder(float, Fun, Decode) when is_function(Fun, 1) ->
     Decode#decode{float = Fun};
@@ -573,21 +732,31 @@ parse_decoder(string, Fun, Decode) when is_function(Fun, 1) ->
 parse_decoder(null, Null, Decode) ->
     Decode#decode{null = Null}.
 
-value(<<Byte, Rest/bits>>, Original, Skip, Acc, Stack, Decode) ->
-    case Byte of
-        _ when ?is_ws(Byte) -> value(Rest, Original, Skip + 1, Acc, Stack, Decode);
-        $0 -> number_zero(Rest, Original, Skip, Acc, Stack, Decode, 1);
-        _ when ?is_1_to_9(Byte) -> number(Rest, Original, Skip, Acc, Stack, Decode, 1);
-        $- -> number_minus(Rest, Original, Skip, Acc, Stack, Decode);
-        $t -> true(Rest, Original, Skip, Acc, Stack, Decode);
-        $f -> false(Rest, Original, Skip, Acc, Stack, Decode);
-        $n -> null(Rest, Original, Skip, Acc, Stack, Decode);
-        $" -> string(Rest, Original, Skip + 1, Acc, Stack, Decode, 0);
-        $[ -> array_start(Rest, Original, Skip, Acc, Stack, Decode);
-        ${ -> object_start(Rest, Original, Skip, Acc, Stack, Decode);
-        _ -> unexpected(Original, Skip)
-    end;
-value(<<>>, Original, Skip, _Acc, _Stack, _Decode) ->
+value(<<Byte, Rest/bits>>, Original, Skip, Acc, Stack, Decode) when ?is_ws(Byte) ->
+    value(Rest, Original, Skip + 1, Acc, Stack, Decode);
+value(<<$0, Rest/bits>>, Original, Skip, Acc, Stack, Decode) ->
+    number_zero(Rest, Original, Skip, Acc, Stack, Decode, 1);
+value(<<Byte, Rest/bits>>, Original, Skip, Acc, Stack, Decode) when ?is_1_to_9(Byte) ->
+    number(Rest, Original, Skip, Acc, Stack, Decode, 1);
+value(<<$-, Rest/bits>>, Original, Skip, Acc, Stack, Decode) ->
+    number_minus(Rest, Original, Skip, Acc, Stack, Decode);
+value(<<$t, Rest/bits>>, Original, Skip, Acc, Stack, Decode) ->
+    true(Rest, Original, Skip, Acc, Stack, Decode);
+value(<<$f, Rest/bits>>, Original, Skip, Acc, Stack, Decode) ->
+    false(Rest, Original, Skip, Acc, Stack, Decode);
+value(<<$n, Rest/bits>>, Original, Skip, Acc, Stack, Decode) ->
+    null(Rest, Original, Skip, Acc, Stack, Decode);
+value(<<$", Rest/bits>>, Original, Skip, Acc, Stack, Decode) ->
+    string(Rest, Original, Skip + 1, Acc, Stack, Decode);
+value(<<$[, Rest/bits>>, Original, Skip, Acc, Stack, Decode) ->
+    array_start(Rest, Original, Skip, Acc, Stack, Decode);
+value(<<${, Rest/bits>>, Original, Skip, Acc, Stack, Decode) ->
+    object_start(Rest, Original, Skip, Acc, Stack, Decode);
+value(<<Byte, _/bits>>, Original, Skip, _Acc, _Stack, _Decode) when ?is_ascii_plain(Byte) ->
+    %% this clause is effecively the same as the last one, but necessary to
+    %% force compiler to emit a jump table dispatch, rather than binary search
+    invalid_byte(Original, Skip);
+value(_, Original, Skip, _Acc, _Stack, _Decode) ->
     unexpected(Original, Skip).
 
 true(<<"rue", Rest/bits>>, Original, Skip, Acc, Stack, Decode) ->
@@ -688,49 +857,96 @@ number_exp_cont(Rest, Original, Skip, Acc, Stack, Decode, Len, Prefix, ExpLen) -
     Token = <<Prefix/binary, ".0e", Suffix/binary>>,
     float_decode(Rest, Original, Skip, Acc, Stack, Decode, Len + ExpLen, Token).
 
+string(Binary, Original, Skip, Acc, Stack, Decode) ->
+    string_ascii(Binary, Original, Skip, Acc, Stack, Decode, 0).
+
+string_ascii(Binary, Original, Skip, Acc, Stack, Decode, Len) ->
+    case Binary of
+        <<B1, B2, B3, B4, B5, B6, B7, B8, Rest/binary>> when ?are_all_ascii_plain(B1, B2, B3, B4, B5, B6, B7, B8) ->
+            string_ascii(Rest, Original, Skip, Acc, Stack, Decode, Len + 8);
+        Other ->
+            string(Other, Original, Skip, Acc, Stack, Decode, Len)
+    end.
+
 -spec string(binary(), binary(), integer(), acc(), stack(), decode(), integer()) -> dynamic().
-string(<<$", Rest/bits>>, Original, Skip0, Acc, Stack, Decode, Len) ->
-    Value = binary_part(Original, Skip0, Len),
+string(<<Byte, Rest/bits>>, Orig, Skip, Acc, Stack, Decode, Len) when ?is_ascii_plain(Byte) ->
+    string(Rest, Orig, Skip, Acc, Stack, Decode, Len + 1);
+string(<<$\\, Rest/bits>>, Orig, Skip, Acc, Stack, Decode, Len) ->
+    Part = binary_part(Orig, Skip, Len),
+    SAcc = <<>>,
+    unescape(Rest, Orig, Skip, Acc, Stack, Decode, Len, <<SAcc/binary, Part/binary>>);
+string(<<$", Rest/bits>>, Orig, Skip0, Acc, Stack, Decode, Len) ->
+    Value = binary_part(Orig, Skip0, Len),
     Skip = Skip0 + Len + 1,
     case Decode#decode.string of
-        undefined -> continue(Rest, Original, Skip, Acc, Stack, Decode, Value);
-        Fun -> continue(Rest, Original, Skip, Acc, Stack, Decode, Fun(Value))
+        undefined -> continue(Rest, Orig, Skip, Acc, Stack, Decode, Value);
+        Fun -> continue(Rest, Orig, Skip, Acc, Stack, Decode, Fun(Value))
     end;
-string(<<$\\, Rest/bits>>, Original, Skip, Acc, Stack, Decode, Len) ->
-    Part = binary_part(Original, Skip, Len),
-    SAcc = <<>>,
-    escape(Rest, Original, Skip, Acc, Stack, Decode, Len, <<SAcc/binary, Part/binary>>);
-string(<<Byte, _/bits>>, Original, Skip, _Acc, _Stack, _Decode, Len) when Byte =< 16#1F ->
-    unexpected(Original, Skip + Len);
-string(<<Byte, Rest/bits>>, Original, Skip, Acc, Stack, Decode, Len) when Byte =< 16#7F ->
-    string(Rest, Original, Skip, Acc, Stack, Decode, Len + 1);
-string(<<Char/utf8, Rest/bits>>, Original, Skip, Acc, Stack, Decode, Len) ->
-    string(Rest, Original, Skip, Acc, Stack, Decode, Len + multibyte_size(Char));
-string(_, Original, Skip, _Acc, _Stack, _Decode, Len) ->
-    unexpected(Original, Skip + Len).
+string(<<Byte, _/bits>>, Orig, Skip, _Acc, _Stack, _Decode, Len) when ?is_ascii_escape(Byte) ->
+    invalid_byte(Orig, Skip + Len);
+string(<<Byte, Rest/bytes>>, Orig, Skip, Acc, Stack, Decode, Len) ->
+    case element(Byte - 127, utf8s0()) of
+        ?UTF8_REJECT -> invalid_byte(Orig, Skip + Len);
+        %% all accept cases are ASCII, already covered above
+        State -> string_utf8(Rest, Orig, Skip, Acc, Stack, Decode, Len, State)
+    end;
+string(_, Orig, Skip, _Acc, _Stack, _Decode, Len) ->
+    unexpected(Orig, Skip + Len).
 
--spec string(binary(), binary(), integer(), acc(), stack(), decode(), integer(), binary(), integer()) -> dynamic().
-string(<<$", Rest/bits>>, Original, Skip0, Acc, Stack, Decode, Len, SAcc, PLen) ->
-    Part = binary_part(Original, Skip0 + Len, PLen),
+string_utf8(<<Byte, Rest/binary>>, Orig, Skip, Acc, Stack, Decode, Len, State0) ->
+    Type = element(Byte + 1, utf8t()),
+    case element(State0 + Type, utf8s()) of
+        ?UTF8_ACCEPT -> string_ascii(Rest, Orig, Skip, Acc, Stack, Decode, Len + 2);
+        ?UTF8_REJECT -> invalid_byte(Orig, Skip + Len + 1);
+        State -> string_utf8(Rest, Orig, Skip, Acc, Stack, Decode, Len + 1, State)
+    end;
+string_utf8(_, Orig, Skip, _Acc, _Stack, _Decode, Len, _State0) ->
+    unexpected(Orig, Skip + Len + 1).
+
+string_ascii(Binary, Original, Skip, Acc, Stack, Decode, Len, SAcc) ->
+    case Binary of
+        <<B1, B2, B3, B4, B5, B6, B7, B8, Rest/binary>> when ?are_all_ascii_plain(B1, B2, B3, B4, B5, B6, B7, B8) ->
+            string_ascii(Rest, Original, Skip, Acc, Stack, Decode, Len + 8, SAcc);
+        Other ->
+            string(Other, Original, Skip, Acc, Stack, Decode, Len, SAcc)
+    end.
+
+-spec string(binary(), binary(), integer(), acc(), stack(), decode(), integer(), binary()) -> dynamic().
+string(<<Byte, Rest/bits>>, Orig, Skip, Acc, Stack, Decode, Len, SAcc) when ?is_ascii_plain(Byte) ->
+    string(Rest, Orig, Skip, Acc, Stack, Decode, Len + 1, SAcc);
+string(<<$\\, Rest/bits>>, Orig, Skip, Acc, Stack, Decode, Len, SAcc) ->
+    Part = binary_part(Orig, Skip, Len),
+    unescape(Rest, Orig, Skip, Acc, Stack, Decode, Len, <<SAcc/binary, Part/binary>>);
+string(<<$", Rest/bits>>, Orig, Skip0, Acc, Stack, Decode, Len, SAcc) ->
+    Part = binary_part(Orig, Skip0, Len),
     Value = <<SAcc/binary, Part/binary>>,
-    Skip = Skip0 + Len + PLen + 1,
+    Skip = Skip0 + Len + 1,
     case Decode#decode.string of
-        undefined -> continue(Rest, Original, Skip, Acc, Stack, Decode, Value);
-        Fun -> continue(Rest, Original, Skip, Acc, Stack, Decode, Fun(Value))
+        undefined -> continue(Rest, Orig, Skip, Acc, Stack, Decode, Value);
+        Fun -> continue(Rest, Orig, Skip, Acc, Stack, Decode, Fun(Value))
     end;
-string(<<$\\, Rest/bits>>, Original, Skip, Acc, Stack, Decode, Len, SAcc, PLen) ->
-    Part = binary_part(Original, Skip + Len, PLen),
-    escape(Rest, Original, Skip, Acc, Stack, Decode, Len + PLen, <<SAcc/binary, Part/binary>>);
-string(<<Byte, _/bits>>, Original, Skip, _Acc, _Stack, _Decode, Len, _SAcc, PLen) when Byte =< 16#1F ->
-    unexpected(Original, Skip + Len + PLen);
-string(<<Byte, Rest/bits>>, Original, Skip, Acc, Stack, Decode, Len, SAcc, PLen) when Byte =< 16#7F ->
-    string(Rest, Original, Skip, Acc, Stack, Decode, Len, SAcc, PLen + 1);
-string(<<Char/utf8, Rest/bits>>, Original, Skip, Acc, Stack, Decode, Len, SAcc, PLen) ->
-    string(Rest, Original, Skip, Acc, Stack, Decode, Len, SAcc, PLen + multibyte_size(Char));
-string(_, Original, Skip, _Acc, _Stack, _Decode, Len, _SAcc, PLen) ->
-    unexpected(Original, Skip + Len + PLen).
+string(<<Byte, _/bits>>, Orig, Skip, _Acc, _Stack, _Decode, Len, _SAcc) when ?is_ascii_escape(Byte) ->
+    invalid_byte(Orig, Skip + Len);
+string(<<Byte, Rest/bytes>>, Orig, Skip, Acc, Stack, Decode, Len, SAcc) ->
+    case element(Byte - 127, utf8s0()) of
+        ?UTF8_REJECT -> invalid_byte(Orig, Skip + Len);
+        %% all accept cases are ASCII, already covred above
+        State -> string_utf8(Rest, Orig, Skip, Acc, Stack, Decode, Len, SAcc, State)
+    end;
+string(_, Orig, Skip, _Acc, _Stack, _Decode, Len, _SAcc) ->
+    unexpected(Orig, Skip + Len).
 
-escape(<<Byte, Rest/bits>>, Original, Skip, Acc, Stack, Decode, Len, SAcc) ->
+string_utf8(<<Byte, Rest/binary>>, Orig, Skip, Acc, Stack, Decode, Len, SAcc, State0) ->
+    Type = element(Byte + 1, utf8t()),
+    case element(State0 + Type, utf8s()) of
+        ?UTF8_ACCEPT -> string_ascii(Rest, Orig, Skip, Acc, Stack, Decode, Len + 2, SAcc);
+        ?UTF8_REJECT -> invalid_byte(Orig, Skip + Len + 1);
+        State -> string_utf8(Rest, Orig, Skip, Acc, Stack, Decode, Len + 1, SAcc, State)
+    end;
+string_utf8(_, Orig, Skip, _Acc, _Stack, _Decode, Len, _SAcc, _State0) ->
+    unexpected(Orig, Skip + Len + 1).
+
+unescape(<<Byte, Rest/bits>>, Original, Skip, Acc, Stack, Decode, Len, SAcc) ->
     Val =
         case Byte of
             $b -> $\b;
@@ -742,22 +958,23 @@ escape(<<Byte, Rest/bits>>, Original, Skip, Acc, Stack, Decode, Len, SAcc) ->
             $\\ -> $\\;
             $/ -> $/;
             $u -> unicode;
-            _ -> unexpected(Original, Skip + Len + 1)
+            _ -> error
         end,
     case Val of
-        unicode -> escapeu(Rest, Original, Skip, Acc, Stack, Decode, Len, SAcc);
-        Int -> string(Rest, Original, Skip, Acc, Stack, Decode, Len + 2, <<SAcc/binary, Int>>, 0)
+        unicode -> unescapeu(Rest, Original, Skip, Acc, Stack, Decode, Len, SAcc);
+        error -> unexpected(Original, Skip + Len + 1);
+        Int -> string_ascii(Rest, Original, Skip + Len + 2, Acc, Stack, Decode, 0, <<SAcc/binary, Int>>)
     end;
-escape(_, Original, Skip, _Acc, _Stack, _Decode, Len, _SAcc) ->
+unescape(_, Original, Skip, _Acc, _Stack, _Decode, Len, _SAcc) ->
     unexpected(Original, Skip + Len + 1).
 
-escapeu(<<Escape:4/binary, Rest/bits>>, Original, Skip, Acc, Stack, Decode, Len, SAcc) ->
-    try binary_to_integer(Escape, 16) of
+unescapeu(<<E1, E2, E3, E4, Rest/bits>>, Original, Skip, Acc, Stack, Decode, Len, SAcc) ->
+    try hex_to_int(E1, E2, E3, E4) of
         CP when CP >= 16#D800, CP =< 16#DBFF ->
-            escape_surrogate(Rest, Original, Skip, Acc, Stack, Decode, Len, SAcc, CP);
+            unescape_surrogate(Rest, Original, Skip, Acc, Stack, Decode, Len, SAcc, CP);
         CP ->
             try <<SAcc/binary, CP/utf8>> of
-                SAcc1 -> string(Rest, Original, Skip, Acc, Stack, Decode, Len + 6, SAcc1, 0)
+                SAcc1 -> string_ascii(Rest, Original, Skip + Len + 6, Acc, Stack, Decode, 0, SAcc1)
             catch
                 _:_ -> unexpected_sequence(binary_part(Original, Skip + Len, 6), Skip + Len)
             end
@@ -765,15 +982,15 @@ escapeu(<<Escape:4/binary, Rest/bits>>, Original, Skip, Acc, Stack, Decode, Len,
         _:_ ->
             unexpected_sequence(binary_part(Original, Skip + Len, 6), Skip + Len)
     end;
-escapeu(_, Original, Skip, _Acc, _Stack, _Decode, Len, _SAcc) ->
+unescapeu(_, Original, Skip, _Acc, _Stack, _Decode, Len, _SAcc) ->
     unexpected(Original, Skip + Len + 2).
 
-escape_surrogate(<<"\\u", Escape:4/binary, Rest/bits>>, Original, Skip, Acc, Stack, Decode, Len, SAcc, Hi) ->
-    try binary_to_integer(Escape, 16) of
+unescape_surrogate(<<"\\u", E1, E2, E3, E4, Rest/bits>>, Original, Skip, Acc, Stack, Decode, Len, SAcc, Hi) ->
+    try hex_to_int(E1, E2, E3, E4) of
         Lo when Lo >= 16#DC00, Lo =< 16#DFFF ->
             CP = 16#10000 + ((Hi band 16#3FF) bsl 10) + (Lo band 16#3FF),
             try <<SAcc/binary, CP/utf8>> of
-                SAcc1 -> string(Rest, Original, Skip, Acc, Stack, Decode, Len + 12, SAcc1, 0)
+                SAcc1 -> string_ascii(Rest, Original, Skip + Len + 12, Acc, Stack, Decode, 0, SAcc1)
             catch
                 _:_ -> unexpected_sequence(binary_part(Original, Skip + Len, 12), Skip + Len)
             end;
@@ -782,13 +999,33 @@ escape_surrogate(<<"\\u", Escape:4/binary, Rest/bits>>, Original, Skip, Acc, Sta
     catch
         _:_ -> unexpected_sequence(binary_part(Original, Skip + Len, 12), Skip + Len)
     end;
-escape_surrogate(_, Original, Skip, _Acc, _Stack, _Decode, Len, _SAcc, _Hi) ->
+unescape_surrogate(_, Original, Skip, _Acc, _Stack, _Decode, Len, _SAcc, _Hi) ->
     unexpected(Original, Skip + Len + 6).
+
+%% erlfmt-ignore
+%% this is a macro instead of an inlined function - compiler refused to inline
+-define(hex_digit(C), element(C - $0 + 1, {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, n, n, n, n, n, %% 0x30
+    n, n, 10,11,12,13,14,15,n, n, n, n, n, n, n, %% 0x40
+    n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, %% 0x50
+    n, n, n, n, 10,11,12,13,14,15                %% 0x60
+})).
+
+-spec hex_to_int(byte(), byte(), byte(), byte()) -> integer().
+hex_to_int(H1, H2, H3, H4) ->
+    ?hex_digit(H4) + 16 * (?hex_digit(H3) + 16 * (?hex_digit(H2) + 16 * ?hex_digit(H1))).
 
 array_start(<<Byte, Rest/bits>>, Original, Skip, Acc, Stack, Decode) when ?is_ws(Byte) ->
     array_start(Rest, Original, Skip + 1, Acc, Stack, Decode);
 array_start(<<"]", Rest/bits>>, Original, Skip, Acc, Stack, Decode) ->
-    continue(Rest, Original, Skip + 2, Acc, Stack, Decode, Decode#decode.empty_array);
+    {Value, NewAcc} =
+        case {Decode#decode.array_start, Decode#decode.array_finish} of
+            {undefined, undefined} -> {[], Acc};
+            {Start, undefined} -> {lists:reverse(Start(Acc)), Acc};
+            {undefined, Finish} -> Finish([], Acc);
+            {Start, Finish} -> Finish(Start(Acc), Acc)
+        end,
+    continue(Rest, Original, Skip + 2, NewAcc, Stack, Decode, Value);
 array_start(Rest, Original, Skip0, OldAcc, Stack, Decode) ->
     Skip = Skip0 + 1,
     case Decode#decode.array_start of
@@ -802,11 +1039,15 @@ array_push(<<"]", Rest/bits>>, Original, Skip, Acc0, Stack0, Decode, Value) ->
     Acc =
         case Decode#decode.array_push of
             undefined -> [Value | Acc0];
-            Fun -> Fun(Value, Acc0)
+            Push -> Push(Value, Acc0)
         end,
-    ArrayValue = (Decode#decode.array_finish)(Acc),
     [_, OldAcc | Stack] = Stack0,
-    continue(Rest, Original, Skip + 1, OldAcc, Stack, Decode, ArrayValue);
+    {ArrayValue, NewAcc} =
+        case Decode#decode.array_finish of
+            undefined -> {lists:reverse(Acc), OldAcc};
+            Finish -> Finish(Acc, OldAcc)
+        end,
+    continue(Rest, Original, Skip + 1, NewAcc, Stack, Decode, ArrayValue);
 array_push(<<$,, Rest/bits>>, Original, Skip0, Acc, Stack, Decode, Value) ->
     Skip = Skip0 + 1,
     case Decode#decode.array_push of
@@ -819,16 +1060,23 @@ array_push(_, Original, Skip, _Acc, _Stack, _Decode, _Value) ->
 object_start(<<Byte, Rest/bits>>, Original, Skip, Acc, Stack, Decode) when ?is_ws(Byte) ->
     object_start(Rest, Original, Skip + 1, Acc, Stack, Decode);
 object_start(<<"}", Rest/bits>>, Original, Skip, Acc, Stack, Decode) ->
-    continue(Rest, Original, Skip + 2, Acc, Stack, Decode, Decode#decode.empty_object);
+    {Value, NewAcc} =
+        case {Decode#decode.object_start, Decode#decode.object_finish} of
+            {undefined, undefined} -> {#{}, Acc};
+            {Start, undefined} -> {maps:from_list(Start(Acc)), Acc};
+            {undefined, Finish} -> Finish([], Acc);
+            {Start, Finish} -> Finish(Start(Acc), Acc)
+        end,
+    continue(Rest, Original, Skip + 2, NewAcc, Stack, Decode, Value);
 object_start(<<$", Rest/bits>>, Original, Skip0, OldAcc, Stack0, Decode) ->
     Stack = [?OBJECT, OldAcc | Stack0],
     Skip = Skip0 + 2,
     case Decode#decode.object_start of
         undefined ->
-            string(Rest, Original, Skip, [], Stack, Decode, 0);
+            string(Rest, Original, Skip, [], Stack, Decode);
         Fun ->
             Acc = Fun(OldAcc),
-            string(Rest, Original, Skip, Acc, Stack, Decode, 0)
+            string(Rest, Original, Skip, Acc, Stack, Decode)
     end;
 object_start(_, Original, Skip, _Acc, _Stack, _Decode) ->
     unexpected(Original, Skip + 1).
@@ -848,9 +1096,13 @@ object_push(<<"}", Rest/bits>>, Original, Skip, Acc0, Stack0, Decode, Value, Key
             undefined -> [{Key, Value} | Acc0];
             Fun -> Fun(Key, Value, Acc0)
         end,
-    ObjectValue = (Decode#decode.object_finish)(Acc),
     [_, OldAcc | Stack] = Stack0,
-    continue(Rest, Original, Skip + 1, OldAcc, Stack, Decode, ObjectValue);
+    {ObjectValue, NewAcc} =
+        case Decode#decode.object_finish of
+            undefined -> {maps:from_list(Acc), OldAcc};
+            Finish -> Finish(Acc, OldAcc)
+        end,
+    continue(Rest, Original, Skip + 1, NewAcc, Stack, Decode, ObjectValue);
 object_push(<<$,, Rest/bits>>, Original, Skip, Acc0, Stack, Decode, Value, Key) ->
     case Decode#decode.object_push of
         undefined -> object_key(Rest, Original, Skip + 1, [{Key, Value} | Acc0], Stack, Decode);
@@ -862,7 +1114,7 @@ object_push(_, Original, Skip, _Acc, _Stack, _Decode, _Value, _Key) ->
 object_key(<<Byte, Rest/bits>>, Original, Skip, Acc, Stack, Decode) when ?is_ws(Byte) ->
     object_key(Rest, Original, Skip + 1, Acc, Stack, Decode);
 object_key(<<$", Rest/bits>>, Original, Skip, Acc, Stack, Decode) ->
-    string(Rest, Original, Skip + 1, Acc, Stack, Decode, 0);
+    string(Rest, Original, Skip + 1, Acc, Stack, Decode);
 object_key(_, Original, Skip, _Acc, _Stack, _Decode) ->
     unexpected(Original, Skip).
 
@@ -886,11 +1138,5 @@ unexpected(Original, Skip) ->
     invalid_byte(Original, Skip).
 
 -spec unexpected_sequence(binary(), non_neg_integer()) -> no_return().
--if(?OTP_RELEASE >= 24).
 unexpected_sequence(Value, Skip) ->
-    error({unexpected_sequence, Value}, none, error_info(Skip)).
--else.
-unexpected_sequence(Value, _Skip) ->
-    error({unexpected_sequence, Value}, none).
--endif.
-
+    extended_error({unexpected_sequence, Value}, none, Skip).

@@ -561,23 +561,23 @@ otp_encode_results(ReturnTerms, Results) ->
     otp_encode_results(ReturnTerms, Results, undefined).
 
 otp_encode_results(true, Results, undefined) ->
-    riak_kv_wm_otpjson:encode(
+    riak_kv_wm_json:encode(
         #{?Q_RESULTS_BIN => Results},
         fun results_encode/2
     );
 otp_encode_results(true, Results, Continuation) ->
-    riak_kv_wm_otpjson:encode(
+    riak_kv_wm_json:encode(
         #{?Q_RESULTS_BIN => Results,
             ?Q_2I_CONTINUATION_BIN => Continuation},
         fun results_encode/2
     );
 otp_encode_results(false, Results, undefined) ->
-    riak_kv_wm_otpjson:encode(
+    riak_kv_wm_json:encode(
         #{?Q_KEYS_BIN => Results},
         fun keys_encode/2
     );
 otp_encode_results(false, Results, Continuation) ->
-    riak_kv_wm_otpjson:encode(
+    riak_kv_wm_json:encode(
         #{?Q_KEYS_BIN => Results,
             ?Q_2I_CONTINUATION_BIN => Continuation},
         fun keys_encode/2
@@ -585,13 +585,17 @@ otp_encode_results(false, Results, Continuation) ->
 
 results_encode({Term, Key}, Encode) when is_binary(Term), is_binary(Key) ->
     ["{", [Encode(Term, Encode), $: | Encode(Key, Encode)], "}"];
+results_encode({Term, Key}, Encode) when is_integer(Term), is_binary(Key) ->
+    ["{",
+        [Encode(integer_to_binary(Term), Encode), $: | Encode(Key, Encode)],
+        "}"];
 results_encode(Result, Encode) ->
-    riak_kv_wm_otpjson:encode_value(Result, Encode).
+    riak_kv_wm_json:encode_value(Result, Encode).
 
 keys_encode({_Term, Key}, Encode) when is_binary(Key) ->
-    riak_kv_wm_otpjson:encode_value(Key, Encode);
+    riak_kv_wm_json:encode_value(Key, Encode);
 keys_encode(Object, Encode) ->
-    riak_kv_wm_otpjson:encode_value(Object, Encode).
+    riak_kv_wm_json:encode_value(Object, Encode).
 
 encode_results(ReturnTerms, Results) ->
     encode_results(ReturnTerms, Results, undefined).
@@ -618,11 +622,16 @@ encode_results(ReturnTerms, Results, Continuation) ->
 -include_lib("eunit/include/eunit.hrl").
 
 
+otp_decode(JsonIOL) ->
+    riak_kv_wm_json:decode(iolist_to_binary(JsonIOL)).
+
 compare_encode_test() ->
     Results = large_results(10),
     OTPjsonA = otp_encode_results(true, Results),
     MjsonA = mochijson_encode_results(true, Results),
     ?assert(mochijson2:decode(MjsonA) == mochijson2:decode(OTPjsonA)),
+    ?assert(otp_decode(MjsonA) == otp_decode(OTPjsonA)),
+    ?assert(iolist_to_binary(MjsonA) == iolist_to_binary(OTPjsonA)),
     Continuation = make_continuation(10, Results, 10),
     OTPjsonB = otp_encode_results(true, Results, Continuation),
     MjsonB = mochijson_encode_results(true, Results, Continuation),
@@ -636,7 +645,14 @@ compare_encode_test() ->
     MjsonD = mochijson_encode_results(false, Results, Continuation),
     {struct, MDecodeOTPjsonD} = mochijson2:decode(OTPjsonD),
     {struct, MDecodeMjsonD} = mochijson2:decode(MjsonD),
-    ?assert(lists:sort(MDecodeOTPjsonD) == lists:sort(MDecodeMjsonD))
+    ?assert(lists:sort(MDecodeOTPjsonD) == lists:sort(MDecodeMjsonD)),
+    IntIdxResults = [{1, <<"K1">>}, {2, <<"K2">>}],
+    OTPjsonE = otp_encode_results(true, IntIdxResults),
+    MjsonE = mochijson_encode_results(true, IntIdxResults),
+    ?assert(mochijson2:decode(MjsonE) == mochijson2:decode(OTPjsonE)),
+    ?assert(otp_decode(MjsonE) == otp_decode(OTPjsonE)),
+    ?assert(iolist_to_binary(MjsonE) == iolist_to_binary(OTPjsonE))
+
     .
 
 encoder_test_() ->

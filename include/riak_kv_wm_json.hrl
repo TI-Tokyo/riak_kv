@@ -1,3 +1,48 @@
+%%
+%% %CopyrightBegin%
+%%
+%% Copyright Ericsson AB 2024. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% %CopyrightEnd%
+%%
+
+%% A lot of the macros below use multi-value comparisons where
+%% range checks would have worked just fine. This is because
+%% the compiler & JIT can emit better code in some cases when
+%% multiple clauses are to be dispatched based on such sets
+%% of values. They'll generate an efficient "jump table",
+%% which gets to the correct clause in one go, rather
+%% than going through a set of comparisons.
+%% However, this might not always be the bext way (see is_0_to_9),
+%% so as always with any performance work - measure, don't guess!
+
+-define(is_1_to_9(X),
+    X =:= $1 orelse
+    X =:= $2 orelse
+    X =:= $3 orelse
+    X =:= $4 orelse
+    X =:= $5 orelse
+    X =:= $6 orelse
+    X =:= $7 orelse
+    X =:= $8 orelse
+    X =:= $9
+).
+
+-define(is_0_to_9(X), X >= $0 andalso X =< $9).
+
+-define(is_ws(X), X =:= $\s; X =:= $\t; X =:= $\r; X =:= $\n).
 
 -define(is_ascii_escape(Byte),
     Byte =:= 0 orelse
