@@ -68,7 +68,6 @@
 -define(STARTING_DELAYMS, 8).
 -define(MAX_SUCCESS_DELAYMS, 1024).
 -define(ON_ERROR_DELAYMS, 65536).
--define(INITIAL_TIMEOUT_MS, 60000).
 -define(DEFAULT_WORKERCOUNT, 1).
 
 -record(sink_work, {queue_name :: queue_name(),
@@ -410,9 +409,21 @@ handle_cast({requeue_work, WorkItem}, State) ->
             {noreply, State}
     end.
 
-handle_info(deferred_start, State) ->   
-    prompt_work(),
-    erlang:send_after(?LOG_TIMER_SECONDS * 1000, self(), log_stats),
+handle_info(deferred_start, State) ->
+    case riak_kv_util:kv_ready() of
+        true ->
+            ?LOG_INFO("Initiated real-time repl sink"),
+            prompt_work(),
+            erlang:send_after(?LOG_TIMER_SECONDS * 1000, self(), log_stats);
+        false ->
+            ?LOG_INFO(
+                "Real-time repl sink waiting ~w ms "
+                "to initialise as riak_kv not ready",
+                [riak_kv_util:ngr_initial_timeout()]
+            ),
+            erlang:send_after(
+                riak_kv_util:ngr_initial_timeout(), self(), deferred_start)
+    end,
     {noreply, State};
 handle_info(log_stats, State) ->
     erlang:send_after(?LOG_TIMER_SECONDS * 1000, self(), log_stats),
@@ -453,7 +464,8 @@ handle_continue(initialise_work, State) ->
             {SnkQueueName, Iteration, SnkW}
         end,
     Work = lists:map(MapPeerInfoFun, SnkQueuePeerInfo),
-    erlang:send_after(?INITIAL_TIMEOUT_MS, self(), deferred_start),
+    erlang:send_after(
+        riak_kv_util:ngr_initial_timeout(), self(), deferred_start),
     {noreply, State#state{enabled = true, work = Work}}.
 
 terminate(_Reason, State) ->
@@ -678,7 +690,7 @@ close_pbc_client(PBC) ->
 %% @doc
 %% For an item of work which has been removed from the work queue, spawn a
 %% snk worker (using the repl_fetcher fun) to manage that item of work.  The
-%% worker must ensure the wortk_item is delivered back on completion.
+%% worker must ensure the work_item is delivered back on completion.
 -spec do_work(sink_work()) -> sink_work().
 do_work({QueueName, Iteration, SinkWork}) ->
     WorkQueue = SinkWork#sink_work.work_queue,
