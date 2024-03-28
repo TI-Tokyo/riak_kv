@@ -58,7 +58,7 @@
 
 %% See GH610, this default is for backwards compat, so 2i behaves as
 %% it did before the FSM timeout bug was "fixed"
--define(DEFAULT_TIMEOUT, infinity).
+-define(DEFAULT_TIMEOUT, 0).
 
 %% @type data_type_defs()  = [data_type_def()].
 %% @type data_type_def()   = {MatchFunction :: function(), ParseFunction :: function()}.
@@ -503,17 +503,16 @@ decode_continuation(undefined) ->
 decode_continuation(Bin) ->
     binary_to_term(base64:decode(Bin)).
 
-%% @doc add the `timeout' option tuple to the
-%% `Opts' proplist. if `Timeout' is undefined
-%% then the `app.config' property
-%% `{riak_kv, seconady_index timeout}' is used
-%% If that config property is defined, then
-%% a default of `infinity'  is used.
-%% We use `infinity' as the default to
-%% match the behavior pre 1.4
+%% @doc add the `timeout' option tuple to the `Opts' proplist. if `Timeout' is
+%% undefined then the `app.config' property `{riak_kv, seconady_index timeout}'
+%% is used.  If that config property is undefined, then a default of `infinity'
+%% (a timeout of 0 will be translated to infinity) is used.
+%% We use `infinity' as the default to match the behavior pre 1.4
 add_timeout_opt(undefined, Opts) ->
-    Timeout = app_helper:get_env(riak_kv, secondary_index_timeout, ?DEFAULT_TIMEOUT),
-    [{timeout, Timeout} | Opts];
+    Timeout =
+        app_helper:get_env(
+            riak_kv, secondary_index_timeout, ?DEFAULT_TIMEOUT),
+    add_timeout_opt(Timeout, Opts);
 add_timeout_opt(0, Opts) ->
     [{timeout, infinity} | Opts];
 add_timeout_opt(Timeout, Opts) ->

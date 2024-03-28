@@ -56,16 +56,24 @@
 
 %% webmachine resource exports
 -export([
-         init/1,
-         service_available/2,
-         is_authorized/2,
-         forbidden/2,
-         malformed_request/2,
-         content_types_provided/2,
-         encodings_provided/2,
-         resource_exists/2,
-         produce_index_results/2
-        ]).
+    init/1,
+    service_available/2,
+    is_authorized/2,
+    forbidden/2,
+    malformed_request/2,
+    content_types_provided/2,
+    encodings_provided/2,
+    resource_exists/2,
+    produce_index_results/2
+]).
+-export([
+    mochijson_encode_results/2,
+    mochijson_encode_results/3,
+    otp_encode_results/2,
+    otp_encode_results/3,
+    results_encode/2,
+    keys_encode/2
+]).
 
 -record(ctx, {
           client,       %% riak_client() - the store client
@@ -81,6 +89,8 @@
           security       %% security context
          }).
 -type context() :: #ctx{}.
+
+-define(DEFAULT_JSON_ENCODING, otp).
 
 -include_lib("kernel/include/logger.hrl").
 
@@ -482,12 +492,12 @@ handle_all_in_memory_index_query(RD, Ctx) ->
     %% Do the index lookup...
     case riak_client:get_index(Bucket, Query, Opts, Client) of
         {ok, Results} ->
-            Continuation = make_continuation(MaxResults, 
-                                                Results, 
-                                                length(Results)),
-            JsonResults = encode_results(ReturnTerms, 
-                                            Results, 
-                                            Continuation),
+            Continuation =
+                make_continuation(
+                    MaxResults, Results, length(Results)),
+            JsonResults =
+                encode_results(
+                    ReturnTerms,  Results, Continuation),
             {JsonResults, RD, Ctx};
         {error, timeout} ->
             {{halt, 503},
@@ -501,30 +511,6 @@ handle_all_in_memory_index_query(RD, Ctx) ->
             {{error, Reason}, RD, Ctx}
     end.
 
-
-encode_results(ReturnTerms, Results) ->
-    encode_results(ReturnTerms, Results, undefined).
-
-encode_results(true, Results, Continuation) ->
-    JsonKeys2 = {struct, [{?Q_RESULTS, [{struct, [{Val, Key}]} || {Val, Key} <- Results]}] ++
-                     mochify_continuation(Continuation)},
-    mochijson2:encode(JsonKeys2);
-encode_results(false, Results, Continuation) ->
-    JustTheKeys = filter_values(Results),
-    JsonKeys1 = {struct, [{?Q_KEYS, JustTheKeys}] ++ mochify_continuation(Continuation)},
-    mochijson2:encode(JsonKeys1).
-
-mochify_continuation(undefined) ->
-    [];
-mochify_continuation(Continuation) ->
-    [{?Q_2I_CONTINUATION, Continuation}].
-
-filter_values([]) ->
-    [];
-filter_values([{_, _} | _T]=Results) ->
-    [K || {_V, K} <- Results];
-filter_values(Results) ->
-    Results.
 
 %% @doc Like `lists:last/1' but doesn't choke on an empty list
 -spec last_result([] | list()) -> term() | undefined.
@@ -541,3 +527,236 @@ make_continuation(MaxResults, Results, MaxResults) ->
     riak_index:make_continuation(Results);
 make_continuation(_, _, _)  ->
     undefined.
+
+%% ===================================================================
+%% JSON Encoding implementations
+%% ===================================================================
+
+mochijson_encode_results(ReturnTerms, Results) ->
+    mochijson_encode_results(ReturnTerms, Results, undefined).
+
+mochijson_encode_results(true, Results, Continuation) ->
+    JsonKeys2 = {struct, [{?Q_RESULTS, [{struct, [{Val, Key}]} || {Val, Key} <- Results]}] ++
+                        mochify_continuation(Continuation)},
+    mochijson2:encode(JsonKeys2);
+mochijson_encode_results(false, Results, Continuation) ->
+    JustTheKeys = filter_values(Results),
+    JsonKeys1 = {struct, [{?Q_KEYS, JustTheKeys}] ++ mochify_continuation(Continuation)},
+    mochijson2:encode(JsonKeys1).
+    
+mochify_continuation(undefined) ->
+    [];
+mochify_continuation(Continuation) ->
+    [{?Q_2I_CONTINUATION, Continuation}].
+
+filter_values([]) ->
+    [];
+filter_values([{_, _} | _T]=Results) ->
+    [K || {_V, K} <- Results];
+filter_values(Results) ->
+    Results.
+
+
+otp_encode_results(ReturnTerms, Results) ->
+    otp_encode_results(ReturnTerms, Results, undefined).
+
+otp_encode_results(true, Results, undefined) ->
+    riak_kv_wm_json:encode(
+        #{?Q_RESULTS_BIN => Results},
+        fun results_encode/2
+    );
+otp_encode_results(true, Results, Continuation) ->
+    riak_kv_wm_json:encode(
+        #{?Q_RESULTS_BIN => Results,
+            ?Q_2I_CONTINUATION_BIN => Continuation},
+        fun results_encode/2
+    );
+otp_encode_results(false, Results, undefined) ->
+    riak_kv_wm_json:encode(
+        #{?Q_KEYS_BIN => Results},
+        fun keys_encode/2
+    );
+otp_encode_results(false, Results, Continuation) ->
+    riak_kv_wm_json:encode(
+        #{?Q_KEYS_BIN => Results,
+            ?Q_2I_CONTINUATION_BIN => Continuation},
+        fun keys_encode/2
+    ).
+
+results_encode({Term, Key}, Encode) when is_binary(Term), is_binary(Key) ->
+    ["{", [Encode(Term, Encode), $: | Encode(Key, Encode)], "}"];
+results_encode({Term, Key}, Encode) when is_integer(Term), is_binary(Key) ->
+    ["{",
+        [Encode(integer_to_binary(Term), Encode), $: | Encode(Key, Encode)],
+        "}"];
+results_encode(Result, Encode) ->
+    riak_kv_wm_json:encode_value(Result, Encode).
+
+keys_encode({_Term, Key}, Encode) when is_binary(Key) ->
+    riak_kv_wm_json:encode_value(Key, Encode);
+keys_encode(Object, Encode) ->
+    riak_kv_wm_json:encode_value(Object, Encode).
+
+encode_results(ReturnTerms, Results) ->
+    encode_results(ReturnTerms, Results, undefined).
+
+encode_results(ReturnTerms, Results, Continuation) ->
+    Library =
+        app_helper:get_env(
+            riak_kv, secondary_index_json, ?DEFAULT_JSON_ENCODING),
+    case Library of
+        mochijson ->
+            mochijson_encode_results(ReturnTerms, Results, Continuation);
+        otp ->
+            otp_encode_results(ReturnTerms, Results, Continuation)
+    end.
+
+
+
+%% ===================================================================
+%% EUnit tests
+%% ===================================================================
+
+-ifdef(TEST).
+
+-include_lib("eunit/include/eunit.hrl").
+
+
+otp_decode(JsonIOL) ->
+    riak_kv_wm_json:decode(iolist_to_binary(JsonIOL)).
+
+compare_encode_test() ->
+    Results = large_results(10),
+    OTPjsonA = otp_encode_results(true, Results),
+    MjsonA = mochijson_encode_results(true, Results),
+    ?assert(mochijson2:decode(MjsonA) == mochijson2:decode(OTPjsonA)),
+    ?assert(otp_decode(MjsonA) == otp_decode(OTPjsonA)),
+    ?assert(iolist_to_binary(MjsonA) == iolist_to_binary(OTPjsonA)),
+    Continuation = make_continuation(10, Results, 10),
+    OTPjsonB = otp_encode_results(true, Results, Continuation),
+    MjsonB = mochijson_encode_results(true, Results, Continuation),
+    {struct, MDecodeOTPjsonB} = mochijson2:decode(OTPjsonB),
+    {struct, MDecodeMjsonB} = mochijson2:decode(MjsonB),
+    ?assert(lists:sort(MDecodeOTPjsonB) == lists:sort(MDecodeMjsonB)),
+    OTPjsonC = otp_encode_results(false, Results),
+    MjsonC = mochijson_encode_results(false, Results),
+    ?assert(mochijson2:decode(MjsonC) == mochijson2:decode(OTPjsonC)),
+    OTPjsonD = otp_encode_results(false, Results, Continuation),
+    MjsonD = mochijson_encode_results(false, Results, Continuation),
+    {struct, MDecodeOTPjsonD} = mochijson2:decode(OTPjsonD),
+    {struct, MDecodeMjsonD} = mochijson2:decode(MjsonD),
+    ?assert(lists:sort(MDecodeOTPjsonD) == lists:sort(MDecodeMjsonD)),
+    IntIdxResults = [{1, <<"K1">>}, {2, <<"K2">>}],
+    OTPjsonE = otp_encode_results(true, IntIdxResults),
+    MjsonE = mochijson_encode_results(true, IntIdxResults),
+    ?assert(mochijson2:decode(MjsonE) == mochijson2:decode(OTPjsonE)),
+    ?assert(otp_decode(MjsonE) == otp_decode(OTPjsonE)),
+    ?assert(iolist_to_binary(MjsonE) == iolist_to_binary(OTPjsonE))
+
+    .
+
+encoder_test_() ->
+    {timeout, 600, fun encode_tester/0}.
+
+encode_tester() ->
+    timer:sleep(100), % awkward silence to tidy screen output
+    encode_implementation_tester(mochijson2),
+    encode_implementation_tester(otp).
+
+encode_implementation_tester(Imp) ->
+    garbage_collect(),
+
+    io:format(user, "~n~nTesting Implementation ~w~n", [Imp]),
+    ResultSetsTiny =
+        [{<<"1K">>, large_results(1000)},
+            {<<"2K">>, large_results(2000)},
+            {<<"3K">>, large_results(3000)},
+            {<<"5K">>, large_results(5000)},
+            {<<"8K">>, large_results(8000)}],
+    encode_tester(Imp, ResultSetsTiny, microseconds),
+
+    garbage_collect(),
+
+    ResultSetsSmall =
+        [{<<"13K">>, large_results(13000)},
+            {<<"21K">>, large_results(21000)},
+            {<<"34K">>, large_results(34000)},
+            {<<"55K">>, large_results(55000)}],
+    encode_tester(Imp, ResultSetsSmall, milliseconds),
+
+    garbage_collect(),
+
+    ResultSetsMid =
+        [{<<"100K">>, large_results(100000)},
+            {<<"200K">>, large_results(200000)},
+            {<<"300K">>, large_results(300000)},
+            {<<"500K">>, large_results(500000)}],
+    encode_tester(Imp, ResultSetsMid, milliseconds),
+
+    % garbage_collect(),
+    
+    % ResultSetsLarge =
+    %     [{<<"1M">>, large_results(1000000)},
+    %         {<<"2M">>, large_results(2000000)},
+    %         {<<"3M">>, large_results(3000000)},
+    %         {<<"5M">>, large_results(5000000)}],
+    % encode_tester(Imp, ResultSetsLarge, milliseconds),
+
+    % garbage_collect(),
+    % ResultSetsHuge =
+    %     [{<<"8M">>, large_results(8000000)}],
+    % encode_tester(Imp, ResultSetsHuge, milliseconds),
+
+    % garbage_collect(),
+    % ResultSetsSuperSize =
+    %     [{<<"13M">>, large_results(13000000)}],
+    % encode_tester(Imp, ResultSetsSuperSize, milliseconds),
+
+    ok.
+
+encode_tester(Lib, ResultSets, Unit) ->
+    Divisor =
+        case Unit of
+            microseconds ->
+                1;
+            milliseconds ->
+                1000
+        end,
+    Fun =
+        case Lib of
+            mochijson2 ->
+                fun mochijson_encode_results/2;
+            otp ->
+                fun otp_encode_results/2
+        end,
+    
+    TotalTime =
+        lists:sum(
+            lists:map(
+                fun({Tag, RS}) ->
+                    garbage_collect(),
+                    {TC, _Json} =
+                        timer:tc(fun() -> Fun(true, RS) end),
+                    io:format(
+                        user,
+                        "Result set of ~s in ~w ~p ",
+                        [Tag, TC div Divisor, Unit]),
+                    TC
+                end,
+                ResultSets
+            )
+        ),
+    io:format(user, "Total time ~w ~p~n", [TotalTime div Divisor, Unit]).
+
+large_results(N) ->
+    lists:map(
+        fun(I) -> {generate_term(I), generate_key(I)} end,
+        lists:seq(1, N)).
+
+generate_term(I) ->
+    iolist_to_binary(io_lib:format("q~9..0B", [I])).
+
+generate_key(K) ->
+    iolist_to_binary(io_lib:format("k~9..0B", [rand:uniform(K)])).
+
+-endif.

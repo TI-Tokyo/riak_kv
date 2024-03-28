@@ -1059,4 +1059,3 @@ convert_validate_test() ->
                     [IQ1, IQ2, IQ3, IQ4, IQ5, IQ6, IQ7]).
 
 -endif.
-
