@@ -240,6 +240,8 @@
 -define(REAPER_BATCH_SIZE, 1024).
 -define(ERASER_BATCH_SIZE, 1024).
 
+-define(INIT_REBUILD_BLOCKTIME, 1000).
+
 %% Erlang's if Bool -> thing; true -> thang end. syntax hurts my
 %% brain. It scans as if true -> thing; true -> thang end. So, here is
 %% a macro, ?ELSE to use in if statements. You're welcome.
@@ -439,21 +441,35 @@ queue_tictactreerebuild(AAECntrl, Partition, OnlyIfBroken, State) ->
         fun() ->
             ?LOG_INFO("Starting tree rebuild for partition=~w", [Partition]),
             SW = os:timestamp(),
-            case when_loading_complete(AAECntrl,
-                                        Preflists,
-                                        fun preflistfun/2,
-                                        OnlyIfBroken) of
+            BlockRequest = self(),
+            BlockTimeMS =
+                application:get_env(
+                    riak_kv,
+                    tictacaae_rebuild_blocktime,
+                    ?INIT_REBUILD_BLOCKTIME
+                ),
+            {blocked, VnodePid} =
+                riak_core_vnode_master:sync_command(
+                    {Partition, node()},
+                    {block_vnode, BlockRequest, BlockTimeMS},
+                    riak_kv_vnode_master,
+                    infinity),
+            case when_loading_complete(
+                    AAECntrl, Preflists, fun preflistfun/2, OnlyIfBroken) of
                 {ok, StoreFold, FinishFun} ->
+                    VnodePid ! {release_vnode, BlockRequest},
                     Output = StoreFold(),
                     FinishFun(Output),
                     Duration =
                         timer:now_diff(os:timestamp(), SW) div (1000 * 1000),
-                    ?LOG_INFO("Tree rebuild complete for partition=~w" ++
-                                " in duration=~w seconds", 
-                                [Partition, Duration]);
+                    ?LOG_INFO(
+                        "Tree rebuild complete for partition=~w"
+                        " in duration=~w seconds",
+                        [Partition, Duration]);
                 skipped ->
-                    ?LOG_INFO("Tree rebuild skipped for partition=~w",
-                                [Partition])
+                    VnodePid ! {release_vnode, BlockRequest},
+                    ?LOG_INFO(
+                        "Tree rebuild skipped for partition=~w", [Partition])
             end,
             ok
         end,
@@ -1484,6 +1500,26 @@ handle_command({reset_hashtree_tokens, MinToken, MaxToken}, _Sender, State) ->
             put(hashtree_tokens, MaxToken)
     end,
     {reply, ok, State};
+
+handle_command({block_vnode, BlockRequest, BlockTimeMS}, Sender, State) ->
+    riak_core_vnode:reply(Sender, {blocked, self()}),
+    SW = os:timestamp(),
+    receive
+        {release_vnode, BlockRequest} ->
+            LockedTime = timer:now_diff(os:timestamp(), SW),
+            ?LOG_INFO(
+                "Vnode block released for ~w request ~w after"
+                "block_time=~w microseconds",
+                [Sender, BlockRequest, LockedTime]),
+            {noreply, State}
+    after
+        BlockTimeMS ->
+            ?LOG_WARNING(
+                "Vnode block request timed out after ~w for ~w request ~w",
+                [BlockTimeMS, Sender, BlockRequest]
+            ),
+            {noreply, State}
+    end;
 
 handle_command(Req, Sender, State) ->
     handle_request(riak_kv_requests:request_type(Req), Req, Sender, State).
@@ -2639,6 +2675,12 @@ handle_info({aae_pong, QueueTime}, State) ->
         false ->
             ok
     end,
+    {ok, State};
+handle_info({release_vnode, BlockRequest}, State) ->
+    ?LOG_WARNING(
+        "Vnode block release request ~w received outside of block",
+        [BlockRequest]
+    ),
     {ok, State};
 handle_info({Ref, ok}, State) ->
     ?LOG_INFO("Ignoring ok returned after timeout for Ref ~p", [Ref]),
