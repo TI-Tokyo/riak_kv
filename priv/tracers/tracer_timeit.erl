@@ -42,7 +42,7 @@ timeit(Mod, Fun, Arity, Type) ->
     dbg:p(all, call),
     dbg:tpl(Mod, Fun, Arity, [{'_', [], [{return_trace}]}]).
 
-stop() -> dbg:stop_clear().
+stop() -> riak_core_tracer:stop_and_clear().
 
 trace({trace, Pid, call, {Mod, Fun, _}}, {D, {all, {Count, Max}}}) ->
     D2 = orddict:store({Pid, Mod, Fun}, os:timestamp(), D),

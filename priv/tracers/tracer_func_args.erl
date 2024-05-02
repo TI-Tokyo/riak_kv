@@ -78,7 +78,7 @@ stop() ->
     TotalCalls = lists:sum([Count || {_Arg, Count} <- Res]),
     io:format("Total calls: ~p\n", [TotalCalls]),
     io:format("Call stats:\n~p\n", [catch lists:sort(Sort, Res)]),
-    dbg:stop_clear(),
+    riak_core_tracer:stop_and_clear(),
     catch exit(element(2,dbg:get_tracer()), kill),
     timer:sleep(100),
     stopped.

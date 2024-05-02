@@ -73,7 +73,10 @@
 -type r_content() :: #r_content{}.
 -type index_op() :: add | remove.
 -type index_value() :: integer() | binary().
+-type index_spec() :: {index_op(), binary(), index_value()}.
 -type binary_version() :: v0 | v1.
+
+-export_type([index_spec/0]).
 
 -define(MAX_KEY_SIZE, 65536).
 
@@ -984,8 +987,7 @@ dvv_enabled(Bucket) ->
 %% the case where there is no existing object
 %% stored for a key and therefore no existing
 %% index data.
--spec index_specs(riak_object()) ->
-                         [{index_op(), binary(), index_value()}].
+-spec index_specs(riak_object()) -> [{index_op(), binary(), index_value()}].
 index_specs(Obj) ->
     Indexes = index_data(Obj),
     assemble_index_specs(Indexes, add).

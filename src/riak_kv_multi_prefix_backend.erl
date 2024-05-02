@@ -294,7 +294,7 @@ head(Bucket, Key, State) ->
 
 %% @doc Insert an object with secondary index
 %% information into the kv backend
--type index_spec() :: {add, Index, SecondaryKey} | {remove, Index, SecondaryKey}.
+-type index_spec() :: riak_object:index_spec().
 -spec put(riak_object:bucket(), riak_object:key(), [index_spec()], binary(), state()) ->
                  {ok, state()} |
                  {error, term(), state()}.

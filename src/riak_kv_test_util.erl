@@ -294,7 +294,7 @@ dep_apps(Test, Extra) ->
            (_) -> ok
         end,
 
-    [sasl, Silencer, folsom, exometer_core, runtime_tools,
+    [sasl, Silencer, exometer_core, runtime_tools,
      mochiweb, webmachine, sidejob, poolboy, basho_stats, bitcask,
      eleveldb, riak_core, riak_pipe, riak_api, riak_dt, riak_pb, riak_kv,
      DefaultSetupFun, Extra].

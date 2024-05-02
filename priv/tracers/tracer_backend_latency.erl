@@ -129,7 +129,7 @@ stop() ->
     %% io:format("Histogram stats:\n~p\n", [catch folsom_metrics:get_histogram_statistics(foo)]),
     %% catch folsom_metrics:delete_metric(foo),
 
-    dbg:stop_clear(),
+    riak_core_tracer:stop_and_clear(),
     catch exit(element(2,dbg:get_tracer()), kill),
     stopped.
 
