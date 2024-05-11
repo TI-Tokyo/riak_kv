@@ -1296,7 +1296,7 @@ get_compiled_link_regex(1, Prefix) ->
             {ok, BucketRegex} = re:compile("</" ++ Prefix ++ ?V1_BUCKET_REGEX),
             application:set_env(
                 riak_kv,
-                compile_link_regex_v1,
+                compiled_link_regex_v1,
                 {KeyRegex, BucketRegex}
             ),
             {KeyRegex, BucketRegex};
@@ -1310,7 +1310,7 @@ get_compiled_link_regex(Two, _Prefix) when Two >= 2 ->
             {ok, BucketRegex} = re:compile(?V2_BUCKET_REGEX),
             application:set_env(
                 riak_kv,
-                compile_link_regex_v2,
+                compiled_link_regex_v2,
                 {KeyRegex, BucketRegex}
             ),
             {KeyRegex, BucketRegex};
