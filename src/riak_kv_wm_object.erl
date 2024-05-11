@@ -176,14 +176,14 @@
               riak,         %% local | {node(), atom()} - params for riak client
               doc,          %% {ok, riak_object()}|{error, term()} - the object found
               vtag,         %% string() - vtag the user asked for
-              bucketprops,  %% proplist() - properties of the bucket
               links,        %% [link()] - links of the object
               index_fields, %% [index_field()]
               method,       %% atom() - HTTP method for the request
               ctype,        %% string() - extracted content-type provided
               charset,      %% string() | undefined - extracted character set provided
               timeout,      %% integer() - passed-in timeout value in ms
-              security      %% security context
+              security,     %% security context
+              not_modified :: vclock:vclock()|undefined
              }).
 
 -ifdef(namespaced_types).
@@ -204,7 +204,6 @@
 
 -type link() :: {{Bucket::binary(), Key::binary()}, Tag::binary()}.
 
--define(DEFAULT_TIMEOUT, 60000).
 -define(V1_BUCKET_REGEX, "/([^/]+)>; ?rel=\"([^\"]+)\"").
 -define(V1_KEY_REGEX, "/([^/]+)/([^/]+)>; ?riaktag=\"([^\"]+)\"").
 -define(V2_BUCKET_REGEX, "</buckets/([^/]+)>; ?rel=\"([^\"]+)\"").
@@ -555,7 +554,7 @@ malformed_link_headers(RD, Ctx) ->
     case catch get_link_heads(RD, Ctx) of
         Links when is_list(Links) ->
             {false, RD, Ctx#ctx{links=Links}};
-        _Error when Ctx#ctx.api_version == 1->
+        _Error when Ctx#ctx.api_version == 1 ->
             {true,
              wrq:append_to_resp_body(
                io_lib:format("Invalid Link header. Links must be of the form~n"
@@ -811,7 +810,9 @@ is_conflict(RD, Ctx) ->
                             base64:decode(NotModifiedClock)),
                     CurrentClock =
                         riak_object:vclock(Obj),
-                    {not vclock:equal(InClock, CurrentClock), RD, Ctx};
+                    {not vclock:equal(InClock, CurrentClock),
+                        RD,
+                        Ctx#ctx{not_modified = InClock}};
                 _ ->
                     {true, RD, Ctx}
             end;
@@ -896,20 +897,24 @@ accept_doc_body(
     Doc =
         riak_object:update_value(
             MDDoc, riak_kv_wm_utils:accept_value(CType, wrq:req_body(RD))),
-    Options0 =
+    BodyOptions =
         case wrq:get_qs_value(?Q_RETURNBODY, RD) of
             ?Q_TRUE -> [returnbody];
             _ -> []
         end,
-    Options = make_options(Options0, Ctx),
     NoneMatch = (wrq:get_req_header("If-None-Match", RD) =/= undefined),
-    Options2 = case riak_kv_util:consistent_object(B) and NoneMatch of
-                   true ->
-                       [{if_none_match, true}|Options];
-                   false ->
-                       Options
-               end,
-    case riak_client:put(Doc, Options2, C) of
+    ConditionalOptions =
+        case {NoneMatch, Ctx#ctx.not_modified} of
+            {false, undefined} ->
+                [];
+            {true, _} ->
+                [{if_none_match, true}];
+            {false, ExpClock} ->
+                [{if_not_modified, ExpClock}]
+        end,
+    
+    Options = make_options(BodyOptions ++ ConditionalOptions, Ctx),
+    case riak_client:put(Doc, Options, C) of
         {error, Reason} ->
             handle_common_error(Reason, RD, Ctx);
         ok ->
@@ -1263,22 +1268,9 @@ get_link_heads(RD, Ctx) ->
 
     %% Decode the link headers. Throw an exception if we can't
     %% properly parse any of the headers...
+    {KeyRegex, BucketRegex} = get_compiled_link_regex(APIVersion, Prefix),
     {BucketLinks, KeyLinks} =
-        case APIVersion of
-            1 ->
-                {ok, BucketRegex} =
-                    re:compile("</" ++ Prefix ++ ?V1_BUCKET_REGEX),
-                {ok, KeyRegex} =
-                    re:compile("</" ++ Prefix ++ ?V1_KEY_REGEX),
-                extract_links(LinkHeaders1, BucketRegex, KeyRegex);
-            %% @todo Handle links in API Version 3?
-            Two when Two >= 2 ->
-                {ok, BucketRegex} =
-                    re:compile(?V2_BUCKET_REGEX),
-                {ok, KeyRegex} =
-                    re:compile(?V2_KEY_REGEX),
-                extract_links(LinkHeaders1, BucketRegex, KeyRegex)
-        end,
+        extract_links(LinkHeaders1, BucketRegex, KeyRegex),
 
     %% Validate that the only bucket header is pointing to the parent
     %% bucket...
@@ -1288,6 +1280,38 @@ get_link_heads(RD, Ctx) ->
             KeyLinks;
         false ->
             throw({invalid_link_headers, LinkHeaders1})
+    end.
+
+-type mp() :: {re_pattern, _, _, _, _}.
+
+-spec get_compiled_link_regex(non_neg_integer(), string()) -> {mp(), mp()}.
+get_compiled_link_regex(1, Prefix) ->
+    case application:get_env(riak_kv, compiled_link_regex_v1) of
+        undefined ->
+            {ok, KeyRegex} = re:compile("</" ++ Prefix ++ ?V1_KEY_REGEX),
+            {ok, BucketRegex} = re:compile("</" ++ Prefix ++ ?V1_BUCKET_REGEX),
+            application:set_env(
+                riak_kv,
+                compile_link_regex_v1,
+                {KeyRegex, BucketRegex}
+            ),
+            {KeyRegex, BucketRegex};
+        PreCompiledExpressions ->
+            PreCompiledExpressions
+    end;
+get_compiled_link_regex(Two, _Prefix) when Two >= 2 ->
+    case application:get_env(riak_kv, compiled_link_regex_v2) of
+        undefined ->
+            {ok, KeyRegex} = re:compile(?V2_KEY_REGEX),
+            {ok, BucketRegex} = re:compile(?V2_BUCKET_REGEX),
+            application:set_env(
+                riak_kv,
+                compile_link_regex_v2,
+                {KeyRegex, BucketRegex}
+            ),
+            {KeyRegex, BucketRegex};
+        PreCompiledExpressions ->
+            PreCompiledExpressions
     end.
 
 %% Run each LinkHeader string() through the BucketRegex and

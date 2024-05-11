@@ -1074,11 +1074,16 @@ coordinate_or_forward(Preflist, State) ->
 
 %% @private selects a coordinating vnode for the put, depending on
 %% locality, mailbox length, etc.
--spec select_coordinator(riak_core_apl:preflist_ann(), local | none, boolean()) ->
-                                {local, preflist_entry()} |
-                                {local, undefined} |
-                                {forward, node()}.
-select_coordinator(Preflist, _CoordinatorType=local, true=_MBoxCheck) ->
+-spec select_coordinator
+        (riak_core_apl:preflist_ann(),
+            local | none,
+            boolean()) ->
+                {local, preflist_entry()} |
+                {local, undefined} |
+                {forward, node()}.
+select_coordinator(
+        Preflist, CoordType, true=_MBoxCheck)
+        when CoordType == local; CoordType == deterministic ->
     %% wants local, if there are local entries, check mailbox soft
     %% limits (see riak#1661) locally first, only checking remote if
     %% no local-preflist, or local softloaded/not replying.
@@ -1106,7 +1111,9 @@ select_coordinator(Preflist, _CoordinatorType=local, true=_MBoxCheck) ->
                     select_least_loaded_coordinator(LocalMBoxData, RemoteMBoxData)
             end
     end;
-select_coordinator(Preflist, _CoordinatorType=local, false=_MBoxCheck) ->
+select_coordinator(
+        Preflist, CoordType, false=_MBoxCheck)
+        when CoordType == local; CoordType == deterministic ->
     %% No mailbox check, don't change behaviour from pre-gh1661
 
     %% NOTE: partition_local_remote returns an un-anotated preflist
@@ -1238,15 +1245,23 @@ add_errors_to_mbox_data(Preflist, Acc) ->
                       end
               end, Preflist).
 
-%% @private decide if the coordinator has to be a local, causality
-%% advancing vnode, or no coordinator at all
--spec get_coordinator_type(options()) -> none | local.
+%% @private decide if the coordinator has to be a:
+%% - local, the best available causality advancing vnode (which may be remote);
+%% - none, no coordinator at all;
+%% - deterministic,  always select the same coordinator from the preflist for
+%% a given key, to allow for stronger tests on conditional PUTs
+-spec get_coordinator_type(options()) -> none | local | deterministic.
 get_coordinator_type(Options) ->
     case get_option(asis, Options, false) of
-        false ->
-            local;
         true ->
-            none
+            none;
+        false ->
+            case get_option(conditional, Options, false) of
+                false ->
+                    local;
+                _Condition ->
+                    deterministic
+            end
     end.
 
 %% @private used by `coordinate_or_forward' above. Removes `Type' info
