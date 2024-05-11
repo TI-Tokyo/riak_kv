@@ -1260,17 +1260,21 @@ get_link_heads(RD, Ctx) ->
     Bucket = Ctx#ctx.bucket,
 
     %% Get a list of link headers...
-    LinkHeaders1 =
+    LinkHeaders =
         case wrq:get_req_header(?HEAD_LINK, RD) of
             undefined -> [];
             Heads -> string:tokens(Heads, ",")
         end,
-
-    %% Decode the link headers. Throw an exception if we can't
-    %% properly parse any of the headers...
-    {KeyRegex, BucketRegex} = get_compiled_link_regex(APIVersion, Prefix),
+    
     {BucketLinks, KeyLinks} =
-        extract_links(LinkHeaders1, BucketRegex, KeyRegex),
+        case LinkHeaders of
+            [] ->
+                {[], []};
+            LinkHeaders ->
+                {KeyRegex, BucketRegex} =
+                    get_compiled_link_regex(APIVersion, Prefix),
+                extract_links(LinkHeaders, BucketRegex, KeyRegex)
+        end,
 
     %% Validate that the only bucket header is pointing to the parent
     %% bucket...
@@ -1279,7 +1283,7 @@ get_link_heads(RD, Ctx) ->
         true ->
             KeyLinks;
         false ->
-            throw({invalid_link_headers, LinkHeaders1})
+            throw({invalid_link_headers, LinkHeaders})
     end.
 
 -type mp() :: {re_pattern, _, _, _, _}.
@@ -1296,7 +1300,7 @@ get_compiled_link_regex(1, Prefix) ->
                 {KeyRegex, BucketRegex}
             ),
             {KeyRegex, BucketRegex};
-        PreCompiledExpressions ->
+        {ok, PreCompiledExpressions} ->
             PreCompiledExpressions
     end;
 get_compiled_link_regex(Two, _Prefix) when Two >= 2 ->
@@ -1310,7 +1314,7 @@ get_compiled_link_regex(Two, _Prefix) when Two >= 2 ->
                 {KeyRegex, BucketRegex}
             ),
             {KeyRegex, BucketRegex};
-        PreCompiledExpressions ->
+        {ok, PreCompiledExpressions} ->
             PreCompiledExpressions
     end.
 
