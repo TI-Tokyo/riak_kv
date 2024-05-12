@@ -600,7 +600,7 @@ malformed_index_headers(RD, Ctx) ->
 %%      client's PUT request, to be indexed at write time.
 extract_index_fields(RD) ->
     PrefixSize = length(?HEAD_INDEX_PREFIX),
-    {ok, RE} = re:compile(",\\s"),
+    RE = get_compiled_index_regex(),
     F =
         fun({K,V}, Acc) ->
             KList = riak_kv_wm_utils:any_to_list(K),
@@ -1290,33 +1290,46 @@ get_link_heads(RD, Ctx) ->
 
 -spec get_compiled_link_regex(non_neg_integer(), string()) -> {mp(), mp()}.
 get_compiled_link_regex(1, Prefix) ->
-    case application:get_env(riak_kv, compiled_link_regex_v1) of
+    case persistent_term:get(compiled_link_regex_v1, undefined) of
         undefined ->
             {ok, KeyRegex} = re:compile("</" ++ Prefix ++ ?V1_KEY_REGEX),
             {ok, BucketRegex} = re:compile("</" ++ Prefix ++ ?V1_BUCKET_REGEX),
-            application:set_env(
-                riak_kv,
+            persistent_term:put(
                 compiled_link_regex_v1,
                 {KeyRegex, BucketRegex}
             ),
             {KeyRegex, BucketRegex};
-        {ok, PreCompiledExpressions} ->
+        PreCompiledExpressions ->
             PreCompiledExpressions
     end;
 get_compiled_link_regex(Two, _Prefix) when Two >= 2 ->
-    case application:get_env(riak_kv, compiled_link_regex_v2) of
+    case persistent_term:get(compiled_link_regex_v2, undefined) of
         undefined ->
             {ok, KeyRegex} = re:compile(?V2_KEY_REGEX),
             {ok, BucketRegex} = re:compile(?V2_BUCKET_REGEX),
-            application:set_env(
-                riak_kv,
+            persistent_term:put(
                 compiled_link_regex_v2,
                 {KeyRegex, BucketRegex}
             ),
             {KeyRegex, BucketRegex};
-        {ok, PreCompiledExpressions} ->
+        PreCompiledExpressions ->
             PreCompiledExpressions
     end.
+
+-spec get_compiled_index_regex() -> mp().
+get_compiled_index_regex() ->
+    case persistent_term:get(compiled_index_regex, undefined) of
+        undefined ->
+            {ok, IndexRegex} = re:compile(",\\s"),
+            persistent_term:put(
+                compiled_index_regex,
+                IndexRegex
+            ),
+            IndexRegex;
+        PreCompiledIndexRegex ->
+            PreCompiledIndexRegex
+    end.
+
 
 %% Run each LinkHeader string() through the BucketRegex and
 %% KeyRegex. Return {BucketLinks, KeyLinks}.

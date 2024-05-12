@@ -540,6 +540,20 @@
     hidden
 ]}.
 
+%% @doc Deterministic vnode check for conditional PUTs at the PUT coordinator
+%% If using conditional PUTs - if_none_match, or the Riak specific
+%% if_not_modified header - then validate the condition at a deterministicaly
+%% selected vnode coordinator, not just at the API level.
+%% This will provide extra security that conditions will be enforced, when
+%% there are concurrent changes to the same key int the same (stable) cluster.
+%% The mailbox check will not then be used, so there may be an impact on PUT
+%% latency
+{mapping, "coordinator_check_enabled", "riak_kv.coordinator_check_enabled", [
+    {default, on},
+    {datatype, flag},
+    hidden
+]}.
+
 %% @doc Controls which binary representation of a riak value is stored
 %% on disk.
 %% * 0: Original erlang:term_to_binary format. Higher space overhead.

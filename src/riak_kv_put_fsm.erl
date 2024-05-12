@@ -113,7 +113,6 @@
                 dw :: non_neg_integer() | undefined,
                 pw :: non_neg_integer() | undefined,
                 node_confirms :: non_neg_integer() | undefined,
-                sync_on_write :: atom(),
                 coord_pl_entry :: {integer(), atom()} | undefined,
                 preflist2 :: riak_core_apl:preflist_ann() | undefined,
                 bkey :: {riak_object:bucket(), riak_object:key()},
@@ -123,13 +122,11 @@
                 timeout = infinity :: pos_integer()|infinity,
                 tref :: reference() | undefined,
                 vnode_options=[] :: list(),
-                returnbody = false :: boolean(),
                 allowmult = true :: boolean(),
                 precommit=[] :: list(),
                 postcommit=[] :: list(),
                 bucket_props :: list() | undefined,
                 putcore :: riak_kv_put_core:putcore() | undefined,
-                put_usecs :: undefined | non_neg_integer(),
                 timing = [] :: [{atom(), {non_neg_integer(), non_neg_integer(),
                                           non_neg_integer()}}],
                 reply, % reply sent to client,
@@ -1032,8 +1029,8 @@ get_preflist(N, State) ->
         case get_option(sloppy_quorum, Options, true) of
             true ->
                 UpNodes = riak_core_node_watcher:nodes(riak_kv),
-                riak_core_apl:get_apl_ann(DocIdx, N,
-                                          UpNodes -- BadCoordinators);
+                riak_core_apl:get_apl_ann(
+                    DocIdx, N, UpNodes -- BadCoordinators);
             false ->
                 Preflist0 =
                     riak_core_apl:get_primary_apl(DocIdx, N, riak_kv),
@@ -1051,20 +1048,23 @@ coordinate_or_forward([], State=#state{trace=Trace}) ->
             ["prepare",<<"all nodes down">>]),
     process_reply({error, all_nodes_down}, State);
 coordinate_or_forward(Preflist, State) ->
-    #state{options = Options, n = N, trace=Trace} = State,
-    CoordinatorType = get_coordinator_type(Options),
+    #state{options = Options, n = N, trace=Trace, bkey = BK} = State,
+    {CoordType, Forwarded} = get_coordinator_type(Options),
     MBoxCheck = get_soft_limit_option(Options),
 
-    case select_coordinator(Preflist, CoordinatorType, MBoxCheck) of
+    case select_coordinator(Preflist, CoordType, MBoxCheck, Forwarded, BK) of
         {local, CoordPLEntry} ->
             %% for DTRACE
-            CoordPlNode = case CoordPLEntry of
-                              undefined  -> undefined;
-                              {_Idx, Nd} -> atom2list(Nd)
-                          end,
-            StateData = State#state{n = N,
-                                    coord_pl_entry = CoordPLEntry,
-                                    preflist2 = Preflist},
+            CoordPlNode =
+                case CoordPLEntry of
+                    undefined  -> undefined;
+                    {_Idx, Nd} -> atom2list(Nd)
+                end,
+            StateData =
+                State#state{
+                    n = N,
+                    coord_pl_entry = CoordPLEntry,
+                    preflist2 = Preflist},
             ?DTRACE(Trace, ?C_PUT_FSM_PREPARE, [0],
                     ["prepare", CoordPlNode]),
             new_state_timeout(validate, StateData);
@@ -1076,14 +1076,15 @@ coordinate_or_forward(Preflist, State) ->
 %% locality, mailbox length, etc.
 -spec select_coordinator
         (riak_core_apl:preflist_ann(),
-            local | none,
-            boolean()) ->
-                {local, preflist_entry()} |
-                {local, undefined} |
-                {forward, node()}.
-select_coordinator(
-        Preflist, CoordType, true=_MBoxCheck)
-        when CoordType == local; CoordType == deterministic ->
+            local | deterministic | none,
+            boolean(),
+            boolean(),
+            {riak_object:bucket(), riak_object:key()}
+        ) ->
+            {local, preflist_entry()} |
+            {local, undefined} |
+            {forward, node()}.
+select_coordinator(Preflist, local, true, false, _) ->
     %% wants local, if there are local entries, check mailbox soft
     %% limits (see riak#1661) locally first, only checking remote if
     %% no local-preflist, or local softloaded/not replying.
@@ -1111,9 +1112,34 @@ select_coordinator(
                     select_least_loaded_coordinator(LocalMBoxData, RemoteMBoxData)
             end
     end;
-select_coordinator(
-        Preflist, CoordType, false=_MBoxCheck)
-        when CoordType == local; CoordType == deterministic ->
+select_coordinator(Preflist, deterministic, _, Forwarded, BK) ->
+    ChosenIdx = (erlang:phash2(BK) rem length(Preflist)) + 1,
+    case lists:nth(ChosenIdx, (lists:sort(Preflist))) of
+        {{Idx, Node}, Type} when Node == node() ->
+            {local, {{Idx, Node}, Type}};
+        {{_Idx, RemoteNode}, _Type} ->
+            case Forwarded of
+                true ->
+                    % If forwarded here for a conditional PUT a local node
+                    % was expected to be the chosen one.  Two nodes may
+                    % disagree on the view of UpNodes and so in this case we
+                    % should just select without determinism (and potentially
+                    % fail to apply the condition correctly)
+                    ?LOG_WARNING(
+                        "Forwarded PUT has does not agree on Chosen Idx ~w "
+                        "for preflist ~p",
+                        [ChosenIdx, Preflist]
+                    ),
+                    select_coordinator(Preflist, local, false, true, BK);
+                false ->
+                    {forward, RemoteNode}
+            end
+    end;
+select_coordinator(_Preflist, none, _, _, _) ->
+    %% for `none' type coordinator downstream code expects `undefined',
+    %% no coordinator, no mailbox queues to route around
+    {local, undefined};
+select_coordinator(Preflist, _, _, _, _) ->
     %% No mailbox check, don't change behaviour from pre-gh1661
 
     %% NOTE: partition_local_remote returns an un-anotated preflist
@@ -1135,11 +1161,8 @@ select_coordinator(
             %% always be a local coordinator, it's not a chain of
             %% never ending forwards.
             {local, hd(LocalPreflist)}
-    end;
-select_coordinator(_Preflist, _CoordinatorType=none, _MBoxCheck) ->
-    %% for `none' type coordinator downstream code expects `undefined',
-    %% no coordinator, no mailbox queues to route around
-    {local, undefined}.
+    end.
+
 
 %% @private @TODO test to find the best strategy
 -spec select_least_loaded_coordinator(list(), list()) -> {local, {pos_integer(), node()}} |
@@ -1250,19 +1273,29 @@ add_errors_to_mbox_data(Preflist, Acc) ->
 %% - none, no coordinator at all;
 %% - deterministic,  always select the same coordinator from the preflist for
 %% a given key, to allow for stronger tests on conditional PUTs
--spec get_coordinator_type(options()) -> none | local | deterministic.
+-spec get_coordinator_type(
+        options()) -> {none | local | deterministic, boolean()}.
 get_coordinator_type(Options) ->
     case get_option(asis, Options, false) of
         true ->
-            none;
+            {none, false};
         false ->
+            IsForwarded = get_option(forwarded, Options, false),
             case get_option(conditional, Options, false) of
                 false ->
-                    local;
+                    {local, IsForwarded};
                 _Condition ->
-                    deterministic
+                    case coordinator_check_enabled() of
+                        true ->
+                            {deterministic, IsForwarded};
+                        false ->
+                            {local, IsForwarded}
+                    end
             end
     end.
+
+coordinator_check_enabled() ->
+    application:get_env(riak_kv, coordinator_check_enabled, true).
 
 %% @private used by `coordinate_or_forward' above. Removes `Type' info
 %% from preflist entries and splits a preflist into local and remote.
@@ -1313,12 +1346,11 @@ forward(CoordNode, State) ->
     ?DTRACE(Trace, ?C_PUT_FSM_PREPARE, [1],
             ["prepare", atom2list(CoordNode)]),
     try
-        {UseAckP, Options2} = make_ack_options(
-                                [
-                                 %% don't check mbox at new fsm, we
-                                 %% picked the "best"
-                                 {mbox_check, false}
-                                 | Options]),
+        {UseAckP, Options2} =
+            make_ack_options(
+                [{mbox_check, false}, {forwarded, true}] ++ Options),
+                %% don't check mbox at new fsm, we picked the "best"
+                %% this can also be assumed from the forwarded flag
         MiddleMan = spawn_coordinator_proc(
                       CoordNode, riak_kv_put_fsm, start_link,
                       [From, RObj, Options2]),
@@ -1362,9 +1394,9 @@ select_least_loaded_coordinator_test() ->
 
 get_coordinator_type_test() ->
     Opts0 = proplists:unfold([asis]),
-    ?assertEqual(none, get_coordinator_type(Opts0)),
+    ?assertEqual({none, false}, get_coordinator_type(Opts0)),
     Opts1 = proplists:unfold([]),
-    ?assertEqual(local, get_coordinator_type(Opts1)).
+    ?assertEqual({local, false}, get_coordinator_type(Opts1)).
 
 get_bucket_props_test_() ->
     BucketProps = [{bprop1, bval1},
