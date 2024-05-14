@@ -601,7 +601,7 @@ malformed_index_headers(RD, Ctx) ->
 %%      client's PUT request, to be indexed at write time.
 extract_index_fields(RD) ->
     PrefixSize = length(?HEAD_INDEX_PREFIX),
-    {ok, RE} = re:compile(",\\s"),
+    RE = get_compiled_index_regex(),
     F =
         fun({K,V}, Acc) ->
             KList = riak_kv_wm_utils:any_to_list(K),
@@ -1255,7 +1255,7 @@ get_link_heads(RD, Ctx) ->
     Bucket = Ctx#ctx.bucket,
 
     %% Get a list of link headers...
-    LinkHeaders1 =
+    LinkHeaders =
         case wrq:get_req_header(?HEAD_LINK, RD) of
             undefined -> [];
             Heads -> string:tokens(Heads, ",")
@@ -1264,21 +1264,14 @@ get_link_heads(RD, Ctx) ->
     %% Decode the link headers. Throw an exception if we can't
     %% properly parse any of the headers...
     {BucketLinks, KeyLinks} =
-        case APIVersion of
-            1 ->
-                {ok, BucketRegex} =
-                    re:compile("</" ++ Prefix ++ ?V1_BUCKET_REGEX),
-                {ok, KeyRegex} =
-                    re:compile("</" ++ Prefix ++ ?V1_KEY_REGEX),
-                extract_links(LinkHeaders1, BucketRegex, KeyRegex);
-            %% @todo Handle links in API Version 3?
-            Two when Two >= 2 ->
-                {ok, BucketRegex} =
-                    re:compile(?V2_BUCKET_REGEX),
-                {ok, KeyRegex} =
-                    re:compile(?V2_KEY_REGEX),
-                extract_links(LinkHeaders1, BucketRegex, KeyRegex)
-        end,
+    case LinkHeaders of
+        [] ->
+            {[], []};
+        LinkHeaders ->
+            {KeyRegex, BucketRegex} =
+                get_compiled_link_regex(APIVersion, Prefix),
+            extract_links(LinkHeaders, BucketRegex, KeyRegex)
+    end,
 
     %% Validate that the only bucket header is pointing to the parent
     %% bucket...
@@ -1287,7 +1280,7 @@ get_link_heads(RD, Ctx) ->
         true ->
             KeyLinks;
         false ->
-            throw({invalid_link_headers, LinkHeaders1})
+            throw({invalid_link_headers, LinkHeaders})
     end.
 
 %% Run each LinkHeader string() through the BucketRegex and
