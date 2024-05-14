@@ -1310,6 +1310,50 @@ extract_links_1([LinkHeader|Rest], BucketRegex, KeyRegex, BucketAcc, KeyAcc) ->
 extract_links_1([], _BucketRegex, _KeyRegex, BucketAcc, KeyAcc) ->
     {BucketAcc, KeyAcc}.
 
+-type mp() :: {re_pattern, _, _, _, _}.
+
+-spec get_compiled_link_regex(non_neg_integer(), string()) -> {mp(), mp()}.
+get_compiled_link_regex(1, Prefix) ->
+    case persistent_term:get(compiled_link_regex_v1, undefined) of
+        undefined ->
+            {ok, KeyRegex} = re:compile("</" ++ Prefix ++ ?V1_KEY_REGEX),
+            {ok, BucketRegex} = re:compile("</" ++ Prefix ++ ?V1_BUCKET_REGEX),
+            persistent_term:put(
+                compiled_link_regex_v1,
+                {KeyRegex, BucketRegex}
+            ),
+            {KeyRegex, BucketRegex};
+        PreCompiledExpressions ->
+            PreCompiledExpressions
+    end;
+get_compiled_link_regex(Two, _Prefix) when Two >= 2 ->
+    case persistent_term:get(compiled_link_regex_v2, undefined) of
+        undefined ->
+            {ok, KeyRegex} = re:compile(?V2_KEY_REGEX),
+            {ok, BucketRegex} = re:compile(?V2_BUCKET_REGEX),
+            persistent_term:put(
+                compiled_link_regex_v2,
+                {KeyRegex, BucketRegex}
+            ),
+            {KeyRegex, BucketRegex};
+        PreCompiledExpressions ->
+            PreCompiledExpressions
+    end.
+
+-spec get_compiled_index_regex() -> mp().
+get_compiled_index_regex() ->
+    case persistent_term:get(compiled_index_regex, undefined) of
+        undefined ->
+            {ok, IndexRegex} = re:compile(",\\s"),
+            persistent_term:put(
+                compiled_index_regex,
+                IndexRegex
+            ),
+            IndexRegex;
+        PreCompiledIndexRegex ->
+            PreCompiledIndexRegex
+    end.
+
 -spec get_ctype(riak_kv_wm_object_dict(), term()) -> string().
 %% @doc Work out the content type for this object - use the metadata if provided
 get_ctype(MD,V) ->
