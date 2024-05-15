@@ -540,6 +540,18 @@
     hidden
 ]}.
 
+%% @doc Regular Expression library
+%% For secondary index queries, which regular expression library should be
+%% used.  The bif-based built-in PCRE library, or the nif-based RE2 library.
+%% The re2 library has the standard drawbacks of using NIFs, but does not carry
+%% the risk associated with quadratic explosion of complexity in PCRE regular
+%% expressions.  See https://github.com/google/re2/wiki/WhyRE2
+{mapping, "regex_library", "riak_kv.regex_library", [
+  {datatype, {enum, [pcre, re2]}},
+  {default, pcre}
+]}.
+
+
 %% @doc Controls which binary representation of a riak value is stored
 %% on disk.
 %% * 0: Original erlang:term_to_binary format. Higher space overhead.

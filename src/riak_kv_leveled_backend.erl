@@ -366,6 +366,10 @@ fold_keys(FoldKeysFun, Acc, Opts, #state{bookie=Bookie}) ->
                             false
                         );
                     _ ->
+                        ?LOG_INFO(
+                            "Regular expression passed to backend ~p",
+                            [TermRegex]
+                        ),
                         leveled_bookie:book_indexfold(
                             Bookie,
                             {QBucket, StartKey},

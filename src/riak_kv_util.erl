@@ -52,7 +52,8 @@
         is_modfun_allowed/2,
         shuffle_list/1,
         kv_ready/0,
-        ngr_initial_timeout/0
+        ngr_initial_timeout/0,
+        regex_compile/1
     ]).
 -export([report_hashtree_tokens/0, reset_hashtree_tokens/2]).
 
@@ -67,12 +68,24 @@
 -type riak_core_ring() :: riak_core_ring:riak_core_ring().
 -type index() :: non_neg_integer().
 -type index_n() :: {index(), pos_integer()}.
+-type mp() :: {re_pattern, _, _, _, _}.
+-type re2mp() :: reference().
 
--export_type([index_n/0]).
+-export_type([index_n/0, mp/0, re2mp/0]).
 
 %% ===================================================================
 %% Public API
 %% ===================================================================
+
+-spec regex_compile(
+    iolist()) -> {ok, mp()|re2mp()}|{error, {string(), non_neg_integer()}}.
+regex_compile(RegularExpression) ->
+    case application:get_env(riak_kv, regex_library, pcre) of
+        pcre ->
+            re:compile(RegularExpression);
+        re2 ->
+            re2:compile(RegularExpression)
+    end.
 
 %% @spec is_x_deleted(riak_object:riak_object()) -> boolean()
 %% @doc 'true' if all contents of the input object are marked

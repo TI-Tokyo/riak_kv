@@ -222,7 +222,7 @@ malformed_request(RD, Ctx) ->
         undefined ->
             ok;
         _ ->
-            re:compile(TermRegex)
+            riak_kv_util:regex_compile(TermRegex)
     end,
 
     Stream0 = wrq:get_qs_value("stream", "false", RD),

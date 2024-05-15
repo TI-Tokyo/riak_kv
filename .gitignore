@@ -26,3 +26,4 @@ src/riak_core_pb.erl
 undefined
 log/crash.log
 .eqc/*counterexample.eqc
+compile_commands.json

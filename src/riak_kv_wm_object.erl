@@ -1310,9 +1310,8 @@ extract_links_1([LinkHeader|Rest], BucketRegex, KeyRegex, BucketAcc, KeyAcc) ->
 extract_links_1([], _BucketRegex, _KeyRegex, BucketAcc, KeyAcc) ->
     {BucketAcc, KeyAcc}.
 
--type mp() :: {re_pattern, _, _, _, _}.
-
--spec get_compiled_link_regex(non_neg_integer(), string()) -> {mp(), mp()}.
+-spec get_compiled_link_regex(
+    non_neg_integer(), string()) -> {riak_kv_util:mp(), riak_kv_util:mp()}.
 get_compiled_link_regex(1, Prefix) ->
     case persistent_term:get(compiled_link_regex_v1, undefined) of
         undefined ->
@@ -1340,7 +1339,7 @@ get_compiled_link_regex(Two, _Prefix) when Two >= 2 ->
             PreCompiledExpressions
     end.
 
--spec get_compiled_index_regex() -> mp().
+-spec get_compiled_index_regex() -> riak_kv_util:mp().
 get_compiled_index_regex() ->
     case persistent_term:get(compiled_index_regex, undefined) of
         undefined ->

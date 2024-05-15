@@ -94,7 +94,7 @@ ensure_compiled_re(TermRe) ->
         undefined ->
             {undefined, undefined};
         _ ->
-            re:compile(TermRe)
+            riak_kv_util:regex_compile(TermRe)
     end.
 
 %% @doc process/2 callback. Handles an incoming request message.
