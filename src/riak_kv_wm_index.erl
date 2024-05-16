@@ -209,7 +209,7 @@ malformed_request(RD, Ctx) ->
         end,
     MaxVal = validate_max(wrq:get_qs_value(?Q_2I_MAX_RESULTS, RD)),
     TermRegex = wrq:get_qs_value(?Q_2I_TERM_REGEX, RD),
-    Timeout0 =  wrq:get_qs_value("timeout", RD),
+    Timeout = validate_timeout(wrq:get_qs_value("timeout", RD)),
     {Start, End} =
         case {IndexField, Args2} of
             {<<"$bucket">>, _} -> {undefined, undefined};
@@ -265,7 +265,7 @@ malformed_request(RD, Ctx) ->
                                 validate_query(
                                     PgSort,
                                     ReturnTerms1,
-                                    validate_timeout(Timeout0),
+                                    Timeout,
                                     MaxVal,
                                     Stream,
                                     RD
@@ -287,7 +287,7 @@ malformed_request(RD, Ctx) ->
                                             return_terms =
                                                 riak_index:return_terms(
                                                     ReturnTerms1, Query),
-                                            timeout=Timeout0,
+                                            timeout=Timeout,
                                             pagination_sort = PgSortFinal,
                                             streamed = Stream
                                         },
