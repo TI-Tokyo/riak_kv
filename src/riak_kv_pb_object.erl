@@ -298,7 +298,7 @@ process(#rpbputreq{bucket=B0, type=T, key=K, vclock=PbVC,
                             riak_kv_token_session:session_use(
                                 SessionRef,
                                 get,
-                                [B, K, GetOpts ++ make_option(r, N_val)]
+                                [B, K, GetOpts ++ make_option(r, quorum)]
                             ),
                         {GetRsp, SessionRef};
                     _ ->
@@ -409,9 +409,9 @@ process(#rpbputreq{bucket=B0, type=T, key=K, vclock=PbVC, content=RpbContent,
     case PutResponse of
         ok when is_binary(ReturnKey) ->
             PutResp = #rpbputresp{key = ReturnKey},
-            {reply, PutResp, State};
+            {reply, PutResp, State#state{token_session = none}};
         ok ->
-            {reply, #rpbputresp{}, State};
+            {reply, #rpbputresp{}, State#state{token_session = none}};
         {ok, Obj} ->
             Contents = riak_object:get_contents(Obj),
             PbContents = case ReturnHead of
@@ -428,11 +428,11 @@ process(#rpbputreq{bucket=B0, type=T, key=K, vclock=PbVC, content=RpbContent,
                                   vclock = pbify_rpbvc(riak_object:vclock(Obj)),
                                   key = ReturnKey
                                  },
-            {reply, PutResp, State};
+            {reply, PutResp, State#state{token_session = none}};
         {error, notfound} ->
-            {reply, #rpbputresp{}, State};
+            {reply, #rpbputresp{}, State#state{token_session = none}};
         {error, Reason} ->
-            {error, {format, Reason}, State}
+            {error, {format, Reason}, State#state{token_session = none}}
     end;
 
 process(#rpbdelreq{bucket=B0, type=T, key=K, vclock=PbVc,
