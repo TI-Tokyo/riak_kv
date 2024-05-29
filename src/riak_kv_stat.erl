@@ -270,6 +270,17 @@ do_update({index_fsm_time, Microsecs, ResultCount}) ->
     ok = exometer:update([P, ?APP, index, fsm, complete], 1),
     ok = exometer:update([P, ?APP, index, fsm, results], ResultCount),
     ok = exometer:update([P, ?APP, index, fsm, time], Microsecs);
+do_update({token_sesssion_time, Microsecs}) ->
+    ok = exometer:update([?PFX, ?APP, token, session, complete], 1),
+    ok = exometer:update([?PFX, ?APP, token, session, duration], Microsecs);
+do_update(token_sesssion_timeout) ->
+    ok = exometer:update([?PFX, ?APP, token, session, timeout], 1);
+do_update(token_sesssion_refusal) ->
+    ok = exometer:update([?PFX, ?APP, token, session, refusal], 1);
+do_update(token_sesssion_renewal) ->
+    ok = exometer:update([?PFX, ?APP, token, session, renewal], 1);
+do_update(token_sesssion_error) ->
+    ok = exometer:update([?PFX, ?APP, token, session, error], 1);
 do_update({read_repairs, Preflist}) ->
     ok = exometer:update([?PFX, ?APP, node, gets, read_repairs], 1),
     do_repairs(Preflist);
@@ -798,6 +809,15 @@ stats() ->
      {[list, fsm, create, error], spiral, [], [{one  , list_fsm_create_error},
                                                {count, list_fsm_create_error_total}]},
      {[list, fsm, active], counter, [], [{value, list_fsm_active}]},
+
+     {[token, session, complete], spiral, [], [{one, token_sesssion_complete}]},
+     {[token, session, timeout], spiral, [], [{one, token_sesssion_timeout}]},
+     {[token, session, refusal], spiral, [], [{one, token_sesssion_refusal}]},
+     {[token, session, renewal], spiral, [], [{one, token_sesssion_renewal}]},
+     {[token, session, error], spiral, [], [{one, token_sesssion_error}]},
+     {[token, session, time], histogram, [], [{mean, token_session_time_mean},
+                                               {max, token_session_time_100}]},
+
      {[clusteraae, fsm, create], spiral, [], [{one, clusteraae_fsm_create}]},
      {[clusteraae, fsm, create, error], spiral, [], [{one, clusteraae_fsm_create_error}]},
      {[clusteraae, fsm, active], counter, [], [{value, clusteraae_fsm_active}]},
