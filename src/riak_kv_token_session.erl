@@ -75,6 +75,8 @@
 -type timeout_ms() :: pos_integer().
 -type erpc_error() :: {erpc, term()}.
 
+-export_type([session_ref/0]).
+
 
 %%%============================================================================
 %%% External API
@@ -122,7 +124,9 @@ session_use(SessionReference, FuncName, Args) ->
             erpc:call(N, ?MODULE, session_local_use, [P, FuncName, Args, ID])
     end.
 
--spec session_release(session_ref()) -> ok|erpc_error().
+-spec session_release(session_ref()|none) -> ok|erpc_error().
+session_release(none) ->
+    ok;
 session_release(SessionReference) ->
     {N, P, ID} = decode_session_reference(SessionReference),
     case node() of
