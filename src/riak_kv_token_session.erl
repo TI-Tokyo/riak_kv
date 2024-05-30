@@ -111,6 +111,8 @@ session_request(TokenID, NVal, RequestTimeout, TokenTimeout)
                     )
             end;
         _ ->
+            ok = riak_kv_stat:update(token_session_preflist_short),
+            ?LOG_WARNING("Insufficient preflist for token request"),
             {false, none}
     end.
 
@@ -204,6 +206,7 @@ handle_call({request, RequestTimeout, VerifyList}, _From, State) ->
             {stop, normal, {false, none}, State}
     after
         RequestTimeout ->
+            ok = riak_kv_stat:update(token_session_request_timeout),
             {stop, normal, {false, none}, State}
     end;
 handle_call({use_session, Function, Args, ID}, _From, State)
@@ -346,16 +349,43 @@ basic_session_request_tester() ->
             ok
     end,
     {1, 0, 1} = riak_kv_token_manager:stats(),
-    false = riak_kv_token_manager:is_downstream_clear({token, <<"Batch3">>}),
-    true = riak_kv_token_manager:is_downstream_clear({token, <<"Batch2">>}),
-    session_release(SessionRef6),
+    false =
+        riak_kv_token_manager:is_downstream_clear(
+            node(), {token, <<"Batch3">>}
+        ),
+    {1, 0, 1} = riak_kv_token_manager:stats(),
+    true =
+        riak_kv_token_manager:is_downstream_clear(
+            node(), {token, <<"Batch2">>}
+        ),
+    true =
+        riak_kv_token_manager:is_downstream_clear(
+            node(), {token, <<"Batch2">>}
+        ),
+    %% Can grant twice - as the remote PID is not the token_manager
+    %% so assumes the token_manager is down
+    %% Once the remote token_manager has responded to say it hasn't granted
+    %% anything remotely - both upstream grants will be dropped
     timer:sleep(100),
+    {1, 0, 1} = riak_kv_token_manager:stats(),
+    session_release(SessionRef6),
     {0, 0, 0} = riak_kv_token_manager:stats(),
-    true = riak_kv_token_manager:is_downstream_clear({token, <<"Batch2">>}),
+        % The check of upstream token manager will return negative, and 
+        % so is now removed
+    {true, SessionRef7} =
+        session_local_request({token, <<"Batch2">>}, [], 1000, 2000),
+    {1, 0, 1} = riak_kv_token_manager:stats(),
+        % upstream replaced as pid not alive
+    session_release(SessionRef7),
+    {0, 0, 0} = riak_kv_token_manager:stats(),
 
+    true =
+        riak_kv_token_manager:is_downstream_clear(
+            node(), {token, <<"Batch2">>}
+        ),
     {false, none} =
         session_local_request({token, <<"Batch1">>}, [node()], 1000, 2000),
-    {0, 0, 0} = riak_kv_token_manager:stats(),
+    {1, 0, 0} = riak_kv_token_manager:stats(),
 
     gen_server:stop(riak_kv_token_manager).
 

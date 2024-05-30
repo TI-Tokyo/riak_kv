@@ -33,7 +33,10 @@
     [
         start_link/0,
         request_token/2,
-        is_downstream_clear/1,
+        is_downstream_clear/2,
+        is_granted_remotely/2,
+        not_granted/2,
+        clear_downstream/2,
         stats/0
     ]
 ).
@@ -51,15 +54,17 @@
 
 -record(state,
         {
-            queues = maps:new()
-                :: request_queues(),
-            grants = maps:new()
-                :: #{token_id() => pid()},
-            associations = maps:new()
-                :: #{pid() => token_id()}
+            queues = maps:new() :: request_queues(),
+            grants = maps:new() :: grant_map(),
+            associations = maps:new() :: #{pid() => token_id()}
         }
     ).
 
+-define(GC_TIMER_SECONDS, 10).
+
+-type granted_session()
+    :: {local, pid(), verify_list()}| {upstream, {node(), pid()}}.
+-type grant_map() :: #{token_id() => granted_session()}.
 -type request_queues()
     :: #{token_id() => list({pid(), verify_list()})}.
 -type token_id() :: {token, binary()}|{riak_object:bucket(), riak_object:key()}.
@@ -80,9 +85,23 @@ request_token(TokenID, VerifyList) ->
     gen_server:cast(
         ?MODULE, {request, TokenID, VerifyList, self()}). 
 
--spec is_downstream_clear(token_id()) -> boolean().
-is_downstream_clear(TokenID) ->
-    gen_server:call(?MODULE, {is_clear, TokenID}, infinity).
+-spec is_downstream_clear(node(), token_id()) -> boolean().
+is_downstream_clear(ToNode, TokenID) ->
+    gen_server:call(
+        {?MODULE, ToNode}, {is_clear, TokenID, {node(), self()}}, infinity
+    ).
+
+-spec is_granted_remotely(node(), token_id()) -> ok.
+is_granted_remotely(ToNode, TokenID) ->
+    gen_server:cast({?MODULE, ToNode}, {is_granted_locally, TokenID, node()}).
+
+-spec not_granted(node(), token_id()) -> ok.
+not_granted(Node, TokenID) ->
+    gen_server:cast({?MODULE, Node}, {not_granted, TokenID, node()}).
+
+-spec clear_downstream(token_id(), {node(), pid()}) -> ok.
+clear_downstream(TokenID, Upstream) ->
+    gen_server:cast(?MODULE, {clear_downstream, TokenID, Upstream}).
 
 -spec stats() -> {non_neg_integer(), non_neg_integer(), non_neg_integer()}.
 stats() ->
@@ -93,10 +112,21 @@ stats() ->
 %%%============================================================================
 
 init(_Args) ->
+    erlang:send_after(?GC_TIMER_SECONDS * 1000, self(), gc),
     {ok, #state{}}.
 
-handle_call({is_clear, TokenID}, _From, State) ->
-    {reply, not maps:is_key(TokenID, State#state.grants), State};
+handle_call({is_clear, TokenID, {Node, Pid}}, _From, State) ->
+    case free_to_grant(TokenID, State#state.grants) of
+        {true, none, UpdGrants} ->
+            {reply,
+                true,
+                State#state{
+                    grants = maps:put(TokenID, {upstream, {Node, Pid}}, UpdGrants)
+                }
+            };
+        {false, _, UpdGrants} ->
+            {reply, false, State#state{grants = UpdGrants}}
+    end;
 handle_call(stats, _From, State) ->
     Grants = maps:size(State#state.grants),
     QueuedRequests =
@@ -109,8 +139,8 @@ handle_call(stats, _From, State) ->
     {reply, {Grants, QueuedRequests, Associations}, State}.
 
 handle_cast({request, TokenID, VerifyList, Session}, State) ->
-    case maps:is_key(TokenID, State#state.grants) of
-        true ->
+    case free_to_grant(TokenID, State#state.grants) of
+        {false, local, UpdGrants} ->
             TokenQueue = maps:get(TokenID, State#state.queues, []),
             UpdQueue =
                 maps:put(
@@ -121,12 +151,20 @@ handle_cast({request, TokenID, VerifyList, Session}, State) ->
             _Ref = erlang:monitor(process, Session),
             UpdAssocs = maps:put(Session, TokenID, State#state.associations),
             {noreply,
-                State#state{queues = UpdQueue, associations = UpdAssocs}};
-        false ->
-            case downstream_clear(VerifyList, TokenID) of
+                State#state{
+                    grants = UpdGrants,
+                    queues = UpdQueue,
+                    associations = UpdAssocs}
+                };
+        {false, upstream, UpdGrants} ->
+            {noreply, State#state{grants = UpdGrants}};
+        {true, none, UpdGrants0} ->
+            case check_downstream_clear(VerifyList, TokenID) of
                 true ->
                     UpdGrants =
-                        maps:put(TokenID, Session, State#state.grants),
+                        maps:put(
+                            TokenID, {local, Session, VerifyList}, UpdGrants0
+                        ),
                     UpdAssocs =
                         maps:put(Session, TokenID, State#state.associations),
                     Session ! granted,
@@ -139,15 +177,46 @@ handle_cast({request, TokenID, VerifyList, Session}, State) ->
                     Session ! refused,
                     {noreply, State}
             end
+    end;
+handle_cast({clear_downstream, TokenID, Upstream}, State) ->
+    case maps:get(TokenID, State#state.grants, not_found) of
+        {upstream, Upstream} ->
+            {noreply,
+                State#state{
+                    grants = maps:remove(TokenID, State#state.grants)
+                }
+            };
+        _ ->
+            {noreply, State}
+    end;
+handle_cast({is_granted_locally, TokenID, FromNode}, State) ->
+    case maps:get(TokenID, State#state.grants, not_found) of
+        {local, _Session, _VL} ->
+            ok;
+        _ ->
+            not_granted(FromNode, TokenID)
+    end,
+    {noreply, State};
+handle_cast({not_granted, TokenID, FromNode}, State) ->
+    case maps:get(TokenID, State#state.grants, not_found) of
+        {upstream, {FromNode, _FromPid}} ->
+            {noreply,
+                State#state{
+                    grants = maps:remove(TokenID, State#state.grants)
+                }
+            };
+        _ ->
+            {noreply, State}
     end.
 
 handle_info({'DOWN', _Ref, process, Session, _Reason}, State) ->
     {TokenID,  UpdAssocs} = maps:take(Session, State#state.associations),
     Queues = clear_session_from_queues(State#state.queues, TokenID, Session),
     case maps:get(TokenID, State#state.grants, not_found) of
-        Session ->
+        {local, Session, VerifyList} ->
             case return_session_from_queues(Queues, TokenID) of
                 {none, UpdQueues} ->
+                    ok = clear_downstream(VerifyList, TokenID, self()),
                     {noreply,
                         State#state{
                             associations = UpdAssocs,
@@ -155,9 +224,13 @@ handle_info({'DOWN', _Ref, process, Session, _Reason}, State) ->
                             grants = maps:remove(TokenID, State#state.grants)
                         }
                     };
-                {{NextSession, _VerifyList}, UpdQueues} ->
+                {{NextSession, NextVerifyList}, UpdQueues} ->
                     UpdGrants =
-                        maps:put(TokenID, NextSession, State#state.grants),
+                        maps:put(
+                            TokenID,
+                            {local, NextSession, NextVerifyList},
+                            State#state.grants
+                        ),
                     NextSession ! granted,
                     {noreply,
                         State#state{
@@ -172,6 +245,13 @@ handle_info({'DOWN', _Ref, process, Session, _Reason}, State) ->
                 State#state{associations = UpdAssocs, queues = Queues}
             }
     end;
+handle_info(gc, State) ->
+    erlang:send_after(?GC_TIMER_SECONDS * 1000, self(), gc),
+    {noreply,
+        State#state{
+            grants = maps:filter(fun is_still_active/2, State#state.grants)
+        }
+    };
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -186,8 +266,47 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%============================================================================
 
--spec downstream_clear(verify_list(), token_id()) -> boolean().
-downstream_clear(VerifyList, TokenID) ->
+-spec free_to_grant(
+    token_id(), grant_map()) -> {boolean(), local|upstream|none, grant_map()}.
+free_to_grant(TokenID, GrantMap) ->
+    case maps:get(TokenID, GrantMap, not_found) of
+        {local, _Session, _VerifyList} ->
+            {false, local, GrantMap};
+        {upstream, {Node, Pid}} ->
+            case check_upstream(TokenID, Node, Pid) of
+                true ->
+                    {false, upstream, GrantMap};
+                _ ->
+                    {true, none, maps:remove(TokenID, GrantMap)}
+            end;
+        not_found ->
+            {true, none, GrantMap}
+    end.
+
+-spec is_still_active(token_id(), granted_session()) -> boolean().
+is_still_active(_TokenID, {local, _SessionPid, _VerifyList}) ->
+    true;
+is_still_active(TokenID, {upstream, {Node, UpstreamMgr}}) ->
+    check_upstream(TokenID, Node, UpstreamMgr).
+
+check_upstream(TokenID, Node, UpstreamMgr) ->
+    is_granted_remotely(Node, TokenID),
+    CurrentTMGR = erpc:call(Node, erlang, whereis, [?MODULE]),
+    UpstreamMgr == CurrentTMGR.
+
+
+-spec clear_downstream(verify_list(), token_id(), pid()) -> ok.
+clear_downstream([], _TokenID, _Pid) ->
+    ok;
+clear_downstream([N|Rest], TokenID, Pid) ->
+    gen_server:cast(
+        {riak_kv_token_manager, N},
+        {clear_downstream, TokenID, {node(), Pid}}
+    ),
+    clear_downstream(Rest, TokenID, Pid).
+
+-spec check_downstream_clear(verify_list(), token_id()) -> boolean().
+check_downstream_clear(VerifyList, TokenID) ->
     case lists:member(node(), VerifyList) of
         true ->
             false;
@@ -198,7 +317,7 @@ downstream_clear(VerifyList, TokenID) ->
 downstream_clear([], _TokenID, AreAllClear) ->
     AreAllClear;
 downstream_clear([Node|Rest], TokenID, true) ->
-    Clear = erpc:call(Node, ?MODULE, is_downstream_clear, [TokenID]),
+    Clear = is_downstream_clear(Node, TokenID),
     downstream_clear(Rest, TokenID, Clear == true);
 downstream_clear(_VerifyList, _TokenID, false)  ->
     false.
@@ -224,8 +343,11 @@ return_session_from_queues(Queues, TokenID) ->
         QueuedRequests ->
             [{NextSession, VerifyList}|QueueRem] =
                 lists:reverse(QueuedRequests),
-            {{NextSession, VerifyList},
-                maps:put(TokenID, lists:reverse(QueueRem), Queues)}
+            case QueueRem of
+                [] ->
+                    {{NextSession, VerifyList}, maps:remove(TokenID, Queues)};
+                _ ->
+                    {{NextSession, VerifyList},
+                        maps:put(TokenID, lists:reverse(QueueRem), Queues)}
+            end
     end.
-
-
