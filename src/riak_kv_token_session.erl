@@ -32,6 +32,7 @@
 -export(
     [
         session_request/4,
+        session_request_retry/5,
         session_use/3,
         session_release/1,
         session_renew/1
@@ -82,37 +83,65 @@
 %%% External API
 %%%============================================================================
 
+
+-spec session_request_retry(
+    token_id(), 3|5, timeout_ms(), timeout_ms(), pos_integer())
+        -> {true, session_ref()}|{false, none}|erpc_error().
+session_request_retry(TokenID, NVal, RequestTimeout, TokenTimeout, Retry) ->
+    session_request_retry(
+        TokenID, NVal, RequestTimeout, TokenTimeout, Retry, 1
+    ).
+
+session_request_retry(TokenID, NVal, RequestTO, TokenTO, Retry, Retry) ->
+    session_request(TokenID, NVal, RequestTO, TokenTO);
+session_request_retry(TokenID, NVal, RequestTO, TokenTO, Retry, Attempts) ->
+    case session_request(TokenID, NVal, RequestTO, TokenTO) of
+        {true, SessionRef} ->
+            {true, SessionRef};
+        _Error ->
+            Wait = rand:uniform(RequestTO div Retry),
+            timer:sleep(Wait),
+            session_request_retry(
+                TokenID, NVal, RequestTO - Wait, TokenTO, Retry, Attempts + 1
+                )
+    end.
+
 -spec session_request(token_id(), 3|5, timeout_ms(), timeout_ms())
         -> {true, session_ref()}|{false, none}|erpc_error().
 session_request(TokenID, NVal, RequestTimeout, TokenTimeout)
         when NVal == 5; NVal == 7 ->
     DocIdx = chash_key(TokenID),
     PrimPartitions = riak_core_apl:get_primary_apl(DocIdx, NVal, riak_kv),
-    case length(PrimPartitions) of
+    PrimNodes =
+        lists:uniq(
+            lists:map(fun({{_Idx, N}, primary}) -> N end, PrimPartitions)
+        ),
+    case length(PrimNodes) of
         L when L >= (NVal - 2) ->
-            [Head|VerifyList] =
-                lists:sublist(
-                    lists:map(
-                        fun({{_Idx, N}, primary}) -> N end,
-                        PrimPartitions
-                    ),
-                    NVal - 2
-                ),
+            [Head|VerifyList] = lists:sublist(PrimNodes, NVal - 2),
             case node() of
                 Head ->
                     session_local_request(
                         TokenID, VerifyList, RequestTimeout, TokenTimeout);
                 _ ->
-                    erpc:call(
-                        Head,
-                        ?MODULE,
-                        session_local_request,
-                        [TokenID, VerifyList, RequestTimeout, TokenTimeout]
-                    )
+                    try
+                        erpc:call(
+                            Head,
+                            ?MODULE,
+                            session_local_request,
+                            [TokenID, VerifyList, RequestTimeout, TokenTimeout]
+                        )
+                    catch
+                        error:{erpc,noconnection}:_ ->
+                            ?LOG_WARNING(
+                                "Connection error accessing token_manager on ~w",
+                                [Head]),
+                            ok = riak_kv_stat:update(token_session_unreachable),
+                            {false, none}
+                    end
             end;
         _ ->
             ok = riak_kv_stat:update(token_session_preflist_short),
-            ?LOG_WARNING("Insufficient preflist for token request"),
             {false, none}
     end.
 

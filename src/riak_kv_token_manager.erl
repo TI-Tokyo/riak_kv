@@ -37,7 +37,8 @@
         is_granted_remotely/2,
         not_granted/2,
         clear_downstream/2,
-        stats/0
+        stats/0,
+        grants/0
     ]
 ).
 
@@ -59,8 +60,6 @@
             associations = maps:new() :: #{pid() => token_id()}
         }
     ).
-
--define(GC_TIMER_SECONDS, 10).
 
 -type granted_session()
     :: {local, pid(), verify_list()}| {upstream, {node(), pid()}}.
@@ -107,12 +106,16 @@ clear_downstream(TokenID, Upstream) ->
 stats() ->
     gen_server:call(?MODULE, stats).
 
+-spec grants() -> grant_map().
+grants() ->
+    gen_server:call(?MODULE, grants).
+
+
 %%%============================================================================
 %%% Callback functions
 %%%============================================================================
 
 init(_Args) ->
-    erlang:send_after(?GC_TIMER_SECONDS * 1000, self(), gc),
     {ok, #state{}}.
 
 handle_call({is_clear, TokenID, {Node, Pid}}, _From, State) ->
@@ -136,7 +139,9 @@ handle_call(stats, _From, State) ->
             State#state.queues
         ),
     Associations = maps:size(State#state.associations),
-    {reply, {Grants, QueuedRequests, Associations}, State}.
+    {reply, {Grants, QueuedRequests, Associations}, State};
+handle_call(grants, _From, State) ->
+    {reply, State#state.grants, State}.
 
 handle_cast({request, TokenID, VerifyList, Session}, State) ->
     case free_to_grant(TokenID, State#state.grants) of
@@ -245,13 +250,6 @@ handle_info({'DOWN', _Ref, process, Session, _Reason}, State) ->
                 State#state{associations = UpdAssocs, queues = Queues}
             }
     end;
-handle_info(gc, State) ->
-    erlang:send_after(?GC_TIMER_SECONDS * 1000, self(), gc),
-    {noreply,
-        State#state{
-            grants = maps:filter(fun is_still_active/2, State#state.grants)
-        }
-    };
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -282,12 +280,6 @@ free_to_grant(TokenID, GrantMap) ->
         not_found ->
             {true, none, GrantMap}
     end.
-
--spec is_still_active(token_id(), granted_session()) -> boolean().
-is_still_active(_TokenID, {local, _SessionPid, _VerifyList}) ->
-    true;
-is_still_active(TokenID, {upstream, {Node, UpstreamMgr}}) ->
-    check_upstream(TokenID, Node, UpstreamMgr).
 
 check_upstream(TokenID, Node, UpstreamMgr) ->
     is_granted_remotely(Node, TokenID),

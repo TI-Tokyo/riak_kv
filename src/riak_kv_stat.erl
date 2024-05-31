@@ -280,6 +280,9 @@ do_update(token_session_timeout) ->
 do_update(token_session_refusal) ->
     P = ?PFX,
     ok = exometer:update([P, ?APP, token, session, refusal], 1);
+do_update(token_session_unreachable) ->
+    P = ?PFX,
+    ok = exometer:update([P, ?APP, token, session, unreachable], 1);
 do_update(token_session_request_timeout) ->
     P = ?PFX,
     ok = exometer:update([P, ?APP, token, session, request_timeout], 1);
@@ -824,6 +827,7 @@ stats() ->
      {[token, session, complete], spiral, [], [{one, token_session_complete}]},
      {[token, session, timeout], spiral, [], [{one, token_session_timeout}]},
      {[token, session, refusal], spiral, [], [{one, token_session_refusal}]},
+     {[token, session, unreachable], spiral, [], [{one, token_session_unreachable}]},
      {[token, session, preflist_short], spiral, [], [{one, token_session_preflist_short}]},
      {[token, session, request_timeout], spiral, [], [{one, token_session_request_timeout}]},
      {[token, session, renewal], spiral, [], [{one, token_session_renewal}]},

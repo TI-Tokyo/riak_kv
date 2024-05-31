@@ -53,6 +53,7 @@
 
 -include_lib("riak_pb/include/riak_kv_pb.hrl").
 -include_lib("riak_pb/include/riak_pb_kv_codec.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 -ifdef(TEST).
 -compile([export_all, nowarn_export_all]).
@@ -60,6 +61,11 @@
 -endif.
 
 -behaviour(riak_api_pb_service).
+
+-define(TOKEN_RETRY_COUNT, 8).
+-define(TOKEN_REQUEST_TIMEOUT, 12000).
+-define(TOKEN_SESSION_TIMEOUT, 30000).
+-define(CONDITIONAL_NVAL, 5).
 
 -export([init/0,
          decode/2,
@@ -290,8 +296,13 @@ process(#rpbputreq{bucket=B0, type=T, key=K, vclock=PbVC,
                 {consistent, none};
             {false, true} ->
                 TokenResult =
-                    riak_kv_token_session:session_request(
-                        {B, K}, 5, 10000, 60000),
+                    riak_kv_token_session:session_request_retry(
+                        {B, K},
+                        ?CONDITIONAL_NVAL,
+                        ?TOKEN_REQUEST_TIMEOUT,
+                        ?TOKEN_SESSION_TIMEOUT,
+                        ?TOKEN_RETRY_COUNT
+                    ),
                 case TokenResult of
                     {true, SessionRef} ->
                         GetRsp =
@@ -302,7 +313,10 @@ process(#rpbputreq{bucket=B0, type=T, key=K, vclock=PbVC,
                             ),
                         {GetRsp, SessionRef};
                     _ ->
-                        {{error, "Token Error"}, none}
+                        ?LOG_WARNING(
+                            "Fallback to weak check - no token available"
+                        ),
+                        {riak_client:get(B, K, GetOpts, C), none}
                 end;
             {false, false} ->
                 {riak_client:get(B, K, GetOpts, C), none}
