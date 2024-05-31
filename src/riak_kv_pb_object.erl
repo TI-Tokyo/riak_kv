@@ -302,7 +302,7 @@ process(
 
     {CheckResult, CondPutOpts, SessionToken} =    
         case {IfNotModified, IfNoneMatch, IsConsistent, Stronger} of
-            {undefined, undefined, true, _} ->
+            {undefined, true, true, _} ->
                 {ok, [{if_none_match, true}], none};
             {undefined, undefined, false, _} ->
                 {ok, [], none};

@@ -155,36 +155,39 @@
          delete_resource/2
         ]).
 
--record(ctx, {api_version,  %% integer() - Determine which version of the API to use.
-              bucket_type,  %% binary() - Bucket type (from uri)
-              type_exists,  %% bool() - Type exists as riak_core_bucket_type
-              bucket,       %% binary() - Bucket name (from uri)
-              key,          %% binary() - Key (from uri)
-              client,       %% riak_client() - the store client
-              r,            %% integer() - r-value for reads
-              w,            %% integer() - w-value for writes
-              dw,           %% integer() - dw-value for writes
-              rw,           %% integer() - rw-value for deletes
-              pr,           %% integer() - number of primary nodes required in preflist on read
-              pw,           %% integer() - number of primary nodes required in preflist on write
-              node_confirms,%% integer() - number of physically diverse nodes required in preflist on write
-              basic_quorum, %% boolean() - whether to use basic_quorum
-              notfound_ok,  %% boolean() - whether to treat notfounds as successes
-              asis,         %% boolean() - whether to send the put without modifying the vclock
-              sync_on_write,%% string() - sync on write behaviour to pass to backend
-              prefix,       %% string() - prefix for resource uris
-              riak,         %% local | {node(), atom()} - params for riak client
-              doc,          %% {ok, riak_object()}|{error, term()} - the object found
-              vtag,         %% string() - vtag the user asked for
-              bucketprops,  %% proplist() - properties of the bucket
-              links,        %% [link()] - links of the object
-              index_fields, %% [index_field()]
-              method,       %% atom() - HTTP method for the request
-              ctype,        %% string() - extracted content-type provided
-              charset,      %% string() | undefined - extracted character set provided
-              timeout,      %% integer() - passed-in timeout value in ms
-              security      %% security context
-             }).
+-record(ctx,
+    {
+        api_version,  %% integer() - Determine which version of the API to use.
+        bucket_type,  %% binary() - Bucket type (from uri)
+        type_exists,  %% bool() - Type exists as riak_core_bucket_type
+        bucket,       %% binary() - Bucket name (from uri)
+        key,          %% binary() - Key (from uri)
+        client,       %% riak_client() - the store client
+        r,            %% integer() - r-value for reads
+        w,            %% integer() - w-value for writes
+        dw,           %% integer() - dw-value for writes
+        rw,           %% integer() - rw-value for deletes
+        pr,           %% integer() - number of primary nodes required in preflist on read
+        pw,           %% integer() - number of primary nodes required in preflist on write
+        node_confirms,%% integer() - number of physically diverse nodes required in preflist on write
+        basic_quorum, %% boolean() - whether to use basic_quorum
+        notfound_ok,  %% boolean() - whether to treat notfounds as successes
+        asis,         %% boolean() - whether to send the put without modifying the vclock
+        sync_on_write,%% string() - sync on write behaviour to pass to backend
+        prefix,       %% string() - prefix for resource uris
+        riak,         %% local | {node(), atom()} - params for riak client
+        doc,          %% {ok, riak_object()}|{error, term()} - the object found
+        vtag,         %% string() - vtag the user asked for
+        links,        %% [link()] - links of the object
+        index_fields, %% [index_field()]
+        method,       %% atom() - HTTP method for the request
+        ctype,        %% string() - extracted content-type provided
+        charset,      %% string() | undefined - extracted character set provided
+        timeout,      %% integer() - passed-in timeout value in ms
+        security,     %% security context
+        not_modified  %% decoded vector clock to be used in not_modified check
+    }
+).
 
 -ifdef(namespaced_types).
 -type riak_kv_wm_object_dict() :: dict:dict().
@@ -204,7 +207,6 @@
 
 -type link() :: {{Bucket::binary(), Key::binary()}, Tag::binary()}.
 
--define(DEFAULT_TIMEOUT, 60000).
 -define(V1_BUCKET_REGEX, "/([^/]+)>; ?rel=\"([^\"]+)\"").
 -define(V1_KEY_REGEX, "/([^/]+)/([^/]+)>; ?riaktag=\"([^\"]+)\"").
 -define(V2_BUCKET_REGEX, "</buckets/([^/]+)>; ?rel=\"([^\"]+)\"").
@@ -811,7 +813,10 @@ is_conflict(RD, Ctx) ->
                             base64:decode(NotModifiedClock)),
                     CurrentClock =
                         riak_object:vclock(Obj),
-                    {not vclock:equal(InClock, CurrentClock), RD, Ctx};
+                    {not vclock:equal(InClock, CurrentClock),
+                        RD,
+                        Ctx#ctx{not_modified = InClock}
+                    };
                 _ ->
                     {true, RD, Ctx}
             end;
@@ -873,7 +878,9 @@ accept_doc_body(
         Ctx=#ctx{
             bucket_type=T, bucket=B, key=K, client=C,
             links=L, ctype=CType, charset=Charset,
-            index_fields=IF}) ->
+            index_fields=IF,
+            not_modified = IfNotModified
+        }) ->
     Doc0 = riak_object:new(riak_kv_wm_utils:maybe_bucket_type(T,B), K, <<>>),
     VclockDoc = riak_object:set_vclock(Doc0, decode_vclock_header(RD)),
     UserMeta = extract_user_meta(RD),
@@ -902,14 +909,61 @@ accept_doc_body(
             _ -> []
         end,
     Options = make_options(Options0, Ctx),
-    NoneMatch = (wrq:get_req_header("If-None-Match", RD) =/= undefined),
-    Options2 = case riak_kv_util:consistent_object(B) and NoneMatch of
-                   true ->
-                       [{if_none_match, true}|Options];
-                   false ->
-                       Options
-               end,
-    case riak_client:put(Doc, Options2, C) of
+    IfNoneMatch = (wrq:get_req_header("If-None-Match", RD) =/= undefined),
+    IsConsistent = riak_kv_util:consistent_object(B),
+    Stronger = application:get_env(riak_kv, stronger_conditional_put, false),
+
+    {CondPutOptions, SessionToken} =
+        case {IfNotModified, IfNoneMatch, IsConsistent, Stronger} of
+            {_, true, true, _} ->
+                {[{if_none_match, true}], none};
+            {undefined, false, false, _} ->
+                {[], none};
+            {NotMod, NoneMatch, _, true} ->
+                TokenResult =
+                    riak_kv_token_session:session_request_retry({B, K}),
+                case TokenResult of
+                    {true, Token} ->
+                        GetOpts =[{basic_quorum, Ctx#ctx.basic_quorum}],
+                        Condition =
+                            case NotMod of
+                                undefined ->
+                                    {undefined, true, GetOpts};
+                                InClock ->
+                                    {{true, InClock}, undefined, GetOpts}
+                            end,
+                        {[{condition_check, Condition}], Token};
+                    _ ->
+                        %% Pass the condition downstream, but currently that
+                        %% condition is ignored
+                        case {NotMod, NoneMatch} of
+                            {_, true} ->
+                                {[{if_none_match, true}], none};
+                            {InClock, _} ->
+                                {[{if_not_modified, InClock}], none}
+                        end
+                end;
+            {NotMod, NoneMatch, _, false} ->
+                %% Pass the condition downstream, but currently that
+                    %% condition is ignored
+                    case {NotMod, NoneMatch} of
+                        {_, true} ->
+                            {[{if_none_match, true}], none};
+                        {InClock, _} ->
+                            {[{if_not_modified, InClock}], none}
+                    end
+        end,
+    PutRsp =
+        case SessionToken of
+            none ->
+                riak_client:put(Doc, CondPutOptions ++ Options, C);
+            _ ->
+                riak_kv_token_session:session_use(
+                    SessionToken, put, [Doc, CondPutOptions ++ Options]
+                )
+        end,
+    riak_kv_token_session:session_release(SessionToken),
+    case PutRsp of
         {error, Reason} ->
             handle_common_error(Reason, RD, Ctx);
         ok ->
@@ -1419,6 +1473,11 @@ handle_common_error(Reason, RD, Ctx) ->
             {{halt, 503}, wrq:append_to_response_body(Msg, RD), Ctx};
         {error, failed} ->
             {{halt, 412}, RD, Ctx};
+        {error, "match_found"} ->
+            {{halt, 412}, RD, Ctx};
+        {error, "modified"} ->
+            {{halt, 409}, RD, Ctx};
+
         {error, Err} ->
             {{halt, 500},
                 wrq:set_resp_header(?HEAD_CTYPE, "text/plain",
