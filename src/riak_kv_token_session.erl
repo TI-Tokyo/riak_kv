@@ -32,7 +32,7 @@
 -export(
     [
         session_request/4,
-        session_request_retry/5,
+        session_request_retry/1,
         session_use/3,
         session_release/1,
         session_renew/1
@@ -59,6 +59,11 @@
     ]
 ).
 
+-define(CONDITIONAL_NVAL, 5).
+-define(TOKEN_REQUEST_TIMEOUT, 12000).
+-define(TOKEN_SESSION_TIMEOUT, 30000).
+-define(TOKEN_RETRY_COUNT, 12).
+
 -record(state,
         {
             token_id :: token_id(),
@@ -83,27 +88,46 @@
 %%% External API
 %%%============================================================================
 
+-spec session_request_retry(
+    token_id()) -> {true, session_ref()}|{false, none}|erpc_error().
+session_request_retry(TokenID) ->
+    session_request_retry(
+        TokenID,
+        ?CONDITIONAL_NVAL,
+        ?TOKEN_REQUEST_TIMEOUT,
+        ?TOKEN_SESSION_TIMEOUT,
+        ?TOKEN_RETRY_COUNT
+    ).
 
 -spec session_request_retry(
     token_id(), 3|5, timeout_ms(), timeout_ms(), pos_integer())
         -> {true, session_ref()}|{false, none}|erpc_error().
 session_request_retry(TokenID, NVal, RequestTimeout, TokenTimeout, Retry) ->
     session_request_retry(
-        TokenID, NVal, RequestTimeout, TokenTimeout, Retry, 1
+        TokenID, NVal, RequestTimeout, TokenTimeout, Retry, 0
     ).
 
+session_request_retry(_TokenID, _NVal, 0, _TokenTO, _Retry, _Attempts) ->
+    {false, none};
 session_request_retry(TokenID, NVal, RequestTO, TokenTO, Retry, Retry) ->
     session_request(TokenID, NVal, RequestTO, TokenTO);
 session_request_retry(TokenID, NVal, RequestTO, TokenTO, Retry, Attempts) ->
+    RT0 = os:system_time(millisecond),
     case session_request(TokenID, NVal, RequestTO, TokenTO) of
         {true, SessionRef} ->
             {true, SessionRef};
         _Error ->
-            Wait = rand:uniform(RequestTO div Retry),
-            timer:sleep(Wait),
+            timer:sleep(
+                rand:uniform(max(1, RequestTO div (Retry - Attempts)))
+            ),
             session_request_retry(
-                TokenID, NVal, RequestTO - Wait, TokenTO, Retry, Attempts + 1
-                )
+                TokenID,
+                NVal,
+                max(0, RequestTO + (RT0 - os:system_time(millisecond))),
+                TokenTO,
+                Retry,
+                Attempts + 1
+            )
     end.
 
 -spec session_request(token_id(), 3|5, timeout_ms(), timeout_ms())
@@ -134,9 +158,10 @@ session_request(TokenID, NVal, RequestTimeout, TokenTimeout)
                     catch
                         error:{erpc,noconnection}:_ ->
                             ?LOG_WARNING(
-                                "Connection error accessing token_manager on ~w",
+                                "Connection error"
+                                " accessing token_manager on ~w",
                                 [Head]),
-                            ok = riak_kv_stat:update(token_session_unreachable),
+                            riak_kv_stat:update(token_session_unreachable),
                             {false, none}
                     end
             end;
@@ -152,7 +177,7 @@ session_use(SessionReference, FuncName, Args) ->
         N ->
             session_local_use(P, FuncName, Args, ID);
         _ ->
-            erpc:call(N, ?MODULE, session_local_use, [P, FuncName, Args, ID])
+            safe_erpc(N, ?MODULE, session_local_use, [P, FuncName, Args, ID])
     end.
 
 -spec session_release(session_ref()|none) -> ok|erpc_error().
@@ -164,7 +189,7 @@ session_release(SessionReference) ->
         N ->
             session_local_release(P, ID);
         _ ->
-            erpc:call(N, ?MODULE, session_local_release, [P, ID])
+            safe_erpc(N, ?MODULE, session_local_release, [P, ID])
     end.
 
 
@@ -175,13 +200,24 @@ session_renew(SessionReference) ->
         N ->
             session_local_renew(P, ID);
         _ ->
-            erpc:call(N, ?MODULE, session_local_renew, [P, ID])
+            safe_erpc(N, ?MODULE, session_local_renew, [P, ID])
     end.
 
 
 %%%============================================================================
 %%% Local API
 %%%============================================================================
+
+-spec safe_erpc(node(), atom(), atom(), list()) -> any().
+safe_erpc(Node, Module, Function, Args) ->
+    try
+        erpc:call(Node, Module, Function, Args)
+    catch
+        error:Reason:_ ->
+            {error, Reason};
+        exit:_:_ ->
+            {error, remote_exit}
+    end.
 
 -spec session_local_request(
         token_id(), verify_list(), timeout_ms(), timeout_ms()

@@ -52,8 +52,8 @@
 -module(riak_kv_pb_object).
 
 -include_lib("riak_pb/include/riak_kv_pb.hrl").
--include_lib("riak_pb/include/riak_pb_kv_codec.hrl").
 -include_lib("kernel/include/logger.hrl").
+
 
 -ifdef(TEST).
 -compile([export_all, nowarn_export_all]).
@@ -61,11 +61,6 @@
 -endif.
 
 -behaviour(riak_api_pb_service).
-
--define(TOKEN_RETRY_COUNT, 8).
--define(TOKEN_REQUEST_TIMEOUT, 12000).
--define(TOKEN_SESSION_TIMEOUT, 30000).
--define(CONDITIONAL_NVAL, 5).
 
 -export([init/0,
          decode/2,
@@ -75,13 +70,13 @@
 
 -import(riak_pb_kv_codec, [decode_quorum/1]).
 
--record(state, {client,    % local client
-                is_consistent = false :: boolean(),
-                client_id = <<0,0,0,0>>, % emulate legacy API when vnode_vclocks is true
-                repl_compress = false :: boolean(),
-                token_session = none
-                    :: none|riak_kv_token_session:session_ref()
-            }).
+-record(state,
+        {
+            client,    % local client
+            client_id = <<0,0,0,0>>,
+                % emulate legacy API when vnode_vclocks is true
+            repl_compress = false :: boolean()
+        }).
 
 %% @doc init/0 callback. Returns the service internal start
 %% state.
@@ -280,90 +275,18 @@ process(#rpbputreq{key = <<>>}, State) ->
     {error, "Key cannot be zero-length", State};
 process(#rpbputreq{type = <<>>}, State) ->
     {error, "Type cannot be zero-length", State};
-process(#rpbputreq{bucket=B0, type=T, key=K, vclock=PbVC,
-                   if_not_modified=NotMod, if_none_match=NoneMatch,
-                   n_val=N_val, sloppy_quorum=SloppyQuorum} = Req,
-        #state{client=C} = State) when NotMod; NoneMatch ->
-    GetOpts = 
-        make_option(n_val, N_val) ++
-        make_option(sloppy_quorum, SloppyQuorum),
+process(
+    #rpbputreq{
+        bucket=B0, type=T, key=K, vclock=PbVC,
+        content=RpbContent,
+        w=W0, dw=DW0, pw=PW0,
+        n_val=N_val, sloppy_quorum=SloppyQuorum, node_confirms=NodeConfirms0,
+        return_body=ReturnBody, return_head=ReturnHead,
+        timeout=Timeout,
+        asis=AsIs, if_not_modified=IfNotModified, if_none_match=IfNoneMatch},
+        #state{client=C} = State) ->
+
     B = maybe_bucket_type(T, B0),
-    StrongConditional =
-        application:get_env(riak_kv, strong_conditional_put, false),
-    {Result, SessionToken} =
-        case {riak_kv_util:consistent_object(B), StrongConditional} of
-            {true, _} ->
-                {consistent, none};
-            {false, true} ->
-                TokenResult =
-                    riak_kv_token_session:session_request_retry(
-                        {B, K},
-                        ?CONDITIONAL_NVAL,
-                        ?TOKEN_REQUEST_TIMEOUT,
-                        ?TOKEN_SESSION_TIMEOUT,
-                        ?TOKEN_RETRY_COUNT
-                    ),
-                case TokenResult of
-                    {true, SessionRef} ->
-                        GetRsp =
-                            riak_kv_token_session:session_use(
-                                SessionRef,
-                                get,
-                                [B, K, GetOpts ++ make_option(r, quorum)]
-                            ),
-                        {GetRsp, SessionRef};
-                    _ ->
-                        ?LOG_WARNING(
-                            "Fallback to weak check - no token available"
-                        ),
-                        {riak_client:get(B, K, GetOpts, C), none}
-                end;
-            {false, false} ->
-                {riak_client:get(B, K, GetOpts, C), none}
-        end,
-    case Result of
-        consistent ->
-            process(Req#rpbputreq{if_not_modified=undefined,
-                                  if_none_match=undefined},
-                    State#state{is_consistent = true});
-        {ok, _} when NoneMatch ->
-            riak_kv_token_session:session_release(SessionToken),
-            {error, "match_found", State};
-        {ok, O} when NotMod ->
-            case erlify_rpbvc(PbVC) == riak_object:vclock(O) of
-                true ->
-                    process(
-                        Req#rpbputreq{
-                            if_not_modified=undefined,
-                            if_none_match=undefined
-                        },
-                        State#state{token_session = SessionToken});
-                _ ->
-                    riak_kv_token_session:session_release(SessionToken),
-                    {error, "modified", State}
-            end;
-        {error, notfound} when NoneMatch ->
-            process(
-                Req#rpbputreq{
-                    if_not_modified=undefined,
-                    if_none_match=undefined
-                },
-                State#state{token_session = SessionToken});
-        {error, notfound} when NotMod ->
-            riak_kv_token_session:session_release(SessionToken),
-            {error, "notfound", State};
-        {error, Reason} ->
-            riak_kv_token_session:session_release(SessionToken),
-            {error, {format, Reason}, State}
-    end;
-
-process(#rpbputreq{bucket=B0, type=T, key=K, vclock=PbVC, content=RpbContent,
-                   w=W0, dw=DW0, pw=PW0, return_body=ReturnBody,
-                   return_head=ReturnHead, timeout=Timeout, asis=AsIs,
-                   n_val=N_val, sloppy_quorum=SloppyQuorum,
-                   node_confirms=NodeConfirms0},
-        #state{client=C, token_session=SessionRef} = State0) ->
-
     case K of
         undefined ->
             %% Generate a key, the user didn't supply one
@@ -374,79 +297,129 @@ process(#rpbputreq{bucket=B0, type=T, key=K, vclock=PbVC, content=RpbContent,
             %% Don't return the key since we're not generating one
             ReturnKey = undefined
     end,
-    B = maybe_bucket_type(T, B0),
-    O0 = riak_object:new(B, Key, <<>>),
-    O1 = update_rpbcontent(O0, RpbContent),
-    O  = update_pbvc(O1, PbVC),
-    %% erlang_protobuffs encodes as 1/0/undefined
-    W = decode_quorum(W0),
-    DW = decode_quorum(DW0),
-    PW = decode_quorum(PW0),
-    NodeConfirms = decode_quorum(NodeConfirms0),
-    B = maybe_bucket_type(T, B0),
-    Options = case ReturnBody of
-                  1 -> [returnbody];
-                  true -> [returnbody];
-                  _ ->
-                      case ReturnHead of
-                          true -> [returnbody];
-                          _ -> []
-                      end
-              end,
-    {Options2, State} = 
-        case State0#state.is_consistent of
-            true ->
-                {[{if_none_match, true}|Options],
-                    State0#state{is_consistent = false}};
-            _ ->
-                {Options, State0}
-        end,
-    Opts =
-        make_options([{w, W}, {dw, DW}, {pw, PW},
-                        {node_confirms, NodeConfirms},
-                        {timeout, Timeout}, {asis, AsIs},
-                        {n_val, N_val},
-                        {sloppy_quorum, SloppyQuorum}]) ++ Options2,
-    PutResponse =
-        case SessionRef of
-            none ->
-                riak_client:put(O, Opts, C);
-            _ ->
-                Rsp =
-                    riak_kv_token_session:session_use(
-                        SessionRef, put, [O, Opts]
-                    ),
-                riak_kv_token_session:session_release(SessionRef),
-                Rsp
-        end,
+    IsConsistent = riak_kv_util:consistent_object(B),
+    Stronger = application:get_env(riak_kv, stronger_conditional_put, false),
 
-    case PutResponse of
-        ok when is_binary(ReturnKey) ->
-            PutResp = #rpbputresp{key = ReturnKey},
-            {reply, PutResp, State#state{token_session = none}};
-        ok ->
-            {reply, #rpbputresp{}, State#state{token_session = none}};
-        {ok, Obj} ->
-            Contents = riak_object:get_contents(Obj),
-            PbContents = case ReturnHead of
-                             true ->
-                                 %% Remove all the 'value' fields from the contents
-                                 %% This is a rough equivalent of a REST HEAD
-                                 %% request
-                                 BlankContents = [{MD, <<>>} || {MD, _} <- Contents],
-                                 riak_pb_kv_codec:encode_contents(BlankContents);
-                             _ ->
-                                 riak_pb_kv_codec:encode_contents(Contents)
-                         end,
-            PutResp = #rpbputresp{content = PbContents,
-                                  vclock = pbify_rpbvc(riak_object:vclock(Obj)),
-                                  key = ReturnKey
-                                 },
-            {reply, PutResp, State#state{token_session = none}};
-        {error, notfound} ->
-            {reply, #rpbputresp{}, State#state{token_session = none}};
+    {CheckResult, CondPutOpts, SessionToken} =    
+        case {IfNotModified, IfNoneMatch, IsConsistent, Stronger} of
+            {undefined, undefined, true, _} ->
+                {ok, [{if_none_match, true}], none};
+            {undefined, undefined, false, _} ->
+                {ok, [], none};
+            {NotMod, NoneMatch, _, true} ->
+                GetOpts =
+                    make_option(n_val, N_val) ++
+                    make_option(sloppy_quorum, SloppyQuorum),
+                TokenResult =
+                    riak_kv_token_session:session_request_retry({B, K}),
+                case TokenResult of
+                    {true, Token} ->
+                        GetRsp =
+                            riak_kv_token_session:session_use(
+                                Token, get, [B, K, GetOpts]
+                            ),
+                        {CheckR, PutOpts} =
+                            conditional_check(
+                                GetRsp, {NotMod, PbVC}, NoneMatch),
+                        {CheckR, PutOpts, Token};
+                    _ ->
+                        ?LOG_WARNING(
+                            "Fallback to weak check as no token available"
+                        ),
+                        {CheckR, PutOpts} =
+                            conditional_check(
+                                riak_client:get(B, K, GetOpts, C),
+                                {NotMod, PbVC},
+                                NoneMatch
+                            ),
+                        {CheckR, PutOpts, none}
+                end;
+            {NotMod, NoneMatch, _, false} ->
+                GetOpts =
+                    make_option(n_val, N_val) ++
+                    make_option(sloppy_quorum, SloppyQuorum),
+                {CheckR, PutOpts} =
+                    conditional_check(
+                        riak_client:get(B, K, GetOpts, C),
+                        {NotMod, PbVC},
+                        NoneMatch
+                    ),
+                {CheckR, PutOpts, none}
+        end,
+    case CheckResult of
         {error, Reason} ->
-            {error, {format, Reason}, State#state{token_session = none}}
+            riak_kv_token_session:session_release(SessionToken),
+            {error, Reason, State};
+        ok ->
+            O0 = riak_object:new(B, Key, <<>>),
+            O1 = update_rpbcontent(O0, RpbContent),
+            O  = update_pbvc(O1, PbVC),
+            %% erlang_protobuffs encodes as 1/0/undefined
+            W = decode_quorum(W0),
+            DW = decode_quorum(DW0),
+            PW = decode_quorum(PW0),
+            NodeConfirms = decode_quorum(NodeConfirms0),
+            BodyOptions =
+                case ReturnBody of
+                    1 -> [returnbody];
+                    true -> [returnbody];
+                    _ ->
+                        case ReturnHead of
+                            true -> [returnbody];
+                            _ -> []
+                        end
+                end,
+            Opts =
+                CondPutOpts ++
+                    BodyOptions ++
+                    make_options(
+                        [{w, W}, {dw, DW}, {pw, PW},
+                            {node_confirms, NodeConfirms},
+                            {timeout, Timeout}, {asis, AsIs},
+                            {n_val, N_val},
+                            {sloppy_quorum, SloppyQuorum}]),
+            PutRsp =
+                case SessionToken of
+                    none ->
+                        riak_client:put(O, Opts, C);
+                    _ ->
+                        riak_kv_token_session:session_use(
+                            SessionToken, put, [O, Opts]
+                        )
+                end,
+            riak_kv_token_session:session_release(SessionToken),
+            case PutRsp of
+                ok when is_binary(ReturnKey) ->
+                    PutResp = #rpbputresp{key = ReturnKey},
+                    {reply, PutResp, State};
+                ok ->
+                    {reply, #rpbputresp{}, State};
+                {ok, Obj} ->
+                    Contents = riak_object:get_contents(Obj),
+                    PbContents =
+                        case ReturnHead of
+                            true ->
+                                %% Remove all the 'value' fields from the
+                                %% contents.  This is a rough equivalent of
+                                %% a REST HEAD request
+                                BlankContents =
+                                    [{MD, <<>>} || {MD, _} <- Contents],
+                                riak_pb_kv_codec:encode_contents(
+                                    BlankContents);
+                            _ ->
+                                riak_pb_kv_codec:encode_contents(Contents)
+                        end,
+                    PutResp =
+                        #rpbputresp{
+                            content = PbContents,
+                            vclock = pbify_rpbvc(riak_object:vclock(Obj)),
+                            key = ReturnKey},
+                    {reply, PutResp, State};
+                {error, notfound} ->
+                    {reply, #rpbputresp{}, State};
+                {error, PutError} ->
+                    {error, {format, PutError}, State}
+            end
     end;
 
 process(#rpbdelreq{bucket=B0, type=T, key=K, vclock=PbVc,
@@ -489,6 +462,29 @@ process_stream(_,_,State) ->
 %% ===================================================================
 %% Internal functions
 %% ===================================================================
+
+-spec conditional_check(
+    {ok, riak_object:riak_object()}|{error, term()},
+    {boolean(), undefined|binary()},
+    boolean()) -> {ok|{error, term()}, list()}. 
+conditional_check({ok, _}, _NotMod, NoneMatch) when NoneMatch ->
+    {{error, "match_found"}, []};
+conditional_check({ok, PreFetchO}, {NotMod, PbVC}, _NoneMatch) when NotMod ->
+    InClock = erlify_rpbvc(PbVC),
+    CurrClock = riak_object:vclock(PreFetchO),
+    case vclock:equal(InClock, CurrClock) of
+        true ->
+            {ok, [{if_not_modified, InClock}]};
+        _ ->
+            {{error, "modified"}, []}
+    end;
+conditional_check({error, notfound}, _NotMod, NoneMatch) when NoneMatch ->
+    {ok, [{if_none_match, true}]};
+conditional_check({error, notfound}, {NotMod, _}, _NoneMatch) when NotMod ->
+    {{error, "notfound"}, []};
+conditional_check({error, PreFetchError}, _NotMod, _NoneMatch) ->
+    {{error, {format, PreFetchError}}, []}.
+
 
 -spec encode_nextgenrepl_response(
     intenal|internal_aaehash,
