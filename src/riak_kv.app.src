@@ -23,6 +23,7 @@
                   riak_ensemble,
                   exometer_core,
                   hyper,
+                  tools,
                   redbug,
                   recon,
                   riakc,
