@@ -91,9 +91,13 @@
 -spec session_request_retry(
     token_id()) -> {true, session_ref()}|{false, none}|erpc_error().
 session_request_retry(TokenID) ->
+    NVal =
+        application:get_env(
+            riak_kv, stronger_conditional_nval, ?CONDITIONAL_NVAL
+        ),
     session_request_retry(
         TokenID,
-        ?CONDITIONAL_NVAL,
+        NVal,
         ?TOKEN_REQUEST_TIMEOUT,
         ?TOKEN_SESSION_TIMEOUT,
         ?TOKEN_RETRY_COUNT
@@ -130,21 +134,26 @@ session_request_retry(TokenID, NVal, RequestTO, TokenTO, Retry, Attempts) ->
             )
     end.
 
--spec session_request(token_id(), 3|5, timeout_ms(), timeout_ms())
+-spec session_request(token_id(), 1|3|5|7, timeout_ms(), timeout_ms())
         -> {true, session_ref()}|{false, none}|erpc_error().
 session_request(TokenID, NVal, RequestTimeout, TokenTimeout)
-        when NVal == 5; NVal == 7 ->
+        when NVal ==1; NVal == 3; NVal == 5; NVal == 7 ->
     DocIdx = chash_key(TokenID),
     PrimPartitions = riak_core_apl:get_primary_apl(DocIdx, NVal, riak_kv),
+    TargetNodeCount =
+        case NVal of
+            1 -> 1;
+            TNC when TNC > 1 -> TNC -2
+        end,
     PrimNodes =
         lists:uniq(
             lists:map(fun({{_Idx, N}, primary}) -> N end, PrimPartitions)
         ),
     case length(PrimNodes) of
-        L when L >= (NVal - 2) ->
-            [Head|VerifyList] = lists:sublist(PrimNodes, NVal - 2),
-            case node() of
-                Head ->
+        L when L >= TargetNodeCount ->
+            [Head|VerifyList] = lists:sublist(PrimNodes, TargetNodeCount),
+            case Head of
+                ThisNode when ThisNode == node() ->
                     session_local_request(
                         TokenID, VerifyList, RequestTimeout, TokenTimeout);
                 _ ->

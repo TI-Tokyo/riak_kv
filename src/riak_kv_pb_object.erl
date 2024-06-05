@@ -425,7 +425,10 @@ process(
                 {error, notfound} ->
                     {reply, #rpbputresp{}, State};
                 {error, CondRsp}
-                        when CondRsp == "match_found"; CondRsp == "modified" ->
+                        when
+                            CondRsp == "match_found";
+                            CondRsp == "modified";
+                            CondRsp == "notfound" ->
                     %% Conditional PUTs which fail at the PUT_FSM
                     %% Otherwise formatting will be different from condition
                     %% failing at the API

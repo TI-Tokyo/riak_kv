@@ -540,6 +540,29 @@
     hidden
 ]}.
 
+%% @doc Enable stronger conditional checks on PUTs
+%% Will require a conditional PUT to wait for a token.  On timeout will PUT
+%% without token
+{mapping, "stronger_conditional_put", "riak_kv.stronger_conditional_put", [
+  {default, off},
+  {datatype, flag}
+]}.
+
+%% @doc Strong conditional NVal (token request)
+%% NVal when requetsing tokens, should not be set to a lower value than the
+%% target_n_val.  Tested for values of 1 (single node clusters only), 3, 5
+%% and 7
+{mapping, "stronger_conditional_nval", "riak_kv.stronger_conditional_nval", [
+  {default, 5},
+  {datatype, integer},
+  {validators, ["tested_nval"]}
+]}.
+
+{validator,
+ "tested_nval",
+ "must be one of 1, 3, 5, 7",
+ fun(Value) -> lists:member(Value, [1, 3, 5, 7]) end}.
+
 %% @doc Controls which binary representation of a riak value is stored
 %% on disk.
 %% * 0: Original erlang:term_to_binary format. Higher space overhead.
