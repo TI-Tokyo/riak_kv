@@ -302,14 +302,20 @@ process(
 
     {CheckResult, CondPutOpts, SessionToken} =    
         case {IfNotModified, IfNoneMatch, IsConsistent, Stronger} of
-            {undefined, true, true, _} ->
+            {_, true, true, _} ->
                 {ok, [{if_none_match, true}], none};
-            {undefined, undefined, false, _} ->
+            {undefined, undefined, _, _} ->
                 {ok, [], none};
-            {NotMod, NoneMatch, _, true} ->
+            {NotMod, NoneMatch, false, true} ->
                 GetOpts =
-                    make_option(n_val, N_val) ++
-                    make_option(sloppy_quorum, SloppyQuorum),
+                    make_options(
+                        [
+                            {n_val, N_val},
+                            {sloppy_quorum, SloppyQuorum},
+                            {basic_quorum, true},
+                            {return_body, false},
+                            {deleted_vclock, true}
+                        ]),
                 TokenResult =
                     riak_kv_token_session:session_request_retry({B, K}),
                 case TokenResult of
@@ -335,7 +341,7 @@ process(
                             ),
                         {CheckR, PutOpts, none}
                 end;
-            {NotMod, NoneMatch, _, false} ->
+            {NotMod, NoneMatch, false, false} ->
                 GetOpts =
                     make_option(n_val, N_val) ++
                     make_option(sloppy_quorum, SloppyQuorum),
