@@ -177,7 +177,7 @@ get(Bucket, Key, #state{read_opts=ReadOpts,
             {error, Reason, State}
     end.
 
--type index_spec() :: {add, Index, SecondaryKey} | {remove, Index, SecondaryKey}.
+-type index_spec() :: riak_object:index_spec().
 
 %% @doc Normal put, use existing option, do not modify write options
 -spec put(riak_object:bucket(), riak_object:key(), [index_spec()], binary(), state()) ->
