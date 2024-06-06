@@ -224,17 +224,13 @@ make_reqheader_map(RD) ->
     lists:foldl(
         fun({HeadKey, HeadVal}, AccMap) ->
             accumulate_header_info(
-                string:lowercase(
-                    list_to_binary(
-                        riak_kv_wm_utils:any_to_list(HeadKey)
-                    )
-                ),
+                list_to_binary(HeadKey),
                 HeadVal,
                 AccMap
             )
         end,
         maps:new(),
-        mochiweb_headers:to_list(wrq:req_headers(RD))
+        mochiweb_headers:to_normalised_list(wrq:req_headers(RD))
     ).
 
 accumulate_header_info(<<?PREFIX_INDEX, Field/binary>>, T, MapAcc) ->
@@ -513,49 +509,54 @@ malformed_rw_params(RD, Ctx) ->
     Res =
     lists:foldl(fun malformed_rw_param/2,
                 {false, RD, Ctx},
-                [{#ctx.r, "r", "default"},
-                 {#ctx.w, "w", "default"},
-                 {#ctx.dw, "dw", "default"},
-                 {#ctx.rw, "rw", "default"},
-                 {#ctx.pw, "pw", "default"},
-                 {#ctx.node_confirms, "node_confirms", "default"},
-                 {#ctx.pr, "pr", "default"}]),
+                [{#ctx.r, "r", default},
+                 {#ctx.w, "w", default},
+                 {#ctx.dw, "dw", default},
+                 {#ctx.rw, "rw", default},
+                 {#ctx.pw, "pw", default},
+                 {#ctx.node_confirms, "node_confirms", default},
+                 {#ctx.pr, "pr", default}]),
     Res2 =
     lists:foldl(fun malformed_custom_param/2,
                  Res,
                  [{#ctx.sync_on_write,
                      "sync_on_write",
-                     "default",
+                     default,
                      [default, backend, one, all]}]),
     lists:foldl(fun malformed_boolean_param/2,
                 Res2,
-                [{#ctx.basic_quorum, "basic_quorum", "default"},
-                 {#ctx.notfound_ok, "notfound_ok", "default"},
-                 {#ctx.asis, "asis", "false"}]).
+                [{#ctx.basic_quorum, "basic_quorum", default},
+                 {#ctx.notfound_ok, "notfound_ok", default},
+                 {#ctx.asis, "asis", false}]).
 
--spec malformed_rw_param({Idx::integer(), Name::string(), Default::string()},
+-spec malformed_rw_param({Idx::integer(), Name::string(), Default::atom()},
                          {boolean(), #wm_reqdata{}, context()}) ->
     {boolean(), #wm_reqdata{}, context()}.
 %% @doc Check that a specific r, w, dw, or rw query param is a
 %%      string-encoded integer.  Store its result in context() if it
 %%      is, or print an error message in #wm_reqdata{} if it is not.
 malformed_rw_param({Idx, Name, Default}, {Result, RD, Ctx}) ->
-    case catch normalize_rw_param(wrq:get_qs_value(Name, Default, RD)) of
-        P when (is_atom(P) orelse is_integer(P)) ->
-            {Result, RD, setelement(Idx, Ctx, P)};
-        _ ->
-            {true,
-             wrq:append_to_resp_body(
-               io_lib:format("~s query parameter must be an integer or "
-                   "one of the following words: 'one', 'quorum' or 'all'~n",
-                             [Name]),
-               wrq:set_resp_header(?HEAD_CTYPE, "text/plain", RD)),
-             Ctx}
+    case wrq:get_qs_value(Name, RD) of
+        undefined ->
+            {Result, RD, setelement(Idx, Ctx, Default)};
+        ExtractedString ->
+            case catch normalize_rw_param(ExtractedString) of
+                P when (is_atom(P) orelse is_integer(P)) ->
+                    {Result, RD, setelement(Idx, Ctx, P)};
+                _ ->
+                    {true,
+                    wrq:append_to_resp_body(
+                    io_lib:format("~s query parameter must be an integer or "
+                        "one of the following words: 'one', 'quorum' or 'all'~n",
+                                    [Name]),
+                    wrq:set_resp_header(?HEAD_CTYPE, "text/plain", RD)),
+                    Ctx}
+            end
     end.
 
 -spec malformed_custom_param({Idx::integer(),
                                     Name::string(),
-                                    Default::string(),
+                                    Default::atom(),
                                     AllowedValues::[atom()]},
                                 {boolean(), #wm_reqdata{}, context()}) ->
    {boolean(), #wm_reqdata{}, context()}.
@@ -563,46 +564,48 @@ malformed_rw_param({Idx, Name, Default}, {Result, RD, Ctx}) ->
 %% Store its result in context() if it is, or print an error message
 %% in #wm_reqdata{} if it is not.
 malformed_custom_param({Idx, Name, Default, AllowedValues}, {Result, RD, Ctx}) ->
-    AllowedValueTuples = [{V} || V <- AllowedValues],
-    Option=
-        lists:keyfind(
-            list_to_atom(
-                string:to_lower(
-                    wrq:get_qs_value(Name, Default, RD))),
-                1,
-                AllowedValueTuples),
-    case Option of
-        false ->
-            ErrorText =
-                "~s query parameter must be one of the following words: ~p~n",
-            {true,
-             wrq:append_to_resp_body(
-               io_lib:format(ErrorText, [Name, AllowedValues]),
-               wrq:set_resp_header(?HEAD_CTYPE, "text/plain", RD)),
-             Ctx};
-        _ ->
-            {Value} = Option,
-            {Result, RD, setelement(Idx, Ctx, Value)}
+    case wrq:get_qs_value(Name, RD) of
+        undefined ->
+            {Result, RD, setelement(Idx, Ctx, Default)};
+        ExtractedString ->
+            UsableValue = list_to_atom(string:lowercase(ExtractedString)),
+            case lists:member(UsableValue, AllowedValues) of
+                true ->
+                    {Result, RD, setelement(Idx, Ctx, UsableValue)};
+                false ->
+                    ErrorText =
+                        "~s query parameter must be one of the following words: ~p~n",
+                    {true,
+                    wrq:append_to_resp_body(
+                    io_lib:format(ErrorText, [Name, AllowedValues]),
+                    wrq:set_resp_header(?HEAD_CTYPE, "text/plain", RD)),
+                    Ctx}
+            end
     end.
 
 %% @doc Check that a specific query param is a
 %%      string-encoded boolean.  Store its result in context() if it
 %%      is, or print an error message in #wm_reqdata{} if it is not.
 malformed_boolean_param({Idx, Name, Default}, {Result, RD, Ctx}) ->
-    case string:to_lower(wrq:get_qs_value(Name, Default, RD)) of
-        "true" ->
-            {Result, RD, setelement(Idx, Ctx, true)};
-        "false" ->
-            {Result, RD, setelement(Idx, Ctx, false)};
-        "default" ->
-            {Result, RD, setelement(Idx, Ctx, default)};
-        _ ->
-            {true,
-            wrq:append_to_resp_body(
-              io_lib:format("~s query parameter must be true or false~n",
-                            [Name]),
-              wrq:set_resp_header(?HEAD_CTYPE, "text/plain", RD)),
-             Ctx}
+    case wrq:get_qs_value(Name, RD) of
+        undefined ->
+            {Result, RD, setelement(Idx, Ctx, Default)};
+        ExtractedString ->
+            case string:lowercase(ExtractedString) of
+                "true" ->
+                    {Result, RD, setelement(Idx, Ctx, true)};
+                "false" ->
+                    {Result, RD, setelement(Idx, Ctx, false)};
+                "default" ->
+                    {Result, RD, setelement(Idx, Ctx, default)};
+                _ ->
+                    {true,
+                    wrq:append_to_resp_body(
+                    io_lib:format("~s query parameter must be true or false~n",
+                                    [Name]),
+                    wrq:set_resp_header(?HEAD_CTYPE, "text/plain", RD)),
+                    Ctx}
+            end
     end.
 
 normalize_rw_param("backend") -> backend;
