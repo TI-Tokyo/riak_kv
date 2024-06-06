@@ -529,7 +529,7 @@ profile_riak(ProfileTime) ->
             case eprof:stop_profiling() of
                 profiling_stopped ->
                     eprof:analyze(
-                        total, [{filter, [{time, 10 * ProfileTime}]}]
+                        total, [{filter, [{time, float(10 * ProfileTime)}]}]
                     ),
                     stopped = eprof:stop(),
                     analyzed;
