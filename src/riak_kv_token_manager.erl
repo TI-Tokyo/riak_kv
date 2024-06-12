@@ -18,16 +18,64 @@
 %%
 %% -------------------------------------------------------------------
 
-%% @doc Grant requests for tokens, if and only if, no other request is
-%% active.
+%% @doc Grant requests for tokens, if no other request is active.
 %% 
 %% riak_kv_token_session process may reveive the grant, and those processes
 %% should be monitored so that the grant is revoked should the session
 %% terminate
+%% 
+%% This is to provide "stronger" but not "strong" consistency.  The aim is to
+%% have a system whereby in healthy clusters and in common failure scenarios
+%% tokens can be requested without conflict - in the first case to allow for
+%% conditional logic on PUTs to be reliable in these circumstances.
+%% 
+%% It is accepted that there will be partition scenarios, and scenarios where
+%% rapid changes in up/down state where guarantees cannot be met. The intention
+%% is that eventual consistency will be the fallback.  The application/operator
+%% may have to deal with siblings to protect against data loss - but the
+%% frequency with which those siblings occur should be manageable.
+%% 
+%% The riak_kv_token_manager is intended to work in conjunction with
+%% riak_kv_token_session processes.  Each node should have a single
+%% riak_kv_token_manager.  When a token is requested the request will be made
+%% by a riak_kv_token_session process, and the token is granted to that
+%% process.  The session identifier may be returned to the requester (not the
+%% token).  The identifier can then be used to route riak_client commands to
+%% the session process, and each command will prompt the renewal of the token.
+%% 
+%% The session process exists to manage a single session, the lifecycle of a
+%% single grant.
+%% 
+%% In every situation, the riak_kv_token_manager granting the token, and the
+%% riak_kv_token_session process requesting the token must be on the same node.
+%% 
+%% The riak_kv_token_manager process should be monitored by each
+%% riak_kv_token_session process which has requested a token, or been granted a
+%% token - and the riak_kv_token_session process should terminate if the
+%% riak_kv_token_manager should go down.  The riak_kv_token_manager will
+%% monitor every riak_kv_token_session process to which it has made a grant,
+%% and release that grant on the process terminating for any reason.  There
+%% is no monitoring of remote processes.
+%% 
+%% The riak_kv_token_manager has no awareness of other ndoes in the cluster.
+%% The riak_kv_token_session request logic should be aware of which
+%% riak_kv_token_manager is responsible for granting a given token.  In Riak
+%% this is done using the preflist based on the hash of the token key.  The
+%% node at the head of the peflist is the node responsible for granting that
+%% token.  The next two nodes in the preflist (that are UP), are responsible
+%% for verifying that the grant can be made (i.e. to confirm that they have not
+%% granted a token while the head node was recently unavailable). 
+%% 
+%% Verification of the request in downstream (from the perspective of the
+%% preflist) nodes is a loose process.  The aim is to handle obvious failure
+%% at a low cost, and to avoid deadlocks - rather than maintaining absolute
+%% guarantees across all scenarios.
 
 -module(riak_kv_token_manager).
 
 -behavior(gen_server).
+
+-include_lib("kernel/include/logger.hrl").
 
 -export(
     [
@@ -37,6 +85,7 @@
         is_granted_remotely/2,
         not_granted/2,
         clear_downstream/2,
+        renew_downstream/2,
         stats/0,
         grants/0
     ]
@@ -102,6 +151,10 @@ not_granted(Node, TokenID) ->
 clear_downstream(TokenID, Upstream) ->
     gen_server:cast(?MODULE, {clear_downstream, TokenID, Upstream}).
 
+-spec renew_downstream(token_id(), {node(), pid()}) -> ok.
+renew_downstream(TokenID, Upstream) ->
+    gen_server:cast(?MODULE, {renew_downstream, TokenID, Upstream}).
+
 -spec stats() -> {non_neg_integer(), non_neg_integer(), non_neg_integer()}.
 stats() ->
     gen_server:call(?MODULE, stats).
@@ -124,7 +177,8 @@ handle_call({is_clear, TokenID, {Node, Pid}}, _From, State) ->
             {reply,
                 true,
                 State#state{
-                    grants = maps:put(TokenID, {upstream, {Node, Pid}}, UpdGrants)
+                    grants = 
+                        maps:put(TokenID, {upstream, {Node, Pid}}, UpdGrants)
                 }
             };
         {false, _, UpdGrants} ->
@@ -162,6 +216,7 @@ handle_cast({request, TokenID, VerifyList, Session}, State) ->
                     associations = UpdAssocs}
                 };
         {false, upstream, UpdGrants} ->
+            Session ! refused,
             {noreply, State#state{grants = UpdGrants}};
         {true, none, UpdGrants0} ->
             case check_downstream_clear(VerifyList, TokenID) of
@@ -192,6 +247,20 @@ handle_cast({clear_downstream, TokenID, Upstream}, State) ->
                 }
             };
         _ ->
+            {noreply, State}
+    end;
+handle_cast({renew_downstream, TokenID, Upstream}, State) ->
+    case maps:is_key(TokenID, State#state.grants) of
+        false ->
+            UpdGrants =
+                maps:put(TokenID, {upstream, Upstream}, State#state.grants),
+            {noreply, State#state{grants = UpdGrants}};
+        true ->
+            ExistingGrant = maps:get(TokenID, State#state.grants),
+            ?LOG_WARNING(
+                "Potential conflict ignored on token ~w between ~w and ~w",
+                [TokenID, ExistingGrant, Upstream]
+            ),
             {noreply, State}
     end;
 handle_cast({is_granted_locally, TokenID, FromNode}, State) ->
@@ -237,6 +306,7 @@ handle_info({'DOWN', _Ref, process, Session, _Reason}, State) ->
                             State#state.grants
                         ),
                     NextSession ! granted,
+                    ok = renew_downstream(VerifyList, TokenID, self()),
                     {noreply,
                         State#state{
                             associations = UpdAssocs,
@@ -296,6 +366,16 @@ clear_downstream([N|Rest], TokenID, Pid) ->
         {clear_downstream, TokenID, {node(), Pid}}
     ),
     clear_downstream(Rest, TokenID, Pid).
+
+-spec renew_downstream(verify_list(), token_id(), pid()) -> ok.
+renew_downstream([], _TokenID, _Pid) ->
+    ok;
+renew_downstream([N|Rest], TokenID, Pid) ->
+    gen_server:cast(
+        {riak_kv_token_manager, N},
+        {renew_downstream, TokenID, {node(), Pid}}
+    ),
+    renew_downstream(Rest, TokenID, Pid).
 
 -spec check_downstream_clear(verify_list(), token_id()) -> boolean().
 check_downstream_clear(VerifyList, TokenID) ->

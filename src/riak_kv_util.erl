@@ -541,28 +541,6 @@ profile_riak(ProfileTime) ->
             failed_starting
     end.
 
--spec profile_riak(pos_integer()) -> analyzed|failed.
-profile_riak(ProfileTime) ->
-    eprof:start(),
-    case eprof:start_profiling(erlang:processes()) of
-        profiling ->
-            timer:sleep(ProfileTime),
-            case eprof:stop_profiling() of
-                profiling_stopped ->
-                    eprof:analyze(
-                        total, [{filter, [{time, 10 * ProfileTime}]}]
-                    ),
-                    stopped = eprof:stop(),
-                    analyzed;
-                _ ->
-                    stopped = eprof:stop(),
-                    failed_running
-            end;
-        _ ->
-            failed_starting
-    end.
-
-
 %% ===================================================================
 %% EUnit tests
 %% ===================================================================
