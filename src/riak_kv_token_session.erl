@@ -419,47 +419,10 @@ basic_session_request_tester() ->
     {1, 1, 2} = riak_kv_token_manager:stats(),
     session_release(SessionRef5),
     receive
-        {true, SessionRef6} ->
+        {true, _SessionRef6} ->
             ok
     end,
     {1, 0, 1} = riak_kv_token_manager:stats(),
-    false =
-        riak_kv_token_manager:is_downstream_clear(
-            node(), {token, <<"Batch3">>}
-        ),
-    {1, 0, 1} = riak_kv_token_manager:stats(),
-    true =
-        riak_kv_token_manager:is_downstream_clear(
-            node(), {token, <<"Batch2">>}
-        ),
-    true =
-        riak_kv_token_manager:is_downstream_clear(
-            node(), {token, <<"Batch2">>}
-        ),
-    %% Can grant twice - as the remote PID is not the token_manager
-    %% so assumes the token_manager is down
-    %% Once the remote token_manager has responded to say it hasn't granted
-    %% anything remotely - both upstream grants will be dropped
-    timer:sleep(100),
-    {1, 0, 1} = riak_kv_token_manager:stats(),
-    session_release(SessionRef6),
-    {0, 0, 0} = riak_kv_token_manager:stats(),
-        % The check of upstream token manager will return negative, and 
-        % so is now removed
-    {true, SessionRef7} =
-        session_local_request({token, <<"Batch2">>}, [], 1000, 2000),
-    {1, 0, 1} = riak_kv_token_manager:stats(),
-        % upstream replaced as pid not alive
-    session_release(SessionRef7),
-    {0, 0, 0} = riak_kv_token_manager:stats(),
-
-    true =
-        riak_kv_token_manager:is_downstream_clear(
-            node(), {token, <<"Batch2">>}
-        ),
-    {false, none} =
-        session_local_request({token, <<"Batch1">>}, [node()], 1000, 2000),
-    {1, 0, 0} = riak_kv_token_manager:stats(),
 
     gen_server:stop(riak_kv_token_manager).
 

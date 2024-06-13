@@ -20,9 +20,16 @@
 
 %% @doc Grant requests for tokens, if no other request is active.
 %% 
-%% riak_kv_token_session process may reveive the grant, and those processes
-%% should be monitored so that the grant is revoked should the session
-%% terminate
+%% riak_kv_token_session process may request a grant.  The session process
+%% should monnitor the token_manager to which it makes a request, and fail with
+%% the fialure of that token_manager.  A request may be granted immediately, or
+%% potentially queued to be granted when the token is next released.
+%% 
+%% The grant may be refused if the a previous token has been granted and now
+%% the preflist has changed - either the primary is new, or the downstreams are
+%% different.  In this case, the session should back-off and retry, once any
+%% tokens requested under different conditions have been released new tokens
+%% may be granted.
 %% 
 %% This is to provide "stronger" but not "strong" consistency.  The aim is to
 %% have a system whereby in healthy clusters and in common failure scenarios
@@ -54,8 +61,7 @@
 %% token - and the riak_kv_token_session process should terminate if the
 %% riak_kv_token_manager should go down.  The riak_kv_token_manager will
 %% monitor every riak_kv_token_session process to which it has made a grant,
-%% and release that grant on the process terminating for any reason.  There
-%% is no monitoring of remote processes.
+%% and release that grant on the process terminating for any reason.  
 %% 
 %% The riak_kv_token_manager has no awareness of other ndoes in the cluster.
 %% The riak_kv_token_session request logic should be aware of which
@@ -64,12 +70,7 @@
 %% node at the head of the peflist is the node responsible for granting that
 %% token.  The next two nodes in the preflist (that are UP), are responsible
 %% for verifying that the grant can be made (i.e. to confirm that they have not
-%% granted a token while the head node was recently unavailable). 
-%% 
-%% Verification of the request in downstream (from the perspective of the
-%% preflist) nodes is a loose process.  The aim is to handle obvious failure
-%% at a low cost, and to avoid deadlocks - rather than maintaining absolute
-%% guarantees across all scenarios.
+%% granted a token while the head node was recently unavailable).  
 
 -module(riak_kv_token_manager).
 
@@ -81,11 +82,6 @@
     [
         start_link/0,
         request_token/2,
-        is_downstream_clear/2,
-        is_granted_remotely/2,
-        not_granted/2,
-        clear_downstream/2,
-        renew_downstream/2,
         stats/0,
         grants/0
     ]
@@ -104,19 +100,24 @@
 
 -record(state,
         {
-            queues = maps:new() :: request_queues(),
             grants = maps:new() :: grant_map(),
-            associations = maps:new() :: #{pid() => token_id()}
+            queues = maps:new() :: request_queues(),
+            associations = maps:new() :: #{session_pid() => token_id()}
         }
     ).
 
 -type granted_session()
-    :: {local, pid(), verify_list()}| {upstream, {node(), pid()}}.
+    :: {local, session_pid(), verify_list()}|
+        {upstream, manager_pid(), session_pid()}.
 -type grant_map() :: #{token_id() => granted_session()}.
 -type request_queues()
     :: #{token_id() => list({pid(), verify_list()})}.
 -type token_id() :: {token, binary()}|{riak_object:bucket(), riak_object:key()}.
--type verify_list() :: [node()].
+-type verify_list() :: [downstream_node()].
+-type session_pid() :: pid().
+-type manager_pid() :: pid().
+-type downstream_node() :: node()|pid().
+    % in tests will be a pid() not a node()
 
 -export_type([token_id/0, verify_list/0]).
 
@@ -124,45 +125,87 @@
 %%% API
 %%%============================================================================
 
--spec start_link() -> {ok, pid()} | {error, term()}.
+-spec start_link() -> {ok, manager_pid()} | {error, term()}.
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
+%% @doc request_token/2
+%% Request a token (TokenID) from this node's Token Manager, requiring the
+%% request to be verified in the nodes provided in the VerifyList.
+%% 
+%% An async response message of either `granted` or `refused` will be returned.
+%% Any session process making a request should monitor the riak_kv_token_manager
+%% and terminate should the manager terminate.
+%% 
+%% A token is released when the riak_kv_token_manager receives a 'DOWN' message
+%% from a session process associated with a grant.
 -spec request_token(token_id(), [node()]) -> ok.
 request_token(TokenID, VerifyList) ->
     gen_server:cast(
         ?MODULE, {request, TokenID, VerifyList, self()}). 
 
--spec is_downstream_clear(node(), token_id()) -> boolean().
-is_downstream_clear(ToNode, TokenID) ->
+
+%%%============================================================================
+%%% API Remote - Downstream/Upstream messages between token managers
+%%%============================================================================
+
+%% @doc downstream_check/3
+%% Call to a remote node to confirm that it does not currently have a
+%% information of a grant from another node.  If it does have such a grant the
+%% token request will be refused (return false).
+%% 
+%% If there is no grant registered, or if the grant that is registered is from
+%% the same remote_manager, then the downstream_check will pass and the grant
+%% information will be updated
+-spec downstream_check(downstream_node(), token_id(), pid()) -> boolean().
+downstream_check(TestPid, TokenID, SessionPid) when is_pid(TestPid) ->
     gen_server:call(
-        {?MODULE, ToNode}, {is_clear, TokenID, {node(), self()}}, infinity
+        TestPid, {downstream_check, TokenID, {self(), SessionPid}},
+        infinity);
+downstream_check(ToNode, TokenID, SessionPid) ->
+    gen_server:call(
+        {?MODULE, ToNode}, {downstream_check, TokenID, {self(), SessionPid}},
+        infinity
     ).
 
--spec is_granted_remotely(node(), token_id()) -> ok.
-is_granted_remotely(ToNode, TokenID) ->
-    gen_server:cast({?MODULE, ToNode}, {is_granted_locally, TokenID, node()}).
+%% @doc renew_downstream
+%% If a token has been released, and a queued token is now to be granted the
+%% granting is not blocked by the use of is_downstream_check/3, it is assumed
+%% that a notification is present due to the original grant.
+-spec downstream_renew(verify_list(), token_id(), pid()) -> ok.
+downstream_renew([], _TokenID, _SessionPid) ->
+    ok;
+downstream_renew([TestPid|Rest], TokenID, SessionPid) when is_pid(TestPid) ->
+    gen_server:cast(
+        TestPid,
+        {downstream_renew, TokenID, {self(), SessionPid}}
+    ),
+    downstream_renew(Rest, TokenID, SessionPid);
+downstream_renew([N|Rest], TokenID, SessionPid) ->
+    gen_server:cast(
+        {riak_kv_token_manager, N},
+        {downstream_renew, TokenID, {self(), SessionPid}}
+    ),
+    downstream_renew(Rest, TokenID, SessionPid).
 
--spec not_granted(node(), token_id()) -> ok.
-not_granted(Node, TokenID) ->
-    gen_server:cast({?MODULE, Node}, {not_granted, TokenID, node()}).
 
--spec clear_downstream(token_id(), {node(), pid()}) -> ok.
-clear_downstream(TokenID, Upstream) ->
-    gen_server:cast(?MODULE, {clear_downstream, TokenID, Upstream}).
+%%%============================================================================
+%%% API - Operations (helper functions)
+%%%============================================================================
 
--spec renew_downstream(token_id(), {node(), pid()}) -> ok.
-renew_downstream(TokenID, Upstream) ->
-    gen_server:cast(?MODULE, {renew_downstream, TokenID, Upstream}).
-
+%% @doc stats/0
+%% Return three counts - the count of grants, the count of queued requests and
+%% the count of associations (whenever a grant is made or queued an association
+%% is retain to map the PID to the token as a helper should the PID go down).
 -spec stats() -> {non_neg_integer(), non_neg_integer(), non_neg_integer()}.
 stats() ->
     gen_server:call(?MODULE, stats).
 
+%% @doc grants/0
+%% A map of the current grants that have bee made by this token_manager
 -spec grants() -> grant_map().
 grants() ->
     gen_server:call(?MODULE, grants).
-
 
 %%%============================================================================
 %%% Callback functions
@@ -171,18 +214,23 @@ grants() ->
 init(_Args) ->
     {ok, #state{}}.
 
-handle_call({is_clear, TokenID, {Node, Pid}}, _From, State) ->
-    case free_to_grant(TokenID, State#state.grants) of
-        {true, none, UpdGrants} ->
+handle_call({downstream_check, TokenID, {Manager, Session}}, _From, State) ->
+    case maps:is_key(TokenID, State#state.grants) of
+        false ->
+            UpdAssocs = maps:put(Session, TokenID, State#state.associations),
+            _MgrRef = monitor(process, Manager),
+            _SidRef = monitor(process, Session),
+            UpdGrants =
+                maps:put(
+                    TokenID,
+                    {upstream, Manager, Session},
+                    State#state.grants
+                ),
             {reply,
                 true,
-                State#state{
-                    grants = 
-                        maps:put(TokenID, {upstream, {Node, Pid}}, UpdGrants)
-                }
-            };
-        {false, _, UpdGrants} ->
-            {reply, false, State#state{grants = UpdGrants}}
+                State#state{grants = UpdGrants, associations = UpdAssocs}};
+        true ->
+            {reply, false, State}
     end;
 handle_call(stats, _From, State) ->
     Grants = maps:size(State#state.grants),
@@ -198,8 +246,44 @@ handle_call(grants, _From, State) ->
     {reply, State#state.grants, State}.
 
 handle_cast({request, TokenID, VerifyList, Session}, State) ->
-    case free_to_grant(TokenID, State#state.grants) of
-        {false, local, UpdGrants} ->
+    case maps:get(TokenID, State#state.grants, not_found) of
+        not_found ->
+            DownstreamChecked =
+                lists:all(
+                    fun(N) -> downstream_check(N, TokenID, Session) end,
+                    VerifyList
+                ),
+            case DownstreamChecked of
+                true ->
+                    Session ! granted,
+                    UpdAssocs =
+                        maps:put(Session, TokenID, State#state.associations),
+                    _SidRef = monitor(process, Session),
+                    UpdGrants =
+                        maps:put(
+                            TokenID,
+                            {local, Session, VerifyList},
+                            State#state.grants
+                        ),
+                    {noreply,
+                        State#state{
+                            grants = UpdGrants, associations = UpdAssocs
+                        }
+                    };
+                false ->
+                    Session ! refused,
+                    % The session may have been added as a remote grant into
+                    % one of the downstreams, but when it is refused the
+                    % session will be killed, and due to remote monitoring of
+                    % the process the grant should be cleared
+                    {noreply, State}
+            end;
+        {local, _OtherSession, VerifyList} ->
+            %% Can queue this session, it has the same verifylist as the
+            %% existing grant
+            UpdAssocs =
+                maps:put(Session, TokenID, State#state.associations),
+            _SidRef = monitor(process, Session),
             TokenQueue = maps:get(TokenID, State#state.queues, []),
             UpdQueue =
                 maps:put(
@@ -207,118 +291,140 @@ handle_cast({request, TokenID, VerifyList, Session}, State) ->
                     [{Session, VerifyList}|TokenQueue],
                     State#state.queues
                 ),
-            _Ref = erlang:monitor(process, Session),
-            UpdAssocs = maps:put(Session, TokenID, State#state.associations),
             {noreply,
                 State#state{
-                    grants = UpdGrants,
                     queues = UpdQueue,
-                    associations = UpdAssocs}
-                };
-        {false, upstream, UpdGrants} ->
-            Session ! refused,
-            {noreply, State#state{grants = UpdGrants}};
-        {true, none, UpdGrants0} ->
-            case check_downstream_clear(VerifyList, TokenID) of
-                true ->
-                    UpdGrants =
-                        maps:put(
-                            TokenID, {local, Session, VerifyList}, UpdGrants0
-                        ),
-                    UpdAssocs =
-                        maps:put(Session, TokenID, State#state.associations),
-                    Session ! granted,
-                    _Ref = erlang:monitor(process, Session),
-                    {noreply,
-                        State#state{
-                            grants = UpdGrants, associations = UpdAssocs
-                        }};
-                false ->
-                    Session ! refused,
-                    {noreply, State}
-            end
-    end;
-handle_cast({clear_downstream, TokenID, Upstream}, State) ->
-    case maps:get(TokenID, State#state.grants, not_found) of
-        {upstream, Upstream} ->
-            {noreply,
-                State#state{
-                    grants = maps:remove(TokenID, State#state.grants)
+                    associations = UpdAssocs
                 }
             };
         _ ->
+            Session ! refused,
             {noreply, State}
     end;
-handle_cast({renew_downstream, TokenID, Upstream}, State) ->
+
+handle_cast({downstream_renew, TokenID, {Manager, Session}}, State) ->
     case maps:is_key(TokenID, State#state.grants) of
         false ->
+            UpdAssocs = maps:put(Session, TokenID, State#state.associations),
+            _MgrRef = monitor(process, Manager),
+            _SidRef = monitor(process, Session),
             UpdGrants =
-                maps:put(TokenID, {upstream, Upstream}, State#state.grants),
-            {noreply, State#state{grants = UpdGrants}};
+                maps:put(
+                    TokenID,
+                    {upstream, Manager, Session},
+                    State#state.grants
+                ),
+            
+            {noreply,
+                State#state{grants = UpdGrants, associations = UpdAssocs}};
         true ->
             ExistingGrant = maps:get(TokenID, State#state.grants),
             ?LOG_WARNING(
                 "Potential conflict ignored on token ~w between ~w and ~w",
-                [TokenID, ExistingGrant, Upstream]
+                [TokenID, ExistingGrant, {Manager, Session}]
             ),
-            {noreply, State}
-    end;
-handle_cast({is_granted_locally, TokenID, FromNode}, State) ->
-    case maps:get(TokenID, State#state.grants, not_found) of
-        {local, _Session, _VL} ->
-            ok;
-        _ ->
-            not_granted(FromNode, TokenID)
-    end,
-    {noreply, State};
-handle_cast({not_granted, TokenID, FromNode}, State) ->
-    case maps:get(TokenID, State#state.grants, not_found) of
-        {upstream, {FromNode, _FromPid}} ->
-            {noreply,
-                State#state{
-                    grants = maps:remove(TokenID, State#state.grants)
-                }
-            };
-        _ ->
             {noreply, State}
     end.
 
-handle_info({'DOWN', _Ref, process, Session, _Reason}, State) ->
-    {TokenID,  UpdAssocs} = maps:take(Session, State#state.associations),
-    Queues = clear_session_from_queues(State#state.queues, TokenID, Session),
-    case maps:get(TokenID, State#state.grants, not_found) of
-        {local, Session, VerifyList} ->
-            case return_session_from_queues(Queues, TokenID) of
-                {none, UpdQueues} ->
-                    ok = clear_downstream(VerifyList, TokenID, self()),
+handle_info({'DOWN', _Ref, process, Pid, Reason}, State) ->
+    case maps:take(Pid, State#state.associations) of
+        {TokenID,  UpdAssocs} ->
+            %% An association exists, so this is assumed to be a session
+            %% process which has gone down.  This might be in a queue, or
+            %% in receipt of a grant
+            Queues =
+                clear_session_from_queues(
+                    State#state.queues,
+                    TokenID,
+                    Pid
+                ),
+            case maps:get(TokenID, State#state.grants, not_found) of
+                {local, Pid, VerifyList} ->
+                    %% There is a grant, is there a queued request for that
+                    %% same token that we can now grant
+                    case return_session_from_queues(Queues, TokenID) of
+                        {none, UpdQueues} ->
+                            {noreply,
+                                State#state{
+                                    associations = UpdAssocs,
+                                    queues = UpdQueues,
+                                    grants =
+                                        maps:remove(
+                                            TokenID,
+                                            State#state.grants
+                                        )
+                                }
+                            };
+                        {{NextSession, VerifyList}, UpdQueues} ->
+                            %% Only requests with the same VerifyList should be
+                            %% queued
+                            UpdGrants =
+                                maps:put(
+                                    TokenID,
+                                    {local, NextSession, VerifyList},
+                                    State#state.grants
+                                ),
+                            NextSession ! granted,
+                            %% Check that the downstream nodes are still aware
+                            %% of this grant (in case, for example, they have
+                            %% restarted in between)
+                            ok =
+                                downstream_renew(
+                                    VerifyList,
+                                    TokenID,
+                                    NextSession
+                                ),
+                            {noreply,
+                                State#state{
+                                    associations = UpdAssocs,
+                                    queues = UpdQueues,
+                                    grants = UpdGrants
+                                }
+                            }
+                    end;
+                {upstream, _Manager, Pid} ->
+                    %% It is possible that this is a remote PID that has failed
+                    %% No need to promote form queue in this case, just remove
                     {noreply,
                         State#state{
                             associations = UpdAssocs,
-                            queues = UpdQueues,
-                            grants = maps:remove(TokenID, State#state.grants)
+                            queues = Queues,
+                            grants =
+                                maps:remove(
+                                    TokenID,
+                                    State#state.grants
+                                )
                         }
                     };
-                {{NextSession, NextVerifyList}, UpdQueues} ->
-                    UpdGrants =
-                        maps:put(
-                            TokenID,
-                            {local, NextSession, NextVerifyList},
-                            State#state.grants
-                        ),
-                    NextSession ! granted,
-                    ok = renew_downstream(VerifyList, TokenID, self()),
+                _ ->
+                    %% The session may have been queued and not had a grant
                     {noreply,
-                        State#state{
-                            associations = UpdAssocs,
-                            queues = UpdQueues,
-                            grants = UpdGrants
-                        }
+                        State#state{associations = UpdAssocs, queues = Queues}
                     }
             end;
         _ ->
-            {noreply,
-                State#state{associations = UpdAssocs, queues = Queues}
-            }
+            %% No assocition is assumed to be a token manager
+            ?LOG_WARNING(
+                "Remote Token Manager ~w reported down due to ~p",
+                [Pid, Reason]
+            ),
+            FilterFun =
+                fun({_Tid, G}) ->
+                    case G of
+                        {upstream, Pid, _Session} ->
+                            false;
+                        _ ->
+                            true
+                    end
+                end,
+            UpdGrants =
+                maps:from_list(
+                    lists:filter(
+                        FilterFun,
+                        maps:to_list(State#state.grants)
+                    )
+                ),
+            {noreply, State#state{grants =  UpdGrants}}
     end;
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -333,66 +439,6 @@ code_change(_OldVsn, State, _Extra) ->
 %%%============================================================================
 %%% Internal functions
 %%%============================================================================
-
--spec free_to_grant(
-    token_id(), grant_map()) -> {boolean(), local|upstream|none, grant_map()}.
-free_to_grant(TokenID, GrantMap) ->
-    case maps:get(TokenID, GrantMap, not_found) of
-        {local, _Session, _VerifyList} ->
-            {false, local, GrantMap};
-        {upstream, {Node, Pid}} ->
-            case check_upstream(TokenID, Node, Pid) of
-                true ->
-                    {false, upstream, GrantMap};
-                _ ->
-                    {true, none, maps:remove(TokenID, GrantMap)}
-            end;
-        not_found ->
-            {true, none, GrantMap}
-    end.
-
-check_upstream(TokenID, Node, UpstreamMgr) ->
-    is_granted_remotely(Node, TokenID),
-    CurrentTMGR = erpc:call(Node, erlang, whereis, [?MODULE]),
-    UpstreamMgr == CurrentTMGR.
-
-
--spec clear_downstream(verify_list(), token_id(), pid()) -> ok.
-clear_downstream([], _TokenID, _Pid) ->
-    ok;
-clear_downstream([N|Rest], TokenID, Pid) ->
-    gen_server:cast(
-        {riak_kv_token_manager, N},
-        {clear_downstream, TokenID, {node(), Pid}}
-    ),
-    clear_downstream(Rest, TokenID, Pid).
-
--spec renew_downstream(verify_list(), token_id(), pid()) -> ok.
-renew_downstream([], _TokenID, _Pid) ->
-    ok;
-renew_downstream([N|Rest], TokenID, Pid) ->
-    gen_server:cast(
-        {riak_kv_token_manager, N},
-        {renew_downstream, TokenID, {node(), Pid}}
-    ),
-    renew_downstream(Rest, TokenID, Pid).
-
--spec check_downstream_clear(verify_list(), token_id()) -> boolean().
-check_downstream_clear(VerifyList, TokenID) ->
-    case lists:member(node(), VerifyList) of
-        true ->
-            false;
-        false ->
-            downstream_clear(VerifyList, TokenID, true)
-    end.
-
-downstream_clear([], _TokenID, AreAllClear) ->
-    AreAllClear;
-downstream_clear([Node|Rest], TokenID, true) ->
-    Clear = is_downstream_clear(Node, TokenID),
-    downstream_clear(Rest, TokenID, Clear == true);
-downstream_clear(_VerifyList, _TokenID, false)  ->
-    false.
 
 -spec clear_session_from_queues(
     request_queues(), token_id(), pid()) -> request_queues().
@@ -423,3 +469,111 @@ return_session_from_queues(Queues, TokenID) ->
                         maps:put(TokenID, lists:reverse(QueueRem), Queues)}
             end
     end.
+
+
+%%%============================================================================
+%%% Test
+%%%============================================================================
+
+-ifdef(TEST).
+
+-include_lib("eunit/include/eunit.hrl").
+
+manager_simple_test() ->
+    {ok, Mgr1} = gen_server:start(?MODULE, [], []),
+    {ok, Mgr2} = gen_server:start(?MODULE, [], []),
+    {ok, Mgr3} = gen_server:start(?MODULE, [], []),
+    Req1 = requestor_fun(self(), <<"T1">>, Mgr1, [Mgr2, Mgr3]),
+    Req2 = requestor_fun(self(), <<"T1">>, Mgr2, [Mgr3]),
+    S1 = spawn(Req1),
+    receive Gr1 -> ?assertMatch({granted, S1}, Gr1) end,
+    S2 = spawn(Req1),
+    S3 = spawn(Req1),
+    S4 = spawn(Req2),
+    receive Rf1 -> ?assertMatch({refused, S4}, Rf1) end,
+    S1 ! terminate,
+    receive Gr2 -> ?assertMatch({granted, S2}, Gr2) end,
+    S2 ! terminate,
+    receive Gr3 -> ?assertMatch({granted, S3}, Gr3) end,
+    S3 ! terminate,
+    ?assert(receive _ -> false after 10 -> true end),
+    gen_server:stop(Mgr1),
+    gen_server:stop(Mgr2),
+    gen_server:stop(Mgr3).
+
+
+manager_downstream_failure_test() ->
+    {ok, Mgr1} = gen_server:start(?MODULE, [], []),
+    {ok, Mgr2} = gen_server:start(?MODULE, [], []),
+    {ok, Mgr3} = gen_server:start(?MODULE, [], []),
+    Req1 = requestor_fun(self(), <<"T1">>, Mgr1, [Mgr2, Mgr3]),
+    S1 = spawn(Req1),
+    receive Gr1 -> ?assertMatch({granted, S1}, Gr1) end,
+    S2 = spawn(Req1),
+    S3 = spawn(Req1),
+    ok = gen_server:stop(Mgr2),
+    {ok, Mgr2A} = gen_server:start(?MODULE, [], []),
+    ?assert(is_process_alive(S1)),
+    Req2 = requestor_fun(self(), <<"T1">>, Mgr1, [Mgr2A, Mgr3]),
+        % Will not queue a request if the verify list has changed
+    S4 = spawn(Req2),
+    receive Rf1 -> ?assertMatch({refused, S4}, Rf1) end,
+    S1 ! terminate,
+    receive Gr2 -> ?assertMatch({granted, S2}, Gr2) end,
+    S2 ! terminate,
+    receive Gr3 -> ?assertMatch({granted, S3}, Gr3) end,
+    S3 ! terminate,
+    S5 = spawn(Req2),
+    receive Gr4 -> ?assertMatch({granted, S5}, Gr4) end,
+    S5 ! terminate,
+    ?assert(receive _ -> false after 10 -> true end),
+    gen_server:stop(Mgr1),
+    gen_server:stop(Mgr2A),
+    gen_server:stop(Mgr3).
+
+manager_primary_failure_test() ->
+    {ok, Mgr1} = gen_server:start(?MODULE, [], []),
+    {ok, Mgr2} = gen_server:start(?MODULE, [], []),
+    {ok, Mgr3} = gen_server:start(?MODULE, [], []),
+    Req1 = requestor_fun(self(), <<"T1">>, Mgr1, [Mgr2, Mgr3]),
+    S1 = spawn(Req1),
+    receive Gr1 -> ?assertMatch({granted, S1}, Gr1) end,
+    S2 = spawn(Req1),
+    S3 = spawn(Req1),
+    gen_server:stop(Mgr1),
+    Req2 = requestor_fun(self(), <<"T1">>, Mgr2, [Mgr3]),
+    S4 = spawn(Req2),
+    receive Gr2 -> ?assertMatch({granted, S4}, Gr2) end,
+    {ok, Mgr1A} = gen_server:start(?MODULE, [], []),
+    Req3 = requestor_fun(self(), <<"T1">>, Mgr1A, [Mgr2, Mgr3]),
+    S5 = spawn(Req3),
+    receive Rf3 -> ?assertMatch({refused, S5}, Rf3) end,
+    S4 ! terminate,
+    S6 = spawn(Req3),
+    receive Gr4 -> ?assertMatch({granted, S6}, Gr4) end,
+    lists:foreach(fun(P) -> P ! terminate end, [S1, S2, S3, S6]),
+    gen_server:stop(Mgr1A),
+    gen_server:stop(Mgr2),
+    gen_server:stop(Mgr3).
+    
+
+requestor_fun(ReturnPid, Token, Mgr, VerifyList) ->
+    fun() ->
+        gen_server:cast(Mgr, {request, Token, VerifyList, self()}),
+        requestor_receive_loop(ReturnPid)
+    end.
+
+
+requestor_receive_loop(ReturnPid) ->
+    receive
+        granted ->
+            ReturnPid ! {granted, self()},
+            requestor_receive_loop(ReturnPid);
+        refused ->
+            ReturnPid ! {refused, self()},
+            requestor_receive_loop(ReturnPid);
+        _ ->
+            ok
+    end.
+
+-endif.
