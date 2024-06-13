@@ -298,10 +298,12 @@ process(
             ReturnKey = undefined
     end,
     IsConsistent = riak_kv_util:consistent_object(B),
-    Stronger = application:get_env(riak_kv, stronger_conditional_put, false),
+    CondPutMode =
+        application:get_env(riak_kv, conditional_put_mode, api_only),
+    MakeTokenRequest = CondPutMode =/= api_only,
 
     {CheckResult, CondPutOpts, SessionToken} =    
-        case {IfNotModified, IfNoneMatch, IsConsistent, Stronger} of
+        case {IfNotModified, IfNoneMatch, IsConsistent, MakeTokenRequest} of
             {_, true, true, _} ->
                 {ok, [{if_none_match, true}], none};
             {undefined, undefined, _, _} ->

@@ -59,7 +59,6 @@
     ]
 ).
 
--define(CONDITIONAL_NVAL, 5).
 -define(TOKEN_REQUEST_TIMEOUT, 12000).
 -define(TOKEN_SESSION_TIMEOUT, 30000).
 -define(TOKEN_RETRY_COUNT, 12).
@@ -80,6 +79,7 @@
 -type session_id() :: non_neg_integer().
 -type timeout_ms() :: pos_integer().
 -type erpc_error() :: {erpc, term()}.
+-type token_request_mode() :: head_only|small_consensus|large_consensus.
 
 -export_type([session_ref/0]).
 
@@ -91,33 +91,38 @@
 -spec session_request_retry(
     token_id()) -> {true, session_ref()}|{false, none}|erpc_error().
 session_request_retry(TokenID) ->
-    NVal =
+    TokenRequestMode =
         application:get_env(
-            riak_kv, stronger_conditional_nval, ?CONDITIONAL_NVAL
+            riak_kv,
+            token_request_mode,
+            small_consensus
         ),
     session_request_retry(
         TokenID,
-        NVal,
+        TokenRequestMode,
         ?TOKEN_REQUEST_TIMEOUT,
         ?TOKEN_SESSION_TIMEOUT,
         ?TOKEN_RETRY_COUNT
     ).
 
 -spec session_request_retry(
-    token_id(), 3|5, timeout_ms(), timeout_ms(), pos_integer())
-        -> {true, session_ref()}|{false, none}|erpc_error().
-session_request_retry(TokenID, NVal, RequestTimeout, TokenTimeout, Retry) ->
+    token_id(),
+    token_request_mode(),
+    timeout_ms(),
+    timeout_ms(),
+    pos_integer()) -> {true, session_ref()}|{false, none}|erpc_error().
+session_request_retry(TokenID, TRM, RequestTimeout, TokenTimeout, Retry) ->
     session_request_retry(
-        TokenID, NVal, RequestTimeout, TokenTimeout, Retry, 0
+        TokenID, TRM, RequestTimeout, TokenTimeout, Retry, 0
     ).
 
-session_request_retry(_TokenID, _NVal, 0, _TokenTO, _Retry, _Attempts) ->
+session_request_retry(_TokenID, _TRM, 0, _TokenTO, _Retry, _Attempts) ->
     {false, none};
-session_request_retry(TokenID, NVal, RequestTO, TokenTO, Retry, Retry) ->
-    session_request(TokenID, NVal, RequestTO, TokenTO);
-session_request_retry(TokenID, NVal, RequestTO, TokenTO, Retry, Attempts) ->
+session_request_retry(TokenID, TRM, RequestTO, TokenTO, Retry, Retry) ->
+    session_request(TokenID, TRM, RequestTO, TokenTO);
+session_request_retry(TokenID, TRM, RequestTO, TokenTO, Retry, Attempts) ->
     RT0 = os:system_time(millisecond),
-    case session_request(TokenID, NVal, RequestTO, TokenTO) of
+    case session_request(TokenID, TRM, RequestTO, TokenTO) of
         {true, SessionRef} ->
             {true, SessionRef};
         _Error ->
@@ -126,7 +131,7 @@ session_request_retry(TokenID, NVal, RequestTO, TokenTO, Retry, Attempts) ->
             ),
             session_request_retry(
                 TokenID,
-                NVal,
+                TRM,
                 max(0, RequestTO + (RT0 - os:system_time(millisecond))),
                 TokenTO,
                 Retry,
@@ -134,24 +139,32 @@ session_request_retry(TokenID, NVal, RequestTO, TokenTO, Retry, Attempts) ->
             )
     end.
 
--spec session_request(token_id(), 1|3|5|7, timeout_ms(), timeout_ms())
-        -> {true, session_ref()}|{false, none}|erpc_error().
-session_request(TokenID, NVal, RequestTimeout, TokenTimeout)
-        when NVal ==1; NVal == 3; NVal == 5; NVal == 7 ->
+-spec session_request(
+    token_id(),
+    token_request_mode(),
+    timeout_ms(),
+    timeout_ms()) -> {true, session_ref()}|{false, none}|erpc_error().
+session_request(TokenID, TRM, RequestTimeout, TokenTimeout) ->
     DocIdx = chash_key(TokenID),
-    PrimPartitions = riak_core_apl:get_primary_apl(DocIdx, NVal, riak_kv),
-    TargetNodeCount =
-        case NVal of
-            1 -> 1;
-            TNC when TNC > 1 -> TNC -2
+    {Nval, TargetNodeCount} = 
+        case TRM of
+            head_only ->
+                {3, 1};
+            small_consensus ->
+                {5, 3};
+            large_consensus ->
+                {7, 4}
         end,
+    PrimPartitions = riak_core_apl:get_primary_apl(DocIdx, Nval, riak_kv),
     PrimNodes =
-        lists:uniq(
-            lists:map(fun({{_Idx, N}, primary}) -> N end, PrimPartitions)
+        lists:sublist(
+            lists:uniq(
+                lists:map(fun({{_Idx, N}, primary}) -> N end, PrimPartitions)
+            ),
+            TargetNodeCount
         ),
-    case length(PrimNodes) of
-        L when L >= TargetNodeCount ->
-            [Head|VerifyList] = lists:sublist(PrimNodes, TargetNodeCount),
+    case PrimNodes of
+        [Head|VerifyList] when length(PrimNodes) == TargetNodeCount ->
             case Head of
                 ThisNode when ThisNode == node() ->
                     session_local_request(

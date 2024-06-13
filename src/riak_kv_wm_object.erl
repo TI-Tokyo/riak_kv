@@ -907,10 +907,12 @@ accept_doc_body(
     Options = make_options(Options0, Ctx),
     IfNoneMatch = (wrq:get_req_header("If-None-Match", RD) =/= undefined),
     IsConsistent = riak_kv_util:consistent_object(B),
-    Stronger = application:get_env(riak_kv, stronger_conditional_put, false),
+    CondPutMode =
+        application:get_env(riak_kv, conditional_put_mode, api_only),
+    MakeTokenRequest = CondPutMode =/= api_only,
 
     {CondPutOptions, SessionToken} =
-        case {IfNotModified, IfNoneMatch, IsConsistent, Stronger} of
+        case {IfNotModified, IfNoneMatch, IsConsistent, MakeTokenRequest} of
             {_, true, true, _} ->
                 {[{if_none_match, true}], none};
             {undefined, false, false, _} ->
@@ -947,13 +949,13 @@ accept_doc_body(
                 end;
             {NotMod, NoneMatch, _, false} ->
                 %% Pass the condition downstream, but currently that
-                    %% condition is ignored
-                    case {NotMod, NoneMatch} of
-                        {_, true} ->
-                            {[{if_none_match, true}], none};
-                        {InClock, _} ->
-                            {[{if_not_modified, InClock}], none}
-                    end
+                %% condition is ignored
+                case {NotMod, NoneMatch} of
+                    {_, true} ->
+                        {[{if_none_match, true}], none};
+                    {InClock, _} ->
+                        {[{if_not_modified, InClock}], none}
+                end
         end,
     PutRsp =
         case SessionToken of
