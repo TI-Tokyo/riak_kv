@@ -106,8 +106,9 @@
         }
     ).
 
+-type verify_count() :: non_neg_integer().
 -type granted_session()
-    :: {local, session_pid(), verify_list()}|
+    :: {local, session_pid(), verify_list(), verify_count()}|
         {upstream, manager_pid(), session_pid()}.
 -type grant_map() :: #{token_id() => granted_session()}.
 -type request_queues()
@@ -157,16 +158,13 @@ request_token(TokenID, VerifyList) ->
 %% If there is no grant registered, or if the grant that is registered is from
 %% the same remote_manager, then the downstream_check will pass and the grant
 %% information will be updated
--spec downstream_check(downstream_node(), token_id(), pid()) -> boolean().
+-spec downstream_check(downstream_node(), token_id(), pid()) -> ok.
 downstream_check(TestPid, TokenID, SessionPid) when is_pid(TestPid) ->
-    gen_server:call(
-        TestPid, {downstream_check, TokenID, {self(), SessionPid}},
-        infinity);
+    gen_server:cast(
+        TestPid, {downstream_check, TokenID, {self(), SessionPid}});
 downstream_check(ToNode, TokenID, SessionPid) ->
-    gen_server:call(
-        {?MODULE, ToNode}, {downstream_check, TokenID, {self(), SessionPid}},
-        infinity
-    ).
+    gen_server:cast(
+        {?MODULE, ToNode}, {downstream_check, TokenID, {self(), SessionPid}}).
 
 %% @doc renew_downstream
 %% If a token has been released, and a queued token is now to be granted the
@@ -183,9 +181,7 @@ downstream_renew([TestPid|Rest], TokenID, SessionPid) when is_pid(TestPid) ->
     downstream_renew(Rest, TokenID, SessionPid);
 downstream_renew([N|Rest], TokenID, SessionPid) ->
     gen_server:cast(
-        {riak_kv_token_manager, N},
-        {downstream_renew, TokenID, {self(), SessionPid}}
-    ),
+        {?MODULE, N}, {downstream_renew, TokenID, {self(), SessionPid}}),
     downstream_renew(Rest, TokenID, SessionPid).
 
 
@@ -213,25 +209,7 @@ grants() ->
 
 init(_Args) ->
     {ok, #state{}}.
-
-handle_call({downstream_check, TokenID, {Manager, Session}}, _From, State) ->
-    case maps:is_key(TokenID, State#state.grants) of
-        false ->
-            UpdAssocs = maps:put(Session, TokenID, State#state.associations),
-            _MgrRef = monitor(process, Manager),
-            _SidRef = monitor(process, Session),
-            UpdGrants =
-                maps:put(
-                    TokenID,
-                    {upstream, Manager, Session},
-                    State#state.grants
-                ),
-            {reply,
-                true,
-                State#state{grants = UpdGrants, associations = UpdAssocs}};
-        true ->
-            {reply, false, State}
-    end;
+    
 handle_call(stats, _From, State) ->
     Grants = maps:size(State#state.grants),
     QueuedRequests =
@@ -248,37 +226,32 @@ handle_call(grants, _From, State) ->
 handle_cast({request, TokenID, VerifyList, Session}, State) ->
     case maps:get(TokenID, State#state.grants, not_found) of
         not_found ->
-            DownstreamChecked =
-                lists:all(
-                    fun(N) -> downstream_check(N, TokenID, Session) end,
-                    VerifyList
+            lists:foreach(
+                fun(N) -> downstream_check(N, TokenID, Session) end,
+                VerifyList
+            ),
+            UpdAssocs =
+                maps:put(Session, TokenID, State#state.associations),
+            _SidRef = monitor(process, Session),
+            UpdGrants =
+                maps:put(
+                    TokenID,
+                    {local, Session, VerifyList, 0},
+                    State#state.grants
                 ),
-            case DownstreamChecked of
-                true ->
-                    Session ! granted,
-                    UpdAssocs =
-                        maps:put(Session, TokenID, State#state.associations),
-                    _SidRef = monitor(process, Session),
-                    UpdGrants =
-                        maps:put(
-                            TokenID,
-                            {local, Session, VerifyList},
-                            State#state.grants
-                        ),
-                    {noreply,
-                        State#state{
-                            grants = UpdGrants, associations = UpdAssocs
-                        }
-                    };
-                false ->
-                    Session ! refused,
-                    % The session may have been added as a remote grant into
-                    % one of the downstreams, but when it is refused the
-                    % session will be killed, and due to remote monitoring of
-                    % the process the grant should be cleared
-                    {noreply, State}
-            end;
-        {local, _OtherSession, VerifyList} ->
+            case VerifyList of
+                [] ->
+                    Session ! granted;
+                _ ->
+                    %% Need to wait for downstream replies
+                    ok
+            end,
+            {noreply,
+                State#state{
+                    grants = UpdGrants, associations = UpdAssocs
+                }
+            };
+        {local, _OtherSession, VerifyList, _VerifyCount} ->
             %% Can queue this session, it has the same verifylist as the
             %% existing grant
             UpdAssocs =
@@ -324,7 +297,63 @@ handle_cast({downstream_renew, TokenID, {Manager, Session}}, State) ->
                 [TokenID, ExistingGrant, {Manager, Session}]
             ),
             {noreply, State}
+    end;
+handle_cast({downstream_check, TokenID, {Manager, Session}}, State) ->
+    case maps:is_key(TokenID, State#state.grants) of
+        false ->
+            gen_server:cast(
+                Manager, {downstream_reply, TokenID, Session, true}
+            ),
+            UpdAssocs = maps:put(Session, TokenID, State#state.associations),
+            _MgrRef = monitor(process, Manager),
+            _SidRef = monitor(process, Session),
+            UpdGrants =
+                maps:put(
+                    TokenID,
+                    {upstream, Manager, Session},
+                    State#state.grants
+                ),
+            {noreply,
+                State#state{grants = UpdGrants, associations = UpdAssocs}};
+        true ->
+            gen_server:cast(
+                Manager, {downstream_reply, TokenID, Session, false}
+            ),
+            {noreply, State}
+        end;
+handle_cast({downstream_reply, TokenID, Session, true}, State) ->
+    case maps:get(TokenID, State#state.grants, not_found) of
+        {local, Session, VerifyList, VerifyCount} ->
+            case length(VerifyList) of
+                VL when VL == (VerifyCount + 1) ->
+                    Session ! granted;
+                _ ->
+                    ok
+            end,
+            {noreply,
+                State#state{
+                    grants = 
+                        maps:put(
+                            TokenID,
+                            {local, Session, VerifyList, VerifyCount + 1},
+                            State#state.grants
+                        )
+                    }
+                };
+        _ ->
+            {noreply, State}
+    end;
+handle_cast({downstream_reply, TokenID, Session, false}, State) ->
+    case maps:get(TokenID, State#state.grants, not_found) of
+        {local, Session, _VerifyList, _VerifyCount} ->
+            Session ! refused,
+            {noreply,
+                State#state{grants = maps:remove(TokenID, State#state.grants)}
+            };
+        _ ->
+            {noreply, State}
     end.
+
 
 handle_info({'DOWN', _Ref, process, Pid, Reason}, State) ->
     case maps:take(Pid, State#state.associations) of
@@ -339,7 +368,7 @@ handle_info({'DOWN', _Ref, process, Pid, Reason}, State) ->
                     Pid
                 ),
             case maps:get(TokenID, State#state.grants, not_found) of
-                {local, Pid, VerifyList} ->
+                {local, Pid, VerifyList, _VerifyCount} ->
                     %% There is a grant, is there a queued request for that
                     %% same token that we can now grant
                     case return_session_from_queues(Queues, TokenID) of
@@ -361,7 +390,7 @@ handle_info({'DOWN', _Ref, process, Pid, Reason}, State) ->
                             UpdGrants =
                                 maps:put(
                                     TokenID,
-                                    {local, NextSession, VerifyList},
+                                    {local, NextSession, VerifyList, 0},
                                     State#state.grants
                                 ),
                             NextSession ! granted,

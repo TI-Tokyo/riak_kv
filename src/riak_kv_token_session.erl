@@ -60,6 +60,7 @@
 ).
 
 -define(TOKEN_REQUEST_TIMEOUT, 12000).
+-define(MINIMUM_SINGLE_REQUEST_TIMEOUT, 500).
 -define(TOKEN_SESSION_TIMEOUT, 30000).
 -define(TOKEN_RETRY_COUNT, 12).
 
@@ -95,7 +96,7 @@ session_request_retry(TokenID) ->
         application:get_env(
             riak_kv,
             token_request_mode,
-            small_consensus
+            primary_consensus
         ),
     session_request_retry(
         TokenID,
@@ -122,7 +123,8 @@ session_request_retry(TokenID, TRM, RequestTO, TokenTO, Retry, Retry) ->
     session_request(TokenID, TRM, RequestTO, TokenTO);
 session_request_retry(TokenID, TRM, RequestTO, TokenTO, Retry, Attempts) ->
     RT0 = os:system_time(millisecond),
-    case session_request(TokenID, TRM, RequestTO, TokenTO) of
+    NextTimeOut = max(?MINIMUM_SINGLE_REQUEST_TIMEOUT, RequestTO div 2),
+    case session_request(TokenID, TRM, NextTimeOut, TokenTO) of
         {true, SessionRef} ->
             {true, SessionRef};
         _Error ->
@@ -146,25 +148,29 @@ session_request_retry(TokenID, TRM, RequestTO, TokenTO, Retry, Attempts) ->
     timeout_ms()) -> {true, session_ref()}|{false, none}|erpc_error().
 session_request(TokenID, TRM, RequestTimeout, TokenTimeout) ->
     DocIdx = chash_key(TokenID),
-    {Nval, TargetNodeCount} = 
+    {TargetNodeCount, MinimumNodeCount, Partitions} = 
         case TRM of
             head_only ->
-                {3, 1};
-            small_consensus ->
-                {5, 3};
-            large_consensus ->
-                {7, 4}
+                {1, 1, riak_core_apl:get_primary_apl(DocIdx, 3, riak_kv)};
+            basic_consensus ->
+                {
+                    3,
+                    1,
+                    riak_core_apl:get_apl_ann(
+                        DocIdx, 3, riak_core_node_watcher:nodes(riak_kv))
+                };
+            primary_consensus ->
+                {3, 3, riak_core_apl:get_primary_apl(DocIdx, 5, riak_kv)}
         end,
-    PrimPartitions = riak_core_apl:get_primary_apl(DocIdx, Nval, riak_kv),
     PrimNodes =
         lists:sublist(
             lists:uniq(
-                lists:map(fun({{_Idx, N}, primary}) -> N end, PrimPartitions)
+                lists:map(fun({{_Idx, N}, _}) -> N end, Partitions)
             ),
             TargetNodeCount
         ),
     case PrimNodes of
-        [Head|VerifyList] when length(PrimNodes) == TargetNodeCount ->
+        [Head|VerifyList] when length(PrimNodes) >= MinimumNodeCount ->
             case Head of
                 ThisNode when ThisNode == node() ->
                     session_local_request(
