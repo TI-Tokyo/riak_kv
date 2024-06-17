@@ -368,7 +368,8 @@ handle_info({'DOWN', _Ref, process, Pid, Reason}, State) ->
                     Pid
                 ),
             case maps:get(TokenID, State#state.grants, not_found) of
-                {local, Pid, VerifyList, _VerifyCount} ->
+                {local, ActivePid, VerifyList, _VerifyCount}
+                        when ActivePid == Pid ->
                     %% There is a grant, is there a queued request for that
                     %% same token that we can now grant
                     case return_session_from_queues(Queues, TokenID) of
@@ -384,7 +385,8 @@ handle_info({'DOWN', _Ref, process, Pid, Reason}, State) ->
                                         )
                                 }
                             };
-                        {{NextSession, VerifyList}, UpdQueues} ->
+                        {{NextSession, NextVerifyList}, UpdQueues}
+                                when NextVerifyList == VerifyList ->
                             %% Only requests with the same VerifyList should be
                             %% queued
                             UpdGrants =

@@ -79,7 +79,8 @@
 -type session_ref() :: binary().
 -type session_id() :: non_neg_integer().
 -type timeout_ms() :: pos_integer().
--type erpc_error() :: {erpc, term()}.
+-type erpc_session_error() ::
+    {error, session_noconnection}|{error, session_remote_exit}.
 -type token_request_mode() :: head_only|small_consensus|large_consensus.
 
 -export_type([session_ref/0]).
@@ -90,7 +91,7 @@
 %%%============================================================================
 
 -spec session_request_retry(
-    token_id()) -> {true, session_ref()}|{false, none}|erpc_error().
+    token_id()) -> {true, session_ref()}|{false, none}|erpc_session_error().
 session_request_retry(TokenID) ->
     TokenRequestMode =
         application:get_env(
@@ -111,7 +112,7 @@ session_request_retry(TokenID) ->
     token_request_mode(),
     timeout_ms(),
     timeout_ms(),
-    pos_integer()) -> {true, session_ref()}|{false, none}|erpc_error().
+    pos_integer()) -> {true, session_ref()}|{false, none}|erpc_session_error().
 session_request_retry(TokenID, TRM, RequestTimeout, TokenTimeout, Retry) ->
     session_request_retry(
         TokenID, TRM, RequestTimeout, TokenTimeout, Retry, 0
@@ -123,7 +124,7 @@ session_request_retry(TokenID, TRM, RequestTO, TokenTO, Retry, Retry) ->
     session_request(TokenID, TRM, RequestTO, TokenTO);
 session_request_retry(TokenID, TRM, RequestTO, TokenTO, Retry, Attempts) ->
     RT0 = os:system_time(millisecond),
-    NextTimeOut = max(?MINIMUM_SINGLE_REQUEST_TIMEOUT, RequestTO div 2),
+    NextTimeOut = max(?MINIMUM_SINGLE_REQUEST_TIMEOUT, RequestTO div 4),
     case session_request(TokenID, TRM, NextTimeOut, TokenTO) of
         {true, SessionRef} ->
             {true, SessionRef};
@@ -145,7 +146,7 @@ session_request_retry(TokenID, TRM, RequestTO, TokenTO, Retry, Attempts) ->
     token_id(),
     token_request_mode(),
     timeout_ms(),
-    timeout_ms()) -> {true, session_ref()}|{false, none}|erpc_error().
+    timeout_ms()) -> {true, session_ref()}|{false, none}|erpc_session_error().
 session_request(TokenID, TRM, RequestTimeout, TokenTimeout) ->
     DocIdx = chash_key(TokenID),
     {TargetNodeCount, MinimumNodeCount, Partitions} = 
@@ -202,30 +203,30 @@ session_request(TokenID, TRM, RequestTimeout, TokenTimeout) ->
 session_use(SessionReference, FuncName, Args) ->
     {N, P, ID} = decode_session_reference(SessionReference),
     case node() of
-        N ->
+        ThisNode when ThisNode == N ->
             session_local_use(P, FuncName, Args, ID);
         _ ->
             safe_erpc(N, ?MODULE, session_local_use, [P, FuncName, Args, ID])
     end.
 
--spec session_release(session_ref()|none) -> ok|erpc_error().
+-spec session_release(session_ref()|none) -> ok|erpc_session_error().
 session_release(none) ->
     ok;
 session_release(SessionReference) ->
     {N, P, ID} = decode_session_reference(SessionReference),
     case node() of
-        N ->
+        ThisNode when ThisNode == N ->
             session_local_release(P, ID);
         _ ->
             safe_erpc(N, ?MODULE, session_local_release, [P, ID])
     end.
 
 
--spec session_renew(session_ref()) -> ok|erpc_error().
+-spec session_renew(session_ref()) -> ok|erpc_session_error().
 session_renew(SessionReference) ->
     {N, P, ID} = decode_session_reference(SessionReference),
     case node() of
-        N ->
+        ThisNode when ThisNode == N ->
             session_local_renew(P, ID);
         _ ->
             safe_erpc(N, ?MODULE, session_local_renew, [P, ID])
@@ -241,10 +242,10 @@ safe_erpc(Node, Module, Function, Args) ->
     try
         erpc:call(Node, Module, Function, Args)
     catch
-        error:Reason:_ ->
-            {error, Reason};
+        error:{erpc, noconnection}:_ ->
+            {error, session_noconnection};
         exit:_:_ ->
-            {error, remote_exit}
+            {error, session_remote_exit}
     end.
 
 -spec session_local_request(
