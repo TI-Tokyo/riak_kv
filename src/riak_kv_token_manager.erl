@@ -82,6 +82,8 @@
     [
         start_link/0,
         request_token/2,
+        associated/1,
+        associated/2,
         stats/0,
         grants/0
     ]
@@ -98,18 +100,21 @@
     ]
 ).
 
+-define(ASSOCIATION_CHECK_TIMEOUT, 5000).
+
 -record(state,
         {
             grants = maps:new() :: grant_map(),
             queues = maps:new() :: request_queues(),
-            associations = maps:new() :: #{session_pid() => token_id()}
+            associations = maps:new() :: #{session_pid() => token_id()},
+            monitored_managers = [] :: list(manager_mon())
         }
     ).
 
 -type verify_count() :: non_neg_integer().
 -type granted_session()
     :: {local, session_pid(), verify_list(), verify_count()}|
-        {upstream, manager_pid(), session_pid()}.
+        {upstream, upstream_ref()}.
 -type grant_map() :: #{token_id() => granted_session()}.
 -type request_queues()
     :: #{token_id() => list({pid(), verify_list()})}.
@@ -117,6 +122,8 @@
 -type verify_list() :: [downstream_node()].
 -type session_pid() :: pid().
 -type manager_pid() :: pid().
+-type manager_mon() :: {manager_pid(), reference()}.
+-type upstream_ref() :: {manager_pid(), session_pid()}.
 -type downstream_node() :: node()|pid().
     % in tests will be a pid() not a node()
 
@@ -145,6 +152,14 @@ request_token(TokenID, VerifyList) ->
     gen_server:cast(
         ?MODULE, {request, TokenID, VerifyList, self()}). 
 
+
+-spec associated(session_pid()) -> ok.
+associated(SessionPid) ->
+    gen_server:cast(?MODULE, {associated, SessionPid, self()}).
+
+-spec associated(node(), session_pid()) -> ok.
+associated(Node, SessionPid) ->
+    gen_server:cast({?MODULE, Node}, {associated, SessionPid, self()}).
 
 %%%============================================================================
 %%% API Remote - Downstream/Upstream messages between token managers
@@ -183,6 +198,23 @@ downstream_renew([N|Rest], TokenID, SessionPid) ->
     gen_server:cast(
         {?MODULE, N}, {downstream_renew, TokenID, {self(), SessionPid}}),
     downstream_renew(Rest, TokenID, SessionPid).
+
+%% @doc release_downstream
+%% If a token has been released, and there is no queued token, release the
+%% downstream blocks.
+-spec downstream_release(verify_list(), token_id(), pid()) -> ok.
+downstream_release([], _TokenID, _SessionPid) ->
+    ok;
+downstream_release([TestPid|Rest], TokenID, SessionPid) when is_pid(TestPid) ->
+    gen_server:cast(
+        TestPid,
+        {downstream_release, TokenID, {self(), SessionPid}}
+    ),
+    downstream_release(Rest, TokenID, SessionPid);
+downstream_release([N|Rest], TokenID, SessionPid) ->
+    gen_server:cast(
+        {?MODULE, N}, {downstream_release, TokenID, {self(), SessionPid}}),
+    downstream_release(Rest, TokenID, SessionPid).
 
 
 %%%============================================================================
@@ -251,7 +283,8 @@ handle_cast({request, TokenID, VerifyList, Session}, State) ->
                     grants = UpdGrants, associations = UpdAssocs
                 }
             };
-        {local, _OtherSession, VerifyList, _VerifyCount} ->
+        {local, _OtherSession, CurrentVerifyList, _VerifyCount}
+                when CurrentVerifyList == VerifyList ->
             %% Can queue this session, it has the same verifylist as the
             %% existing grant
             UpdAssocs =
@@ -270,28 +303,59 @@ handle_cast({request, TokenID, VerifyList, Session}, State) ->
                     associations = UpdAssocs
                 }
             };
+        {upstream, {Manager, UpstreamSession}} ->
+            Session ! refused,
+            F = fun() -> check_upstream(TokenID, Manager, UpstreamSession) end,
+            spawn(F),
+            {noreply, State};
         _ ->
             Session ! refused,
             {noreply, State}
     end;
-
 handle_cast({downstream_renew, TokenID, {Manager, Session}}, State) ->
-    case maps:is_key(TokenID, State#state.grants) of
-        false ->
-            UpdAssocs = maps:put(Session, TokenID, State#state.associations),
-            _MgrRef = monitor(process, Manager),
-            _SidRef = monitor(process, Session),
+    case maps:get(TokenID, State#state.grants, not_found) of
+        not_found ->
             UpdGrants =
                 maps:put(
                     TokenID,
-                    {upstream, Manager, Session},
+                    {upstream, {Manager, Session}},
                     State#state.grants
                 ),
-            
             {noreply,
-                State#state{grants = UpdGrants, associations = UpdAssocs}};
-        true ->
-            ExistingGrant = maps:get(TokenID, State#state.grants),
+                State#state{
+                    grants = UpdGrants,
+                    monitored_managers =
+                        monitor_manager(
+                            Manager,
+                            State#state.monitored_managers
+                        )
+                }
+            };
+        {upstream, {CurrentManager, _OldSession}}
+                when Manager == CurrentManager ->
+           UpdGrants =
+                maps:put(
+                    TokenID,
+                    {upstream, {Manager, Session}},
+                    State#state.grants
+                ),
+            {noreply, State#state{grants = UpdGrants}};
+        ExistingGrant ->
+            ?LOG_WARNING(
+                "Potential conflict ignored on token ~w between ~w and ~w",
+                [TokenID, ExistingGrant, {Manager, Session}]
+            ),
+            {noreply, State}
+    end;
+handle_cast({downstream_release, TokenID, {Manager, Session}}, State) ->
+    case maps:get(TokenID, State#state.grants, not_found) of
+        not_found ->
+            {noreply, State};
+        {upstream, {CurrentManager, _OldSession}}
+                when Manager == CurrentManager ->
+            UpdGrants = maps:remove(TokenID, State#state.grants),
+            {noreply, State#state{grants = UpdGrants}};
+        ExistingGrant ->
             ?LOG_WARNING(
                 "Potential conflict ignored on token ~w between ~w and ~w",
                 [TokenID, ExistingGrant, {Manager, Session}]
@@ -299,31 +363,54 @@ handle_cast({downstream_renew, TokenID, {Manager, Session}}, State) ->
             {noreply, State}
     end;
 handle_cast({downstream_check, TokenID, {Manager, Session}}, State) ->
-    case maps:is_key(TokenID, State#state.grants) of
-        false ->
+    case maps:get(TokenID, State#state.grants, not_found) of
+        not_found ->
             gen_server:cast(
                 Manager, {downstream_reply, TokenID, Session, true}
             ),
-            UpdAssocs = maps:put(Session, TokenID, State#state.associations),
-            _MgrRef = monitor(process, Manager),
-            _SidRef = monitor(process, Session),
             UpdGrants =
                 maps:put(
                     TokenID,
-                    {upstream, Manager, Session},
+                    {upstream, {Manager, Session}},
                     State#state.grants
                 ),
             {noreply,
-                State#state{grants = UpdGrants, associations = UpdAssocs}};
-        true ->
+                State#state{
+                    grants = UpdGrants,
+                    monitored_managers =
+                        monitor_manager(
+                            Manager,
+                            State#state.monitored_managers
+                        )
+                }
+            };
+        Block ->
             gen_server:cast(
                 Manager, {downstream_reply, TokenID, Session, false}
             ),
+            case Block of
+                {upstream, {BlockingManager, BlockingSession}} ->
+                    F =
+                        fun() ->
+                            check_upstream(
+                                TokenID, BlockingManager, BlockingSession
+                            )
+                        end,
+                    spawn(F),
+                    ?LOG_INFO(
+                        "Prompting upstream check due to block of "
+                        "downstream_check and block is matching ~w ~w",
+                        [BlockingManager == Manager, BlockingSession == Session]
+                    );
+                _ ->
+                    ok
+            end,        
             {noreply, State}
-        end;
+    end;
 handle_cast({downstream_reply, TokenID, Session, true}, State) ->
     case maps:get(TokenID, State#state.grants, not_found) of
-        {local, Session, VerifyList, VerifyCount} ->
+        {local, ThisSession, VerifyList, VerifyCount}
+                when ThisSession == Session ->
             case length(VerifyList) of
                 VL when VL == (VerifyCount + 1) ->
                     Session ! granted;
@@ -345,17 +432,24 @@ handle_cast({downstream_reply, TokenID, Session, true}, State) ->
     end;
 handle_cast({downstream_reply, TokenID, Session, false}, State) ->
     case maps:get(TokenID, State#state.grants, not_found) of
-        {local, Session, _VerifyList, _VerifyCount} ->
+        {local, ThisSession, _VerifyList, _VerifyCount}
+                when Session == ThisSession ->
             Session ! refused,
             {noreply,
                 State#state{grants = maps:remove(TokenID, State#state.grants)}
             };
         _ ->
             {noreply, State}
-    end.
+    end;
+handle_cast({associated, SessionPid, FromPid}, State) ->
+    FromPid !
+        {maps:is_key(SessionPid, State#state.associations),
+            {self(), SessionPid}
+        },
+    {noreply, State}.
 
 
-handle_info({'DOWN', _Ref, process, Pid, Reason}, State) ->
+handle_info({'DOWN', Ref, process, Pid, Reason}, State) ->
     case maps:take(Pid, State#state.associations) of
         {TokenID,  UpdAssocs} ->
             %% An association exists, so this is assumed to be a session
@@ -374,6 +468,12 @@ handle_info({'DOWN', _Ref, process, Pid, Reason}, State) ->
                     %% same token that we can now grant
                     case return_session_from_queues(Queues, TokenID) of
                         {none, UpdQueues} ->
+                            ok =
+                                downstream_release(
+                                    VerifyList,
+                                    TokenID,
+                                    Pid
+                                ),
                             {noreply,
                                 State#state{
                                     associations = UpdAssocs,
@@ -413,36 +513,31 @@ handle_info({'DOWN', _Ref, process, Pid, Reason}, State) ->
                                 }
                             }
                     end;
-                {upstream, _Manager, Pid} ->
-                    %% It is possible that this is a remote PID that has failed
-                    %% No need to promote form queue in this case, just remove
-                    {noreply,
-                        State#state{
-                            associations = UpdAssocs,
-                            queues = Queues,
-                            grants =
-                                maps:remove(
-                                    TokenID,
-                                    State#state.grants
-                                )
-                        }
-                    };
                 _ ->
                     %% The session may have been queued and not had a grant
+                    %% It may be an upstream grant which has changed before the
+                    %% 'DOWN' message was received
                     {noreply,
                         State#state{associations = UpdAssocs, queues = Queues}
                     }
             end;
         _ ->
-            %% No assocition is assumed to be a token manager
+            %% No association is assumed to be a token manager
+            %% Need to remove all upstream grants associated with this
+            %% manager
             ?LOG_WARNING(
-                "Remote Token Manager ~w reported down due to ~p",
-                [Pid, Reason]
+                "Remote Token Manager ~w reported down due to ~p monitored ~p",
+                [
+                    Pid,
+                    Reason,
+                    lists:member({Pid, Ref}, State#state.monitored_managers)
+                ]
             ),
             FilterFun =
                 fun({_Tid, G}) ->
                     case G of
-                        {upstream, Pid, _Session} ->
+                        {upstream, {UpstreamPid, _Session}}
+                                when UpstreamPid == Pid ->
                             false;
                         _ ->
                             true
@@ -455,9 +550,16 @@ handle_info({'DOWN', _Ref, process, Pid, Reason}, State) ->
                         maps:to_list(State#state.grants)
                     )
                 ),
-            {noreply, State#state{grants =  UpdGrants}}
+            UpdMonitors =
+                lists:delete({Pid, Ref}, State#state.monitored_managers),
+            {noreply,
+                State#state{
+                    grants =  UpdGrants,
+                    monitored_managers = UpdMonitors
+                }
+            }
     end;
-handle_info(_Info, State) ->
+handle_info(_Msg, State) ->
     {noreply, State}.
 
 terminate(_Reason, _State) ->
@@ -475,11 +577,11 @@ code_change(_OldVsn, State, _Extra) ->
     request_queues(), token_id(), pid()) -> request_queues().
 clear_session_from_queues(Queues, TokenID, Session) ->
     Queue = maps:get(TokenID, Queues, []),
-    case lists:keytake(Session, 1, Queue) of
-        {value, {Session, _VL}, UpdTQueue} ->
-            maps:put(TokenID, UpdTQueue, Queues);
-        false ->
-            Queues
+    case lists:filter(fun({QS, _VL}) -> QS =/= Session end, Queue) of
+        [] ->
+            maps:remove(TokenID, Queues);
+        UpdTQueue ->
+            maps:put(TokenID, UpdTQueue, Queues)
     end.
 
 -spec return_session_from_queues(
@@ -490,16 +592,59 @@ return_session_from_queues(Queues, TokenID) ->
         [] ->
             {none, Queues};
         QueuedRequests ->
-            [{NextSession, VerifyList}|QueueRem] =
-                lists:reverse(QueuedRequests),
-            case QueueRem of
-                [] ->
+            case lists:reverse(QueuedRequests) of
+                [{NextSession, VerifyList}] ->
                     {{NextSession, VerifyList}, maps:remove(TokenID, Queues)};
-                _ ->
+                [{NextSession, VerifyList}|QueueRem] ->
                     {{NextSession, VerifyList},
                         maps:put(TokenID, lists:reverse(QueueRem), Queues)}
             end
     end.
+
+
+-spec monitor_manager(
+    manager_pid(), list(manager_mon())) -> list(manager_mon()).
+monitor_manager(Manager, MonitoredManagers) ->
+    case lists:keymember(Manager, 1, MonitoredManagers) of
+        true ->
+            MonitoredManagers;
+        false ->
+            MgrRef = monitor(process, Manager),
+            [{Manager, MgrRef}|MonitoredManagers]
+    end.
+
+-spec check_upstream(token_id(), manager_pid(), session_pid()) -> ok. 
+check_upstream(TokenID, RemoteManager, Session) ->
+    RemoteNode = node(RemoteManager),
+    {UpstreamAssociated, Reason} =
+        case RemoteNode of
+            nonode@nodehost ->
+                {false, nonode@nodehost};
+            _ ->
+                associated(RemoteNode, Session),
+                receive
+                    Reply ->
+                        Reply
+                after
+                    ?ASSOCIATION_CHECK_TIMEOUT ->
+                        {false, timeout}
+                end
+        end,
+    case UpstreamAssociated of
+        true ->
+            ok;
+        false ->
+            ?LOG_WARNING(
+                "Upstream association check to ~w prompted release "
+                "of TokenID ~w due to reason ~p",
+                [RemoteNode, TokenID, Reason]
+            ),
+            gen_server:cast(
+                ?MODULE,
+                {downstream_release, TokenID, {RemoteManager, Session}}
+            )
+    end.
+
 
 
 %%%============================================================================
@@ -519,6 +664,9 @@ manager_simple_test() ->
     S1 = spawn(Req1),
     receive Gr1 -> ?assertMatch({granted, S1}, Gr1) end,
     S2 = spawn(Req1),
+    timer:sleep(1),
+        % Make sure first request received
+        % Avoid race over spawn time
     S3 = spawn(Req1),
     S4 = spawn(Req2),
     receive Rf1 -> ?assertMatch({refused, S4}, Rf1) end,
@@ -533,6 +681,60 @@ manager_simple_test() ->
     gen_server:stop(Mgr3).
 
 
+manager_multitoken_test() ->
+    {ok, Mgr1} = gen_server:start(?MODULE, [], []),
+    {ok, Mgr2} = gen_server:start(?MODULE, [], []),
+    {ok, Mgr3} = gen_server:start(?MODULE, [], []),
+    Req1 = requestor_fun(self(), <<"T1">>, Mgr1, [Mgr2, Mgr3]),
+    Req2 = requestor_fun(self(), <<"T2">>, Mgr2, [Mgr1, Mgr3]),
+    Req3 = requestor_fun(self(), <<"T3">>, Mgr2, [Mgr3, Mgr1]),
+    Req4 = requestor_fun(self(), <<"T4">>, Mgr3, [Mgr1, Mgr2]),
+    S1R1 = spawn(Req1),
+    S2R1 = spawn(Req2),
+    S3R1 = spawn(Req3),
+    S4R1 = spawn(Req4),
+    timer:sleep(1),
+        % Make sure first round of requests received
+        % Avoid race over spawn time
+    S1R2 = spawn(Req1),
+    S2R2 = spawn(Req2),
+    S3R2 = spawn(Req3),
+    S4R2 = spawn(Req4),
+    ok = receive {granted, S1R1} -> ok end,
+    ok = receive {granted, S2R1} -> ok end,
+    ok = receive {granted, S3R1} -> ok end,
+    ok = receive {granted, S4R1} -> ok end,
+    S1R1 ! terminate,
+    receive Gr1 -> ?assertMatch({granted, S1R2}, Gr1) end,
+    S4R1 ! terminate,
+    receive Gr2 -> ?assertMatch({granted, S4R2}, Gr2) end,
+    S3R3 = spawn(Req3),
+    S3R2 ! terminate,
+    S2R1 ! terminate,
+    receive Gr3 -> ?assertMatch({granted, S2R2}, Gr3) end,
+    S3R1 ! terminate,
+    receive Gr4 -> ?assertMatch({granted, S3R3}, Gr4) end,
+    ?assert(receive _ -> false after 10 -> true end),
+    ?assertMatch({4, 0, 1}, gen_server:call(Mgr1, stats)),
+    ?assertMatch({4, 0, 2}, gen_server:call(Mgr2, stats)),
+    ?assertMatch({4, 0, 1}, gen_server:call(Mgr3, stats)),
+    S1R2 ! terminate,
+    S4R2 ! terminate,
+    S2R2 ! terminate,
+    S3R3 ! terminate,
+    ?assert(receive _ -> false after 10 -> true end),
+        % This also allows time for Mgrs to receive 'DOWN'
+    ?assertMatch({0, 0, 0}, gen_server:call(Mgr1, stats)),
+    ?assertMatch({0, 0, 0}, gen_server:call(Mgr2, stats)),
+    ?assertMatch({0, 0, 0}, gen_server:call(Mgr3, stats)),
+    ?assertMatch(#{}, gen_server:call(Mgr1, grants)),
+    ?assertMatch(#{}, gen_server:call(Mgr2, grants)),
+    ?assertMatch(#{}, gen_server:call(Mgr3, grants)),
+    gen_server:stop(Mgr1),
+    gen_server:stop(Mgr2),
+    gen_server:stop(Mgr3).
+
+    
 manager_downstream_failure_test() ->
     {ok, Mgr1} = gen_server:start(?MODULE, [], []),
     {ok, Mgr2} = gen_server:start(?MODULE, [], []),
@@ -541,6 +743,9 @@ manager_downstream_failure_test() ->
     S1 = spawn(Req1),
     receive Gr1 -> ?assertMatch({granted, S1}, Gr1) end,
     S2 = spawn(Req1),
+    timer:sleep(1),
+        % Make sure first request received
+        % Avoid race over spawn time
     S3 = spawn(Req1),
     ok = gen_server:stop(Mgr2),
     {ok, Mgr2A} = gen_server:start(?MODULE, [], []),
@@ -554,6 +759,8 @@ manager_downstream_failure_test() ->
     S2 ! terminate,
     receive Gr3 -> ?assertMatch({granted, S3}, Gr3) end,
     S3 ! terminate,
+    ?assert(receive _ -> false after 10 -> true end),
+        % This also allows time for Mgrs to receive 'DOWN'
     S5 = spawn(Req2),
     receive Gr4 -> ?assertMatch({granted, S5}, Gr4) end,
     S5 ! terminate,
@@ -580,6 +787,8 @@ manager_primary_failure_test() ->
     S5 = spawn(Req3),
     receive Rf3 -> ?assertMatch({refused, S5}, Rf3) end,
     S4 ! terminate,
+    ?assert(receive _ -> false after 10 -> true end),
+        % This also allows time for Mgrs to receive 'DOWN'
     S6 = spawn(Req3),
     receive Gr4 -> ?assertMatch({granted, S6}, Gr4) end,
     lists:foreach(fun(P) -> P ! terminate end, [S1, S2, S3, S6]),

@@ -130,7 +130,12 @@ session_request_retry(TokenID, TRM, RequestTO, TokenTO, Retry, Attempts) ->
             {true, SessionRef};
         _Error ->
             timer:sleep(
-                rand:uniform(max(1, RequestTO div (Retry - Attempts)))
+                rand:uniform(
+                    max(
+                        ?MINIMUM_SINGLE_REQUEST_TIMEOUT,
+                        RequestTO div (Retry - Attempts)
+                    )
+                )
             ),
             session_request_retry(
                 TokenID,
@@ -258,10 +263,19 @@ session_local_request(TokenID, VerifyList, RequestTimeout, TokenTimeout) ->
 
 -spec session_local_use(pid(), atom(), list(), session_id()) -> any().
 session_local_use(Pid, FuncName, Args, ID) ->
-    gen_server:call(
-        Pid,
-        {use_session, FuncName, Args, ID},
-        infinity).
+    ok = riak_kv_token_manager:associated(Pid),
+    receive
+        {true, _Upstream} ->
+            gen_server:call(
+                Pid,
+                {use_session, FuncName, Args, ID},
+                infinity);
+        _ ->
+            {error, session_down}
+    after
+        ?TOKEN_SESSION_TIMEOUT ->
+            {error, session_down}
+    end.
 
 -spec session_local_release(pid(), session_id()) -> ok.
 session_local_release(Pid, ID) ->
