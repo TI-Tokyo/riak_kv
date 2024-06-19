@@ -100,12 +100,15 @@
     ]
 ).
 
--define(ASSOCIATION_CHECK_TIMEOUT, 5000).
 
 -ifdef(TEST).
 -define(SWEEP_DELAY, 1000).
+-define(ASSOCIATION_CHECK_TIMEOUT, 1000).
 -else.
+
 -define(SWEEP_DELAY, 10000).
+-define(ASSOCIATION_CHECK_TIMEOUT, 5000).
+
 -endif.
 
 
@@ -659,8 +662,8 @@ check_upstream(TokenID, RemoteManager, Session, Mgr) ->
     RemoteNode = node(RemoteManager),
     {UpstreamAssociated, Reason} =
         case RemoteNode of
-            nonode@nodehost ->
-                {false, nonode@nodehost};
+            nonode@nohost ->
+                {false, nonode@nohost};
             _ ->
                 associated(RemoteNode, Session),
                 receive
@@ -706,9 +709,9 @@ gc_tester() ->
     Req1 = requestor_fun(self(), <<"T1">>, Mgr1, [Mgr2, Mgr3]),
     Req2 = requestor_fun(self(), <<"T2">>, Mgr2, [Mgr3]),
     S1 = spawn(Req1),
-    timer:sleep(1),
+    receive Gr1 -> ?assertMatch({granted, S1}, Gr1) end,
     S2 = spawn(Req2),
-    timer:sleep(1),
+    receive Gr2 -> ?assertMatch({granted, S2}, Gr2) end,
     S3 = spawn(Req2),
     F1 = fun() -> {1, 0, 1} == gen_server:call(Mgr1, stats) end,
     F2 = fun() -> {2, 1, 2} == gen_server:call(Mgr2, stats) end,
@@ -716,30 +719,18 @@ gc_tester() ->
     wait_until(F1, 10, 1),
     wait_until(F2, 10, 1),
     wait_until(F3, 10, 1),
-    G1A = maps:to_list(gen_server:call(Mgr1, grants)),
-    G2A = maps:to_list(gen_server:call(Mgr2, grants)),
-    G3A = maps:to_list(gen_server:call(Mgr3, grants)),
-    ok = check_active(G1A, Mgr1),
-    ok = check_active(G2A, Mgr2),
-    ok = check_active(G3A, Mgr3),
-    ?assert(F1()),
-    ?assert(F2()),
-    ?assert(F3()),
 
-    timer:sleep(3 * ?SWEEP_DELAY),
+    timer:sleep(?SWEEP_DELAY + 1), % First sweep at fixed time
     State1 = sys:get_state(Mgr1),
     ?assertMatch(1, sets:size(State1#state.last_sweep_grants)),
     State2 = sys:get_state(Mgr2),
     ?assertMatch(2, sets:size(State2#state.last_sweep_grants)),
     State3 = sys:get_state(Mgr3),
     ?assertMatch(2, sets:size(State3#state.last_sweep_grants)),
-
     ?assert(F1()),
     ?assert(F2()),
     ?assert(F3()),
 
-    receive Gr1 -> ?assertMatch({granted, S1}, Gr1) end,
-    receive Gr2 -> ?assertMatch({granted, S2}, Gr2) end,
     Mgr1 ! {'DOWN', self(), process, S1, inactive},
     F1A = fun() -> {0, 0, 0} == gen_server:call(Mgr1, stats) end,
     F2A = fun() -> {1, 1, 2} == gen_server:call(Mgr2, stats) end,
@@ -758,11 +749,51 @@ gc_tester() ->
     wait_until(F2B, 10, 1),
     wait_until(F3B, 10, 1),
     S2 ! terminate,
-    ?assert(receive _ -> false after 10 -> true end),
+    ?assert(receive _ -> false after 1 -> true end),
     F2B(),
     F3B(),
     S3 ! terminate,
-    ?assert(receive _ -> false after 10 -> true end),
+    ?assert(receive _ -> false after 1 -> true end),
+
+    timer:sleep(?SWEEP_DELAY + ?SWEEP_DELAY div 2), % should be nothing to sweep
+    StateZ1 = sys:get_state(Mgr1),
+    ?assertMatch(0, sets:size(StateZ1#state.last_sweep_grants)),
+    StateZ2 = sys:get_state(Mgr2),
+    ?assertMatch(0, sets:size(StateZ2#state.last_sweep_grants)),
+    StateZ3 = sys:get_state(Mgr3),
+    ?assertMatch(0, sets:size(StateZ3#state.last_sweep_grants)),
+
+    SA1 = spawn(Req1),
+    receive GrA1 -> ?assertMatch({granted, SA1}, GrA1) end,
+    SA2 = spawn(Req2),
+    receive GrA2 -> ?assertMatch({granted, SA2}, GrA2) end,
+    SA3 = spawn(Req2),
+    wait_until(F1, 10, 1),
+    wait_until(F2, 10, 1),
+    wait_until(F3, 10, 1),
+
+    timer:sleep(3 * ?SWEEP_DELAY),
+        % Should prompt sweep, and remove remotes as nonode@nohost
+    ?assertMatch({1, 0, 1}, gen_server:call(Mgr1, stats)),
+    ?assertMatch({1, 1, 2}, gen_server:call(Mgr2, stats)),
+    ?assertMatch({0, 0, 0}, gen_server:call(Mgr3, stats)),
+    timer:sleep(3 * ?SWEEP_DELAY),
+        % PRevious grants should remain stable
+    StateX1 = sys:get_state(Mgr1),
+    ?assertMatch(1, sets:size(StateX1#state.last_sweep_grants)),
+    StateX2 = sys:get_state(Mgr2),
+    ?assertMatch(1, sets:size(StateX2#state.last_sweep_grants)),
+    StateX3 = sys:get_state(Mgr3),
+    ?assertMatch(0, sets:size(StateX3#state.last_sweep_grants)),
+    ?assertMatch({1, 0, 1}, gen_server:call(Mgr1, stats)),
+    ?assertMatch({1, 1, 2}, gen_server:call(Mgr2, stats)),
+    ?assertMatch({0, 0, 0}, gen_server:call(Mgr3, stats)),
+
+    SA1 ! terminate,
+    SA2 ! terminate,
+    receive GrA3 -> ?assertMatch({granted, SA3}, GrA3) end,
+    SA3 ! terminate,
+    ?assert(receive _ -> false after 1 -> true end),
     
     gen_server:stop(Mgr1),
     gen_server:stop(Mgr2),
