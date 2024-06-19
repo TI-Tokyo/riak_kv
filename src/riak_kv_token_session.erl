@@ -64,15 +64,11 @@
 -define(TOKEN_SESSION_TIMEOUT, 30000).
 -define(TOKEN_RETRY_COUNT, 12).
 
--record(state,
-        {
-            token_id :: token_id(),
-            token_timeout :: pos_integer(),
-            client :: riak_client:riak_client()|undefined,
-            session_id :: session_id()|undefined,
-            start_time = os:system_time(microsecond) :: pos_integer()
-        }
-    ).
+-record(state, {token_id :: token_id(),
+                token_timeout :: pos_integer(),
+                client :: riak_client:riak_client()|undefined,
+                session_id :: session_id()|undefined,
+                start_time = os:system_time(microsecond) :: pos_integer()}).
 
 -type token_id() :: riak_kv_token_manager:token_id().
 -type verify_list() :: riak_kv_token_manager:verify_list().
@@ -84,7 +80,6 @@
 -type token_request_mode() :: head_only|small_consensus|large_consensus.
 
 -export_type([session_ref/0]).
-
 
 %%%============================================================================
 %%% External API
@@ -237,7 +232,6 @@ session_renew(SessionReference) ->
             safe_erpc(N, ?MODULE, session_local_renew, [P, ID])
     end.
 
-
 %%%============================================================================
 %%% Local API
 %%%============================================================================
@@ -355,7 +349,6 @@ terminate(_Reason, _State) ->
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
-
 
 %%%============================================================================
 %%% Internal functions

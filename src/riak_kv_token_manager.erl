@@ -100,7 +100,6 @@
     ]
 ).
 
-
 -ifdef(TEST).
 -define(SWEEP_DELAY, 1000).
 -define(ASSOCIATION_CHECK_TIMEOUT, 1000).
@@ -111,17 +110,12 @@
 
 -endif.
 
-
--record(state,
-        {
-            grants = maps:new() :: grant_map(),
-            queues = maps:new() :: request_queues(),
-            associations = maps:new() :: #{session_pid() => token_id()},
-            monitored_managers = [] :: list(manager_mon()),
-            last_sweep_grants = sets:new([{version, 2}]) ::
-                sets:set({token_id(), granted_session()})
-        }
-    ).
+-record(state, {grants = maps:new() :: grant_map(),
+                queues = maps:new() :: request_queues(),
+                associations = maps:new() :: #{session_pid() => token_id()},
+                monitored_managers = [] :: list(manager_mon()),
+                last_sweep_grants = sets:new([{version, 2}]) ::
+                    sets:set({token_id(), granted_session()})}).
 
 -type verify_count() :: non_neg_integer().
 -type granted_session()
@@ -163,7 +157,6 @@ start_link() ->
 request_token(TokenID, VerifyList) ->
     gen_server:cast(
         ?MODULE, {request, TokenID, VerifyList, self()}). 
-
 
 -spec associated(session_pid()) -> ok.
 associated(SessionPid) ->
@@ -227,7 +220,6 @@ downstream_release([N|Rest], TokenID, SessionPid) ->
     gen_server:cast(
         {?MODULE, N}, {downstream_release, TokenID, {self(), SessionPid}}),
     downstream_release(Rest, TokenID, SessionPid).
-
 
 %%%============================================================================
 %%% API - Operations (helper functions)
@@ -589,7 +581,6 @@ terminate(_Reason, _State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-
 %%%============================================================================
 %%% Internal functions
 %%%============================================================================
@@ -688,8 +679,6 @@ check_upstream(TokenID, RemoteManager, Session, Mgr) ->
                 {downstream_release, TokenID, {RemoteManager, Session}}
             )
     end.
-
-
 
 %%%============================================================================
 %%% Test
