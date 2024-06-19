@@ -165,9 +165,7 @@ session_request(TokenID, TRM, RequestTimeout, TokenTimeout) ->
         end,
     PrimNodes =
         lists:sublist(
-            lists:uniq(
-                lists:map(fun({{_Idx, N}, _}) -> N end, Partitions)
-            ),
+            uniq(lists:map(fun({{_Idx, N}, _}) -> N end, Partitions)),
             TargetNodeCount
         ),
     case PrimNodes of
@@ -369,6 +367,29 @@ encode_session_reference(SessionID) ->
 -spec decode_session_reference(session_ref()) -> {node(), pid(), session_id()}.
 decode_session_reference(SessionReference) ->
     binary_to_term(base64:decode(SessionReference)).
+
+
+-if(?OTP_RELEASE < 25).
+-spec uniq(List1) -> List2 when
+    List1 :: [T],
+    List2 :: [T],
+    T :: term().
+
+uniq(L) ->
+  uniq_1(L, #{}).
+
+uniq_1([X | Xs], M) ->
+  case is_map_key(X, M) of
+      true ->
+          uniq_1(Xs, M);
+      false ->
+          [X | uniq_1(Xs, M#{X => true})]
+  end;
+uniq_1([], _) ->
+  [].
+-else.
+uniq(L) -> lists:uniq(L).
+-endif.
 
 %%%============================================================================
 %%% Test
