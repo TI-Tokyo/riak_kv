@@ -264,9 +264,23 @@ find_bestobject(FetchedItems) ->
     % the first received (the fastest responder) - as if there is a need
     % for a follow-up fetch, we should prefer the vnode that had responded
     % fastest to he HEAD (this may be local).
-    ObjNotJustHeadFun =  fun({_Idx, Rsp}) ->  not is_head(Rsp) end,
-    {Objects, Heads} = lists:partition(ObjNotJustHeadFun, FetchedItems),
+    ObjNotJustHeadFun =  fun({_Idx, Rsp}) -> not is_head(Rsp) end,
+    {Objects, MaybeDupHeads} =
+        lists:partition(ObjNotJustHeadFun, FetchedItems),
+    
+    %% If we've fetched the object, ignore the head
+    Heads =
+        lists:foldl(
+            fun({Idx, _}, UpdHeads) ->
+                lists:keydelete(Idx, 1, UpdHeads)
+            end,
+            MaybeDupHeads,
+            Objects
+        ),
+    
     %% prefer full objects to heads
+    %% 
+    %% 
     FoldList = Heads ++ Objects,
     
     DescendsFun =
@@ -1847,6 +1861,25 @@ find_bestobject_equal_test() ->
                                         {1, {ok, Obj1}},
                                         {3, {ok, Obj3}}])).
 
+find_bestobject_headget_confusion_reconcile() ->
+    B = <<"buckets_are_binaries">>,
+    K = <<"keys are binaries">>,
+    {_Obj1, UpdO} = update_test(),
+    Obj2 = riak_object:increment_vclock(UpdO, one_pid),
+    Obj3 = riak_object:increment_vclock(UpdO, alt_pid),
+    
+    ReplyH1 = {1, {ok, convert_object_to_headonly(B, K, Obj2)}},
+    ReplyB1 = {1, {ok, Obj3}},
+    ReplyB2 = {2, {ok, Obj2}},
+    ReplyB3 = {3, {ok, Obj3}},
+
+    Replies = [ReplyB2, ReplyB1, ReplyB2, ReplyH1, ReplyB3],
+    ?assertMatch(
+        {[ReplyB2, ReplyB1, ReplyB2, ReplyB3], []},
+        find_bestobject(Replies)
+    ).
+
+
 find_bestobject_ancestor() ->
     % one object is behind, and one of the dominant objects is head_only
     B = <<"buckets_are_binaries">>,
@@ -1976,6 +2009,8 @@ bucket_prop_needers_test_() ->
         {"Mixed Merge 2", fun mixed_merge2/0},
         {"Find Object Ancestor", fun find_bestobject_ancestor/0},
         {"Find Object Reconcile", fun find_bestobject_reconcile/0},
+        {"Find Object Head-Get Confusion Reconcile",
+            fun find_bestobject_headget_confusion_reconcile/0},
         {"Test Summary Bin Extract", fun summary_binary_extract/0},
         {"Next Gen Repl Encode/Decode", fun nextgenrepl/0},
         {"Simple Head/Get merge", fun simple_merge_head_and_get/0}
