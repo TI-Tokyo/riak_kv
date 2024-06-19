@@ -22,7 +22,7 @@
 %% 
 %% riak_kv_token_session process may request a grant.  The session process
 %% should monnitor the token_manager to which it makes a request, and fail with
-%% the fialure of that token_manager.  A request may be granted immediately, or
+%% the failure of that token_manager.  A request may be granted immediately, or
 %% potentially queued to be granted when the token is next released.
 %% 
 %% The grant may be refused if the a previous token has been granted and now
@@ -63,7 +63,7 @@
 %% monitor every riak_kv_token_session process to which it has made a grant,
 %% and release that grant on the process terminating for any reason.  
 %% 
-%% The riak_kv_token_manager has no awareness of other ndoes in the cluster.
+%% The riak_kv_token_manager has no awareness of other nodes in the cluster.
 %% The riak_kv_token_session request logic should be aware of which
 %% riak_kv_token_manager is responsible for granting a given token.  In Riak
 %% this is done using the preflist based on the hash of the token key.  The
@@ -102,12 +102,21 @@
 
 -define(ASSOCIATION_CHECK_TIMEOUT, 5000).
 
+-ifdef(TEST).
+-define(SWEEP_DELAY, 1000).
+-else.
+-define(SWEEP_DELAY, 10000).
+-endif.
+
+
 -record(state,
         {
             grants = maps:new() :: grant_map(),
             queues = maps:new() :: request_queues(),
             associations = maps:new() :: #{session_pid() => token_id()},
-            monitored_managers = [] :: list(manager_mon())
+            monitored_managers = [] :: list(manager_mon()),
+            last_sweep_grants = sets:new([{version, 2}]) ::
+                sets:set({token_id(), granted_session()})
         }
     ).
 
@@ -240,6 +249,7 @@ grants() ->
 %%%============================================================================
 
 init(_Args) ->
+    erlang:send_after(?SWEEP_DELAY, self(), sweep),
     {ok, #state{}}.
     
 handle_call(stats, _From, State) ->
@@ -303,11 +313,6 @@ handle_cast({request, TokenID, VerifyList, Session}, State) ->
                     associations = UpdAssocs
                 }
             };
-        {upstream, {Manager, UpstreamSession}} ->
-            Session ! refused,
-            F = fun() -> check_upstream(TokenID, Manager, UpstreamSession) end,
-            spawn(F),
-            {noreply, State};
         _ ->
             Session ! refused,
             {noreply, State}
@@ -384,27 +389,23 @@ handle_cast({downstream_check, TokenID, {Manager, Session}}, State) ->
                         )
                 }
             };
-        Block ->
+        {upstream, {BlockingMgr, _PrevSession}} when BlockingMgr == Manager ->
+            %% Trust the upstream manager knows what they're doing.  This is
+            %% likely to be as a result of message misordering
+            gen_server:cast(
+                Manager, {downstream_reply, TokenID, Session, true}
+            ),
+            UpdGrants =
+                maps:put(
+                    TokenID,
+                    {upstream, {Manager, Session}},
+                    State#state.grants
+                ),
+            {noreply, State#state{grants = UpdGrants}};
+        _Block ->
             gen_server:cast(
                 Manager, {downstream_reply, TokenID, Session, false}
-            ),
-            case Block of
-                {upstream, {BlockingManager, BlockingSession}} ->
-                    F =
-                        fun() ->
-                            check_upstream(
-                                TokenID, BlockingManager, BlockingSession
-                            )
-                        end,
-                    spawn(F),
-                    ?LOG_INFO(
-                        "Prompting upstream check due to block of "
-                        "downstream_check and block is matching ~w ~w",
-                        [BlockingManager == Manager, BlockingSession == Session]
-                    );
-                _ ->
-                    ok
-            end,        
+            ),     
             {noreply, State}
     end;
 handle_cast({downstream_reply, TokenID, Session, true}, State) ->
@@ -522,43 +523,60 @@ handle_info({'DOWN', Ref, process, Pid, Reason}, State) ->
                     }
             end;
         _ ->
-            %% No association is assumed to be a token manager
-            %% Need to remove all upstream grants associated with this
-            %% manager
-            ?LOG_WARNING(
-                "Remote Token Manager ~w reported down due to ~p monitored ~p",
-                [
-                    Pid,
-                    Reason,
-                    lists:member({Pid, Ref}, State#state.monitored_managers)
-                ]
-            ),
-            FilterFun =
-                fun({_Tid, G}) ->
-                    case G of
-                        {upstream, {UpstreamPid, _Session}}
-                                when UpstreamPid == Pid ->
-                            false;
-                        _ ->
-                            true
-                    end
-                end,
-            UpdGrants =
-                maps:from_list(
-                    lists:filter(
-                        FilterFun,
-                        maps:to_list(State#state.grants)
-                    )
-                ),
-            UpdMonitors =
-                lists:delete({Pid, Ref}, State#state.monitored_managers),
-            {noreply,
-                State#state{
-                    grants =  UpdGrants,
-                    monitored_managers = UpdMonitors
-                }
-            }
+            case lists:member({Pid, Ref}, State#state.monitored_managers) of
+                true ->
+                    ?LOG_WARNING(
+                        "Remote Token Manager ~w reported down due to ~p",
+                        [Pid, Reason]
+                    ),
+                    FilterFun =
+                        fun({_Tid, G}) ->
+                            case G of
+                                {upstream, {UpstreamPid, _Session}}
+                                        when UpstreamPid == Pid ->
+                                    false;
+                                _ ->
+                                    true
+                            end
+                        end,
+                    UpdGrants =
+                        maps:from_list(
+                            lists:filter(
+                                FilterFun,
+                                maps:to_list(State#state.grants)
+                            )
+                        ),
+                    UpdMonitors =
+                        lists:delete(
+                            {Pid, Ref},
+                            State#state.monitored_managers
+                        ),
+                    {noreply,
+                        State#state{
+                            grants =  UpdGrants,
+                            monitored_managers = UpdMonitors
+                        }
+                    };
+                false ->
+                    ?LOG_INFO(
+                        "Session ~w cleared for ~w but not present",
+                        [Pid, Reason]
+                    ),
+                    {noreply, State}
+            end
     end;
+handle_info(sweep, State) ->
+    erlang:send_after(
+        rand:uniform(?SWEEP_DELAY) + ?SWEEP_DELAY div 2,
+        self(),
+        sweep
+    ),
+    LastSweep = State#state.last_sweep_grants,
+    ThisSweep =
+        sets:from_list(maps:to_list(State#state.grants), [{version, 2}]),
+    StillPresent = sets:to_list(sets:intersection(LastSweep, ThisSweep)),
+    check_active(StillPresent, self()),
+    {noreply, State#state{last_sweep_grants = ThisSweep}};
 handle_info(_Msg, State) ->
     {noreply, State}.
 
@@ -613,8 +631,31 @@ monitor_manager(Manager, MonitoredManagers) ->
             [{Manager, MgrRef}|MonitoredManagers]
     end.
 
--spec check_upstream(token_id(), manager_pid(), session_pid()) -> ok. 
-check_upstream(TokenID, RemoteManager, Session) ->
+-spec check_active(list({token_id(), granted_session()}), pid()) -> ok.
+check_active([], _Mgr) ->
+    ok;
+check_active([{_TokenID, {local, Session, _VL, _VC}}|Rest], Mgr) ->
+    case is_process_alive(Session) of
+        true ->
+            check_active(Rest, Mgr);
+        false ->
+            Mgr ! {'DOWN', self(), process, Session, inactive},
+            check_active(Rest, Mgr)
+    end;
+check_active([{TokenID, {upstream, {UpstreamMgr, UpstreamSess}}}|Rest], Mgr) ->
+    _P = check_upstream_async(TokenID, UpstreamMgr, UpstreamSess, Mgr),
+    check_active(Rest, Mgr).
+
+
+-spec check_upstream_async(
+    token_id(), manager_pid(), session_pid(), manager_pid()) -> pid().
+check_upstream_async(TokenID, RemoteManager, Session, Mgr) ->
+    F = fun() -> check_upstream(TokenID, RemoteManager, Session, Mgr) end,
+    spawn(F).
+
+-spec check_upstream(
+    token_id(), manager_pid(), session_pid(), manager_pid()) -> ok. 
+check_upstream(TokenID, RemoteManager, Session, Mgr) ->
     RemoteNode = node(RemoteManager),
     {UpstreamAssociated, Reason} =
         case RemoteNode of
@@ -640,7 +681,7 @@ check_upstream(TokenID, RemoteManager, Session) ->
                 [RemoteNode, TokenID, Reason]
             ),
             gen_server:cast(
-                ?MODULE,
+                Mgr,
                 {downstream_release, TokenID, {RemoteManager, Session}}
             )
     end.
@@ -654,6 +695,100 @@ check_upstream(TokenID, RemoteManager, Session) ->
 -ifdef(TEST).
 
 -include_lib("eunit/include/eunit.hrl").
+
+gc_test_() ->
+    {timeout, 60, fun gc_tester/0}.
+
+gc_tester() ->
+    {ok, Mgr1} = gen_server:start(?MODULE, [], []),
+    {ok, Mgr2} = gen_server:start(?MODULE, [], []),
+    {ok, Mgr3} = gen_server:start(?MODULE, [], []),
+    Req1 = requestor_fun(self(), <<"T1">>, Mgr1, [Mgr2, Mgr3]),
+    Req2 = requestor_fun(self(), <<"T2">>, Mgr2, [Mgr3]),
+    S1 = spawn(Req1),
+    timer:sleep(1),
+    S2 = spawn(Req2),
+    timer:sleep(1),
+    S3 = spawn(Req2),
+    F1 = fun() -> {1, 0, 1} == gen_server:call(Mgr1, stats) end,
+    F2 = fun() -> {2, 1, 2} == gen_server:call(Mgr2, stats) end,
+    F3 = fun() -> {2, 0, 0} == gen_server:call(Mgr3, stats) end,
+    wait_until(F1, 10, 1),
+    wait_until(F2, 10, 1),
+    wait_until(F3, 10, 1),
+    G1A = maps:to_list(gen_server:call(Mgr1, grants)),
+    G2A = maps:to_list(gen_server:call(Mgr2, grants)),
+    G3A = maps:to_list(gen_server:call(Mgr3, grants)),
+    ok = check_active(G1A, Mgr1),
+    ok = check_active(G2A, Mgr2),
+    ok = check_active(G3A, Mgr3),
+    ?assert(F1()),
+    ?assert(F2()),
+    ?assert(F3()),
+
+    timer:sleep(3 * ?SWEEP_DELAY),
+    State1 = sys:get_state(Mgr1),
+    ?assertMatch(1, sets:size(State1#state.last_sweep_grants)),
+    State2 = sys:get_state(Mgr2),
+    ?assertMatch(2, sets:size(State2#state.last_sweep_grants)),
+    State3 = sys:get_state(Mgr3),
+    ?assertMatch(2, sets:size(State3#state.last_sweep_grants)),
+
+    ?assert(F1()),
+    ?assert(F2()),
+    ?assert(F3()),
+
+    receive Gr1 -> ?assertMatch({granted, S1}, Gr1) end,
+    receive Gr2 -> ?assertMatch({granted, S2}, Gr2) end,
+    Mgr1 ! {'DOWN', self(), process, S1, inactive},
+    F1A = fun() -> {0, 0, 0} == gen_server:call(Mgr1, stats) end,
+    F2A = fun() -> {1, 1, 2} == gen_server:call(Mgr2, stats) end,
+    F3A = fun() -> {1, 0, 0} == gen_server:call(Mgr3, stats) end,
+    wait_until(F1A, 10, 1),
+    wait_until(F2A, 10, 1),
+    wait_until(F3A, 10, 1),
+    S1 ! terminate,
+    F1A(),
+    F2A(),
+    F3A(),
+    Mgr2 ! {'DOWN', self(), process, S2, inactive},
+    receive Gr3 -> ?assertMatch({granted, S3}, Gr3) end,
+    F2B = fun() -> {1, 0, 1} == gen_server:call(Mgr2, stats) end,
+    F3B = fun() -> {1, 0, 0} == gen_server:call(Mgr3, stats) end,
+    wait_until(F2B, 10, 1),
+    wait_until(F3B, 10, 1),
+    S2 ! terminate,
+    ?assert(receive _ -> false after 10 -> true end),
+    F2B(),
+    F3B(),
+    S3 ! terminate,
+    ?assert(receive _ -> false after 10 -> true end),
+    
+    gen_server:stop(Mgr1),
+    gen_server:stop(Mgr2),
+    gen_server:stop(Mgr3).
+
+already_dead_test() ->
+    {ok, Mgr1} = gen_server:start(?MODULE, [], []),
+    DeadPid1 = spawn(fun() -> ok end),
+    DeadPid2 = spawn(fun() -> ok end),
+    T1 = <<"T1">>,
+    VL = [],
+    ok = gen_server:cast(Mgr1, {request, T1, VL, DeadPid1}),
+    ok = gen_server:cast(Mgr1, {request, T1, VL, DeadPid2}),
+    F = fun() -> {0, 0, 0} == gen_server:call(Mgr1, stats) end,
+    ?assert(wait_until(F, ?SWEEP_DELAY div 2, 1)),
+    gen_server:stop(Mgr1).
+
+
+wait_until(F, Wait, _RetrySleep) when Wait =< 0 ->
+    F();
+wait_until(F, Wait, RetrySleep) ->
+    timer:sleep(RetrySleep),
+    case F() of
+        true -> true;
+        false -> wait_until(F, Wait - RetrySleep, RetrySleep)
+    end.
 
 manager_simple_test() ->
     {ok, Mgr1} = gen_server:start(?MODULE, [], []),

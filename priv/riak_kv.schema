@@ -596,7 +596,7 @@
 %% required in this mode).
 %%
 %% With basic_consensus, tokens can still be granted in a wide range of failure
-%% scenarios, but with a risk of duplicate grants, in aprticular should a
+%% scenarios, but with a risk of duplicate grants, in particular should a
 %% cluster be partitioned.
 %%
 %% No mode provides strict guarantees, including primary_consensus, especially

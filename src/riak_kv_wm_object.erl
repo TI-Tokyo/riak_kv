@@ -925,7 +925,6 @@ accept_doc_body(
                         GetOpts =
                             [
                                 {basic_quorum, true},
-                                {sloppy_quorum, true},
                                 {return_body, false},
                                 {deleted_vclock, true}
                             ],

@@ -312,8 +312,6 @@ process(
                 GetOpts =
                     make_options(
                         [
-                            {n_val, N_val},
-                            {sloppy_quorum, SloppyQuorum},
                             {basic_quorum, true},
                             {return_body, false},
                             {deleted_vclock, true}
@@ -333,7 +331,9 @@ process(
                         {ok, [{condition_check, Condition}], Token};
                     _ ->
                         ?LOG_WARNING(
-                            "Fallback to weak check as no token available"
+                            "Fallback to weak check as no token available "
+                            "for ~p ~p",
+                            [B, K]
                         ),
                         {CheckR, PutOpts} =
                             riak_kv_put_fsm:conditional_check(
@@ -346,7 +346,8 @@ process(
             {NotMod, NoneMatch, false, false} ->
                 GetOpts =
                     make_option(n_val, N_val) ++
-                    make_option(sloppy_quorum, SloppyQuorum),
+                    make_option(sloppy_quorum, SloppyQuorum) ++
+                    make_option(timeout, Timeout),
                 {CheckR, PutOpts} =
                     riak_kv_put_fsm:conditional_check(
                         riak_client:get(B, K, GetOpts, C),
