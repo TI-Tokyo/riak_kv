@@ -633,7 +633,7 @@ check_active([{_TokenID, {local, Session, _VL, _VC}}|Rest], Mgr) ->
         true ->
             check_active(Rest, Mgr);
         false ->
-            Mgr ! {'DOWN', self(), process, Session, inactive},
+            _NewRef = monitor(process, Session),
             check_active(Rest, Mgr)
     end;
 check_active([{TokenID, {upstream, {UpstreamMgr, UpstreamSess}}}|Rest], Mgr) ->
