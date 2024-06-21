@@ -18,59 +18,87 @@
 %%
 %% -------------------------------------------------------------------
 
-%% @doc Grant requests for tokens, if no other request is active.
+%% @doc Grant a requests for token, when no other request is active.
 %% 
-%% riak_kv_token_session process may request a grant.  The session process
-%% should monnitor the token_manager to which it makes a request, and fail with
-%% the failure of that token_manager.  A request may be granted immediately, or
-%% potentially queued to be granted when the token is next released.
+%% Every node in a Riak cluster is expecetd to have one, and only one
+%% riak_kv_token_manager.  Client actions requiring tokens, may start a
+%% riak_kv_token_session process on a node, and request a token from the local
+%% riak_kv_token_manager.  If a token is granted, the session may then be used
+%% to marhsall riak_client functions, under the "ownership" of that token.
 %% 
-%% The grant may be refused if the a previous token has been granted and now
-%% the preflist has changed - either the primary is new, or the downstreams are
-%% different.  In this case, the session should back-off and retry, once any
-%% tokens requested under different conditions have been released new tokens
-%% may be granted.
+%% A riak_kv_token_session process will cast a request for the grant of a given
+%% token, and await an async receive of either a `granted` or `refused` message
+%% in response.
 %% 
-%% This is to provide "stronger" but not "strong" consistency.  The aim is to
-%% have a system whereby in healthy clusters and in common failure scenarios
-%% tokens can be requested without conflict - in the first case to allow for
-%% conditional logic on PUTs to be reliable in these circumstances.
+%% Tokens may be a {Bucket, Key} pair, a {{Type, Bucket}, Key} tuple or a
+%% {token, TokenName} tuple where TokenName is any binary name. 
+%% 
+%% The session process should monitor the token_manager to which it makes a
+%% request, and fail itself on the failure of that token_manager.  Requests
+%% should only be made from local session (i.e. a remote process should start
+%% a local session to make the request).  The session process should close as
+%% soon as the token is no longer required, or otherwise on a timeout.  The
+%% token manager will monitor the session pid and release the grant on closure
+%% of the session for any reason.  Sessions which never end, will never have
+%% their grants released.
+%% 
+%% A request may be granted immediately, if the token is available. If the
+%% token is not available, then the response may be deferred and the request
+%% queued, to be granted when the holding session is released (as well as any
+%% session requests queued earlier).  The queue if FIFO.
+%% 
+%% A request may optionally pass a "verify list", a list of nodes with whom the
+%% request should be confirmed before granting.  Within riak the verify list is
+%% aligned with the preflist, of the token key being requested (i.e. it is the
+%% list of nodes associated with the vnodes in the preflist).  If a verify list
+%% is present those "downstream" token managers should confirm that they have
+%% not granted the token before the `granted` message is returned (and record
+%% the existence of the upstream grant in their map of grants).  Confirmation
+%% is achieved through the passing of async downstream check/reply messages.
+%% 
+%% Not passing a consistent verify list for token requests will increase the
+%% number of failure scenarios where duplicate tokens could be concurrently
+%% granted within the cluster - but reduce the latency and cost of granting a
+%% token.
+%% 
+%% The grant may be refused immediately, rather than queued, if a previous
+%% token has been granted but to a different verify list.  In this case, the
+%% session should back-off and retry.  Once any tokens requested under
+%% different conditions have been released new tokens under the changed
+%% conditions may be granted.  A grant will always be refused immediately if
+%% a grant for that token is active upstream.
+%% 
+%% When a request is de-queued, it bypasses the wait to confirm downstream
+%% nodes do not have a grant (given that they already confirmed for the grant
+%% made at the head of the queue).  A downstream renew is sent in the
+%% background, rather than the downstream check message (and a renew message
+%% does not require a reply).
+%% 
+%% Each Token Manager should monitor every Token Manager from which it
+%% receives a downstream check.  If a remote token manager goes down, then all
+%% notifications of upstream grants associated with that manager should be
+%% cleared.
+%% 
+%% The token manager monitors every local token session to which it grants a
+%% token, and on receipt of a 'DOWN' notification, it will clear the grant (or
+%% queued request) and association for that session - and inform the verify
+%% list of managers using a downstream release message.
+%% 
+%% This overall mechanism is to provide "stronger" but not "strong"
+%% consistency.  The aim is to have a sub-system whereby in healthy clusters
+%% and in common failure scenarios tokens can be requested without conflict -
+%% in the first case to allow for conditional logic on PUTs to detect conflict
+%% with greater reliability.
 %% 
 %% It is accepted that there will be partition scenarios, and scenarios where
 %% rapid changes in up/down state where guarantees cannot be met. The intention
 %% is that eventual consistency will be the fallback.  The application/operator
 %% may have to deal with siblings to protect against data loss - but the
-%% frequency with which those siblings occur should be manageable.
+%% frequency with which those siblings occur can be reduced through the use of
+%% these tokens.
 %% 
-%% The riak_kv_token_manager is intended to work in conjunction with
-%% riak_kv_token_session processes.  Each node should have a single
-%% riak_kv_token_manager.  When a token is requested the request will be made
-%% by a riak_kv_token_session process, and the token is granted to that
-%% process.  The session identifier may be returned to the requester (not the
-%% token).  The identifier can then be used to route riak_client commands to
-%% the session process, and each command will prompt the renewal of the token.
-%% 
-%% The session process exists to manage a single session, the lifecycle of a
-%% single grant.
-%% 
-%% In every situation, the riak_kv_token_manager granting the token, and the
-%% riak_kv_token_session process requesting the token must be on the same node.
-%% 
-%% The riak_kv_token_manager process should be monitored by each
-%% riak_kv_token_session process which has requested a token, or been granted a
-%% token - and the riak_kv_token_session process should terminate if the
-%% riak_kv_token_manager should go down.  The riak_kv_token_manager will
-%% monitor every riak_kv_token_session process to which it has made a grant,
-%% and release that grant on the process terminating for any reason.  
-%% 
-%% The riak_kv_token_manager has no awareness of other nodes in the cluster.
-%% The riak_kv_token_session request logic should be aware of which
-%% riak_kv_token_manager is responsible for granting a given token.  In Riak
-%% this is done using the preflist based on the hash of the token key.  The
-%% node at the head of the peflist is the node responsible for granting that
-%% token.  The next two nodes in the preflist (that are UP), are responsible
-%% for verifying that the grant can be made (i.e. to confirm that they have not
-%% granted a token while the head node was recently unavailable).  
+%% The wnd-to-end system (Riak) is still intended to be a used as an eventually
+%% consistent database.
 
 -module(riak_kv_token_manager).
 
@@ -158,6 +186,14 @@ request_token(TokenID, VerifyList) ->
     gen_server:cast(
         ?MODULE, {request, TokenID, VerifyList, self()}). 
 
+%% @doc associated/1
+%% Confirms if this token manager has an association with the PID of a session.
+%% Associations are kept for local sessions only (where this manager has
+%% granted the token)
+%% 
+%% Associated check used by a session process before calls to use the session
+%% to confirm that the session is still active, and also by downstream token
+%% managers to confirm that lingering upstream sessions are still active.
 -spec associated(session_pid()) -> ok.
 associated(SessionPid) ->
     gen_server:cast(?MODULE, {associated, SessionPid, self()}).
