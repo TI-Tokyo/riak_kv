@@ -234,12 +234,9 @@ head(Bucket, Key, #state{bookie=Bookie}=State) ->
     end.
 
 %% @doc Insert an object into the leveled backend.
--type index_spec() :: {add, Index, SecondaryKey} |
-                        {remove, Index, SecondaryKey}.
-
 -spec flush_put(riak_object:bucket(),
                     riak_object:key(),
-                    [index_spec()],
+                    [riak_object:index_spec()],
                     binary(),
                     state()) ->
                          {ok, state()} |
@@ -250,7 +247,7 @@ flush_put(Bucket, Key, IndexSpecs, Val, State) ->
 
 -spec put(riak_object:bucket(),
                     riak_object:key(),
-                    [index_spec()],
+                    [riak_object:index_spec()],
                     binary(),
                     state()) ->
                          {ok, state()} |
@@ -262,7 +259,7 @@ put(Bucket, Key, IndexSpecs, Val, State) ->
 %% @doc Delete an object from the leveled backend
 -spec delete(riak_object:bucket(),
                 riak_object:key(),
-                [index_spec()],
+                [riak_object:index_spec()],
                 state()) ->
                     {ok, state()} |
                     {error, term(), state()}.
@@ -671,10 +668,10 @@ callback(Ref, UnexpectedCallback, State) ->
 %% ===================================================================
 %% Internal functions
 %% ===================================================================
-
+-type regex() :: {re_pattern, term(), term(), term(), term()}|undefined.
 
 -spec dollarkey_foldfun(
-    riak_kv_backend:fold_keys_fun(), boolean(), re:mp()|undefined)
+    riak_kv_backend:fold_keys_fun(), boolean(), regex())
         -> riak_kv_backend:fold_objects_fun().
 dollarkey_foldfun(FoldKeysFun, ReadTombs, TermRegex) ->
     FilteredFoldKeysFun =
@@ -738,7 +735,7 @@ log_fragmentation(Allocator) ->
 %% flush_put or put has been called
 -spec do_put(riak_object:bucket(),
                     riak_object:key(),
-                    [index_spec()],
+                    [riak_object:index_spec()],
                     binary(),
                     boolean(),
                     state()) ->
