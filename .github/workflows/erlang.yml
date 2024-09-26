@@ -12,7 +12,6 @@ on:
       - nhse-develop-3.2
       - nhse-develop-3.4
 
-
 jobs:
 
   build:
