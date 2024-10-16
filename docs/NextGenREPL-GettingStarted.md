@@ -360,11 +360,15 @@ The `all_check` can be replaced with `hour_check`, `day_check` or `range_check` 
 If there is sufficient capacity to resolve a delta between clusters, but the current schedule is taking too long to resolve - the max_results and range_boost settings on a given node can be overridden.
 
 ```
-application:set_env(riak_kv, ttaaefs_maxresults, 256).
+application:set_env(riak_kv, ttaaefs_maxresults, 64).
 application:set_env(riak_kv, ttaaefs_rangeboost, 16).
 ```
 
 Individual repair queries will do more work as these numbers are increased, but will repair more keys per cycle.  This can be used along with prompted checks (especially range checks) to rapidly resolve a delta.
+
+The fetching of keys and clocks will require a scan across the key-store, which is divided into blocks of roughly 24 keys, where every block has a potentially-cached array of 15-bit hashes, one hash for each key in the block.  The hashes used in this array is 15 sub-bits of the segment ID for the key, so if none of the hashes match any of the segment IDs the block does not need to be read from disk - and reading a block has a relatively significant CPU cost (to decompress and deserialise the block).  Doubling the max results, will double the number of blocks that need to be read and deserialised, and double the number of keys and clocks to be compared, but other factors in the scan (such as the number of hash comaprisons) will remain roughly constant.  The actual impact of tuning this value is context-specific.
+
+It should be noted, that if the number of segment IDs being checked goes significantly over 1000, then the number of blocks that can be skipped will start to tend towards zero.  So the combined value of maxresults * rangeboost should generlaly be kept to a value less than or equal to 1024.
 
 #### Overriding the range
 
