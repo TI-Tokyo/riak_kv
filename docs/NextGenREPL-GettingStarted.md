@@ -39,7 +39,7 @@ A Sink cluster, one receiving replication events, must have sink workers configu
 
 Configuring and enabling source queues and sink workers is sufficient to enable real-time replication.  Other replication features (such as full-sync reconciliation) depend on the queues and workers to operate, but require additional configuration.
 
-## Concepts - Generating Replication References
+## Concepts - Replication References
 
 A replication reference is the entity queued to represent an event which has been prompted for replication.  The reference may be the actual object itself, or a reference to it - the queue will automatically switch to using references not objects as the queue expands.  Where a reference is a proxy for a replicated object, when the object is fetched by the sink worker, the fetch API will automatically return the object from the database i.e. this conversion is managed behind the API on the source.
 
@@ -244,13 +244,15 @@ ttaaefs_allcheck.policy = always
 
 There are two stages to the key comparison - the tree comparison, and the key comparison.  When using `ttaaefs_scope = all` the tree comparison is always for the whole keyspace.  The `ttaaefs_*check` will determine the scope of the subsequent key comparison in terms of the modified date range.
 
-The schedule od `ttaaefs_*check`s is how many times each 24 hour period to run a check of the defined type - on this node for its peer relationship.  The schedule is re-shuffled at random each day, and simple offsets are used to space out requests between nodes.  It is recommended that only `ttaaefs_autocheck` be used in schedules by default, `ttaaefs_autocheck` is an adaptive check designed to be efficient in a variety of scenarios.  The other checks should only be used if there is specific test evidence to demonstrate that they are more efficient.
+The schedule of `ttaaefs_<sync_type>check`s is how many times each 24 hour period to run a check of the defined type - on this node for its peer relationship.  The schedule is re-shuffled at random each day, and simple offsets are used to space out requests between nodes.  It is recommended that only `ttaaefs_autocheck` be used in schedules by default, `ttaaefs_autocheck` is an adaptive check designed to be efficient in a variety of scenarios.  The other checks should only be used if there is specific test evidence to demonstrate that they are more efficient.
 
 When using `ttaaefs_autocheck` with a scope of `all` every comparison is between the whole key-space using the cached aae trees at the first stage.  This should be fast (< 10s).  When running this between healthy clusters this should result in `{root_compare, 0}` as a result (and occasionally `{branch_compare, 0}` when there are short-lived deltas). If a delta between the trees is confirmed, and the last check was successful, the check will attempt to only compare keys and values (as represented by vector clocks) that were last modified since the previous check - this is much quicker than comparing all keys.  Normally it would be expected that the issue discovered in this case is between recently modified keys.  The tree comparison will discover the tree segments where there is a delta (up to max_results segments) but then only the recently modified keys in those segments are compared.  This will repair the delta slowly, but efficiently.
 
 There may be circumstances when non-recent deltas have been uncovered.  It may be that historic data appears to have been lost (perhaps due to resurrection of old data on a remote cluster), or a disk corruption has just been detected following a tree rebuild.  In these cases the exchange will result in `{clock_compare, 0}` - a tree delta was discovered, but not key deltas given the range limit.  This node will then be set to check all keys on its next run.  When it next checks all keys, it will use the high/low modified date range discovered in future checks.  Running key comparisons across all buckets and over all time is expensive, even when restricting the segments using max_results.  So the `autocheck` full-sync process will always look to learn clues about where (in terms of bucket, or modified range) the delta exists to make this more efficient.
 
-The `all`, `day` and `hour` check's restrict the modified date range used in the full-sync comparison to all time, the past day or the past hour.  the `ttaaefs_rangecheck` uses information gained from previous queries to dynamically determine in which modified time range a problem may have occurred (and when the previous check was successful it assumes any delta must have occurred since that previous check).  The `ttaaefs_allcheck` is an adaptive check, which based on the previous checks and the `ttaaefs_allcheck.window`, will determine algorithmically whether it is best to run a `ttaaefs_allcheck`, a `ttaaefs_daycheck`, a `ttaaefs_rangecheck` or `ttaaefs_nocheck`.
+It is possible to restrict the escalation to chekcing all keys, so that it will only occur if the time is in an off-peak window - outside of the window, the escalation will simply be to a `ttaaefs_daycheck`.  Use of `ttaaefs_allcheck.policy = window` is discouraged, as the results are potentially confusing to any operator wihtout detailed knowledge of how full-sync works.  The window option is likely to be removed in a future release.
+
+The `all`, `day` and `hour` check's restrict the modified date range used in the full-sync comparison to all time, the past day or the past hour.  the `ttaaefs_rangecheck` uses information gained from previous queries to dynamically determine in which modified time range a problem may have occurred (and when the previous check was successful it assumes any delta must have occurred since that previous check).
 
 It is normally preferable to under-configure the schedule.  When over-configuring the schedule, i.e. setting too much repair work than capacity of the cluster allows, there are protections to queue those schedule items there is no capacity to serve, and proactively cancel items once the manager falls behind in the schedule.  However, those cancellations will reset range_checks and so may delay the overall time to recover.
 
@@ -260,13 +262,13 @@ It is possible to enhance the speed of recovery when there is capacity by manual
 
 In a cluster with 1bn keys, under a steady load including 2K PUTs per second, relative timings to complete different sync checks (assuming there exists a delta):
 
-- all_sync 150s - 200s;
+- all_check 150s - 200s;
 
-- day_sync 20s - 30s;
+- day_check 20s - 30s;
 
-- hour_sync 2s - 5s;
+- hour_check 2s - 5s;
 
-- range_sync (depends on how recent the low point in the modified range is).
+- range_check (depends on how recent the low point in the modified range is).
 
 Timings will vary depending on the total number of keys in the cluster, the rate of changes, the size of the delta and the precise hardware used.  Full-sync repairs tend to be relatively demanding of CPU (rather than disk I/O), so available CPU capacity is important.
 
@@ -274,24 +276,23 @@ The `ttaaefs_queuename` is the name of the queue on this node, to which deltas s
 
 If there are 24 sync events scheduled a day, and default `ttaaefs_maxresults` and `ttaaefs_rangeboost` settings are used, and an 8-node cluster is in use - repairs via ttaaefs full-sync will happen at a rate of about 100K per day.  It is therefore expected that where a large delta emerges it may be necessary to schedule a `range_repl` fold, or intervene to raise the `ttaaefs_rangeboost` to speed up the closing of the delta.
 
-To help space out queries between clusters - i.e. stop two clusters with identical schedules from mutual full-syncs at the same time - each cluster may be configured with `ttaaefs_cluster_slice` number between 1 and 4.
+To help space out queries between clusters - i.e. stop two clusters with identical schedules from mutual full-syncs at the same time - each cluster may be configured with `ttaaefs_cluster_slice` number between 1 and 4.  Give each cluster a unique number, and use that same slice number on every node.
 
-### Per-bucket Full-Sync Reconciliation and Replication
+### Configure Full-Sync Reconciliation and Replication (Per-Bucket)
 
 The `ttaaefs_scope` can be set to a specific bucket.  The non-functional characteristics of the solution change when using per-bucket full-sync.  There is no per-bucket caching of AAE trees, so the AAE trees will need to be re-calculated by scanning the whole bucket for every full-sync check (subject to other restrictions on check type).  So the cost of checking full-sync for an individual bucket in happy-day scenarios is considerbaly higher than using a scope of `all`.  When deltas are discovered in trees, the scanning required to compare keys and clocks will be limited to the bucket, and so this may be faster.
 
-The rules of the `ttaaefs_*check` configuration are followed with per-bucket synchronisation.  So using `ttaaefs_autocheck` when a previous check succeeded will scan only recently modified items to build the tree for comparison.  This does mean that non-recently modified variations within the bucket (such as resurrected objects or tombstones) will not be detected by `ttaaefs_autocheck` as when `ttaaefs_Scope = all`.  When using per-bucket full-sync, it may be wise to occassionally schedule a `ttaaefs_allcheck` to cover this scenario.
+The rules of the `ttaaefs_<sync_type>check` configuration are followed with per-bucket synchronisation.  So using `ttaaefs_autocheck` when a previous check succeeded will scan only recently modified items to build the tree for comparison.  This does mean that non-recently modified variations within the bucket (such as resurrected objects or tombstones) will not be detected by `ttaaefs_autocheck` as when `ttaaefs_scope = all`.  When using per-bucket full-sync, it may be wise to occassionally schedule a `ttaaefs_allcheck` to cover this scenario.
 
-It scheduling a `ttaaefs_allcheck` ,it is possible to set a window to for the `ttaaefs_allcheck` to be run in, in order to prevent the check from occurring in peak hours:
+Note that a scheduled run of an `ttaaefs_allcheck` will occur regardless of whether the current time is within or outside of the allcheck.window.  The window is related only to the running of `ttaaefs_autocheck` and it limits the `ttaaefs_autocheck` so that it can only being uplifted to a `ttaaefs_allcheck` within the window, outside of the window it will only be ` ttaaefs_daycheck`.
+
+When using per-bucket full-sync, and performing a rolling upgrade ro Riak 3.2.3 or 3.4.0, there may be errors merging buckets.  To prevent these errors during the rolling upgrade, then either disable full-sync for the period of the upgrade, or use the configuration option to force the new nodes to use legacy format trees:
 
 ```
-ttaaefs_allcheck = 1
-ttaaefs_allcheck.policy = window
-ttaaefs_allcheck.window.start = 22
-ttaaefs_allcheck.window.end = 4
+legacyformat_tictacaae_tree = enabled
 ```
 
-This will schedule a single allcheck per day, but insure that this check will only occur between 22:00 and 04:59.
+There are significant memory improvements related ot the new tree format, so the configuration should be reversed after the rolling upgrade has completed.  There are no inter-cluster issues with tree versions, it is only an issue when merging trees within a cluster.
 
 ### Replication API
 
@@ -524,3 +525,19 @@ riak_kv_ttaaefs_manager:resume()
 ```
 
 These run-time changes are relevant to the local node only and its peer relationships.  The node may still participate in full-sync operations prompted by a remote cluster even when full-sync is paused locally.
+
+#### Trigger Tree Repairs
+
+When an `all_check` is prompted due to a `{clock_compare, 0}` result, there are two scenarios:
+- the cached trees differ but the differences lie outside the previous range;
+- the cached trees differ due to a bad tree cache, and there are no actual differences.
+
+For the second case, it is necessary to repair the trees, so when an `all_check` is triggered it will also prompt for trees to be repaired on this node (for the identified mismatched segments only) then next time there is a keys and clocks fetch.  The triggering should have a log of:
+
+`Setting node to repair trees as unsync'd all_check had no repairs - count of triggered repairs for this node is ~w`
+
+The triggering of tree repairs increases the cost of the fetching of keys and clocks.  Each trigger is coordinated so that it is only fired once and once only (per trigger event) on each vnode.  Usually there is a single vnode with a bad tree cache, but it may take a full cycle of checks for the trigger to be enbaled and enacted on the correct node.
+
+Normally bad caches are a result of a tree rebuilds.  It such triggered repairs are required frequently, consider reducing the frequency of aae tree cache rebuilds:
+
+`tictacaae_rebuildwait = 1344` - increases the wait between rebuilds to 1344 hours (8 weeks).
