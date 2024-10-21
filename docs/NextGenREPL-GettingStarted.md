@@ -526,6 +526,12 @@ riak_kv_ttaaefs_manager:resume()
 
 These run-time changes are relevant to the local node only and its peer relationships.  The node may still participate in full-sync operations prompted by a remote cluster even when full-sync is paused locally.
 
+When using auto-checks it also possible to suppress a fixed number of checks.  By default if there are timeouts on queries, the full-sync manager will assume there is excess pressure in the system and enable auto_check_suppress automatically.  This will disable the next two auto-checks.
+
+This can be triggered manually from remote_console `riak_kv_ttaaefs_manager:autocheck_suppress()`.
+
+To change the count of checks for which the suppression is enabled, either alter then environment variable `application:set_env(riak_kv, ttaaefs_autocheck_suppress_count, 4)` or when manually using suppression the count can be specified i.e. `riak_kv_ttaaefs_manager:autocheck_suppress(4)`.
+
 #### Trigger Tree Repairs
 
 When an `all_check` is prompted due to a `{clock_compare, 0}` result, there are two scenarios:
@@ -536,8 +542,13 @@ For the second case, it is necessary to repair the trees, so when an `all_check`
 
 `Setting node to repair trees as unsync'd all_check had no repairs - count of triggered repairs for this node is ~w`
 
-The triggering of tree repairs increases the cost of the fetching of keys and clocks.  Each trigger is coordinated so that it is only fired once and once only (per trigger event) on each vnode.  Usually there is a single vnode with a bad tree cache, but it may take a full cycle of checks for the trigger to be enbaled and enacted on the correct node.
+The triggering of tree repairs increases the cost of the fetching of keys and clocks.  Each trigger is coordinated so that it is only fired once and once only (per trigger event) on each vnode.  Usually there is a single vnode with a bad tree cache, but it may take a full cycle of checks for the trigger to be enbaled and enacted on the correct node.  This assumes that full-sync is bi-directional and configured across all nodes, so eventually each node will see the bad state and trigger the repair mode.  If this isn't the case manual intervention may be required.  
 
-Normally bad caches are a result of a tree rebuilds.  It such triggered repairs are required frequently, consider reducing the frequency of aae tree cache rebuilds:
+To force a node to enter into the tree repair state, then the following functions can be called via `remote_console`.
 
-`tictacaae_rebuildwait = 1344` - increases the wait between rebuilds to 1344 hours (8 weeks).
+```
+riak_kv_ttaaefs_manager:trigger_tree_repairs() % Trigger tree repairs on this node
+riak_kv_ttaaefs_manager:disable_tree_repairs() % Reverse
+```
+
+Normally bad caches are a result of a tree rebuilds.  It such triggered repairs are required frequently, consider reducing the frequency of aae tree cache rebuilds: `tictacaae_rebuildwait = 1344` - increases the wait between rebuilds to 1344 hours (8 weeks).
