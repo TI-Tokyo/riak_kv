@@ -899,14 +899,17 @@ log_mapfun({QueueName, Iteration, SinkWork}) ->
         {replmod_time, RT},
         {modified_time, MTS, MTM, MTH, MTD, MTL}}
         = SinkWork#sink_work.queue_stats,
-    ?LOG_INFO("Queue=~w success_count=~w error_count=~w" ++
-                " mean_fetchtime_ms=~s" ++
-                " mean_pushtime_ms=~s" ++
-                " mean_repltime_ms=~s" ++
-                " lmdin_s=~w lmdin_m=~w lmdin_h=~w lmdin_d=~w lmd_over=~w",
-                [QueueName, SC, EC,
-                    calc_mean(FT, SC), calc_mean(PT, SC), calc_mean(RT, SC),
-                    MTS, MTM, MTH, MTD, MTL]),
+    ?LOG_INFO(
+        "Queue=~w success_count=~w error_count=~w"
+        " mean_fetchtime_ms=~s mean_pushtime_ms=~s mean_repltime_ms=~s"
+        " lmdin_s=~w lmdin_m=~w lmdin_h=~w lmdin_d=~w lmd_over=~w",
+        [
+            QueueName, SC, EC,
+            calc_mean(FT, SC), calc_mean(PT, SC), calc_mean(RT, SC),
+            MTS, MTM, MTH, MTD, MTL
+        ],
+        #{log_type => metric}
+    ),
     FoldPeerInfoFun =
         fun({_PeerID, D, IP, Port, _P}, Acc) ->
             Acc ++ lists:flatten(io_lib:format(" ~s:~w=~w", [IP, Port, D]))

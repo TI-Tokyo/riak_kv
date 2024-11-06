@@ -1231,18 +1231,21 @@ handle_command(tictacaae_exchangepoke, _Sender, State) ->
             % This is normal.  On subsequent runs we expected to see expected
             % and complete to be aligned (and the loop duration with be about
             % expected * tictacaae_exchangetick).
-            ?LOG_INFO("Tictac AAE loop completed for partition=~w with "
-                            ++ "exchanges expected=~w "
-                            ++ "exchanges completed=~w "
-                            ++ "total deltas=~w "
-                            ++ "total exchange_time=~w seconds "
-                            ++ "loop duration=~w seconds (elapsed)",
-                        [Idx,
-                            length(Exchanges),
-                            State#state.tictac_exchangecount,
-                            State#state.tictac_deltacount,
-                            State#state.tictac_exchangetime div (1000 * 1000),
-                            LoopDuration div (1000 * 1000)]),
+            ?LOG_INFO(
+                "Tictac AAE loop completed for partition=~w with "
+                "exchanges expected=~w exchanges completed=~w "
+                "total deltas=~w total exchange_time=~w seconds "
+                "loop duration=~w seconds (elapsed)",
+                [
+                    Idx,
+                    length(Exchanges),
+                    State#state.tictac_exchangecount,
+                    State#state.tictac_deltacount,
+                    State#state.tictac_exchangetime div (1000 * 1000),
+                    LoopDuration div (1000 * 1000)
+                ],
+                #{log_type => metric}
+            ),
             {noreply, State#state{tictac_exchangequeue =
                                         riak_kv_util:shuffle_list(Exchanges),
                                     tictac_exchangecount = 0,

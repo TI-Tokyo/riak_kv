@@ -133,7 +133,9 @@ log(Type, JobID, Attempts, Aborts, Queue) ->
                 QueueLengths,
                 OverflowLengths,
                 DiscardCounts]),
-        [Type, JobID, Attempts, Aborts]),
+        [Type, JobID, Attempts, Aborts],
+        #{log_type => metric}
+    ),
     
     ResetDiscards =
         lists:map(fun({P, _L}) -> {P, 0} end,

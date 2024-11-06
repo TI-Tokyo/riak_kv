@@ -640,8 +640,11 @@ handle_info(log_queue, State) ->
                 lists:map(
                     MapFun,
                     [?FLD_PRIORITY, ?AAE_PRIORITY, ?RTQ_PRIORITY]),
-            ?LOG_INFO("QueueName=~w has queue sizes p1=~w p2=~w p3=~w",
-                [QueueName, P1L, P2L, P3L])
+            ?LOG_INFO(
+                "QueueName=~w has queue sizes p1=~w p2=~w p3=~w",
+                [QueueName, P1L, P2L, P3L],
+                #{log_type => metric}
+            )
         end,
     lists:foreach(LogFun, State#state.queue_filtermap),
     erlang:send_after(State#state.log_frequency_in_ms, self(), log_queue),
