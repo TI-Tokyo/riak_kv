@@ -36,6 +36,7 @@
          cluster_info/1,
          down/1,
          aae_status/1,
+         aae_progress_report/1,
          repair_2i/1,
          reformat_indexes/1,
          reformat_objects/1,
@@ -344,6 +345,9 @@ aae_status([]) ->
     aae_tree_status(TreeInfo),
     io:format("~n"),
     aae_repair_status(ExchangeInfo).
+
+aae_progress_report([]) ->
+    riak_kv_aae_progress_report:print().
 
 aae_exchange_status(ExchangeInfo) ->
     io:format("~s~n", [string:centre(" Exchanges ", 79, $=)]),
