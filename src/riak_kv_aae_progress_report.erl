@@ -46,7 +46,14 @@ produce() ->
 produce(Timeout) ->
     produce(Timeout, Timeout, Timeout, Timeout).
 
-produce(TimeoutGetVNodes,
+produce(T1, T2, T3, T4) ->
+    case application:get_env(riak_kv, tictacaae_active) of
+        {ok, active} ->
+            {ok, produce2(T1, T2, T3, T4)};
+        _ ->
+            {error, tictacaae_not_active}
+    end.
+produce2(TimeoutGetVNodes,
         TimeoutGetAAEControllerState,
         TimeoutGetKeyStoreState,
         TimeoutGetTreeCacheState) ->
@@ -99,8 +106,14 @@ produce(TimeoutGetVNodes,
 print() ->
     print([{omit, "built"}]).
 print(Options) ->
+    case produce() of
+        {ok, AA} ->
+            print2(AA, Options);
+        {error, tictacaae_not_active} ->
+            io:format("tictacaae_active is set to passive\n")
+    end.
+print2(AA, Options) ->
     Omit = proplists:get_value(omit, Options, "nothing"),
-    AA = produce(),
     io:format("~22s  ~52s  ~10s  ~21s  ~5s  ~10s  ~21s  ~15s\n", ["Node Name", "Partition ID", "Status", "Last Rebuild Date", "Delay", "Wait", "Next Rebuild Date", "Controller PID"]),
     io:format("~22s  ~52s  ~10s  ~21s  ~5s  ~10s  ~21s  ~15s\n", ["----------------------", "----------------------------------------------------", "----------", "---------------------", "-----", "----------", "---------------------", "----------------"]),
     [begin
