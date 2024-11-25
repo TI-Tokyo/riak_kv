@@ -44,7 +44,8 @@
          bucket_type_create/1,
          bucket_type_update/1,
          bucket_type_reset/1,
-         bucket_type_list/1]).
+         bucket_type_list/1,
+         aae_progress_report/1]).
 
 -export([ensemble_status/1]).
 
@@ -843,3 +844,7 @@ bucket_error_xlate({Property, Error}) ->
     [atom_to_list(Property), ": ", io_lib:format("~p", [Error])];
 bucket_error_xlate(X) ->
     io_lib:format("~p", [X]).
+
+
+aae_progress_report([]) ->
+    riak_kv_aae_progress_report:print().
