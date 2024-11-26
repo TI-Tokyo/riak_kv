@@ -78,8 +78,8 @@ produce2(TimeoutGetVNodes,
                                          not_running
                                  end,
          {_, KeyStoreState} = sys:get_state(KeyStore, TimeoutGetKeyStoreState),
-         %% in 2.9.10 and 3.0.x, last_rebuild is at pos 11; in 3.2.x, it is 12
-         LastRebuild = case element(11, KeyStoreState) of
+         %% in 2.9.10 last_rebuild is at pos 11; in 3.2.x, it is 12
+         LastRebuild = case element(12, KeyStoreState) of
                            never ->
                                never;
                            TS ->
