@@ -104,7 +104,7 @@ produce2(TimeoutGetVNodes,
      end || {Idx, VNState} <- VVSS].
 
 print() ->
-    print(["--show=built"]).
+    print(["--show=all"]).
 print(Options) ->
     case produce() of
         {ok, AA} ->
@@ -113,7 +113,7 @@ print(Options) ->
             io:format("tictacaae_active is set to passive\n")
     end.
 print2(AA, Options) ->
-    Show = parse_options(Options),
+    Show = proplists:get_value(show, parse_options(Options, []), ["unbuilt", "rebuilding", "building"]),
     io:format("~22s  ~52s  ~10s  ~21s  ~5s  ~10s  ~21s  ~15s\n", ["Node Name", "Partition ID", "Status", "Last Rebuild Date", "Delay", "Wait", "Next Rebuild Date", "Controller PID"]),
     io:format("~22s  ~52s  ~10s  ~21s  ~5s  ~10s  ~21s  ~15s\n", ["----------------------", "----------------------------------------------------", "----------", "---------------------", "-----", "----------", "---------------------", "----------------"]),
     [begin
@@ -159,12 +159,17 @@ print2(AA, Options) ->
      end || M <- AA],
     ok.
 
-parse_options(Str) ->
+parse_options([], Q) ->
+    Q;
+parse_options([Str|Rest], Q) ->
     case string:tokens(Str, "=") of
         ["--show", "all"] ->
-	    ["unbuilt", "built", "rebuilding", "building"];
+	    O = {show, ["unbuilt", "built", "rebuilding", "building"]},
+	    parse_options(Rest, [O | Q]);
         ["--show", What] ->
-            string:tokens(What, ",");
+            O = {show, string:tokens(What, ",")},
+	    parse_options(Rest, [O | Q]);
         _ ->
-            []
+            io:format("Unrecognised option ~s\n", [Str]),
+            parse_options(Rest, Q)
     end.
