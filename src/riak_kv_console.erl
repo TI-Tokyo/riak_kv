@@ -346,9 +346,6 @@ aae_status([]) ->
     io:format("~n"),
     aae_repair_status(ExchangeInfo).
 
-aae_progress_report([]) ->
-    riak_kv_aae_progress_report:print().
-
 aae_exchange_status(ExchangeInfo) ->
     io:format("~s~n", [string:centre(" Exchanges ", 79, $=)]),
     io:format("~-49s  ~-12s  ~-12s~n", ["Index", "Last (ago)", "All (ago)"]),
