@@ -709,6 +709,11 @@ ensemble_status([Str]) ->
             riak_kv_ensemble_console:ensemble_detail(N)
     end.
 
+
+aae_progress_report(Options) ->
+    riak_kv_aae_progress_report:print(Options).
+
+
 %%%===================================================================
 %%% Private
 %%%===================================================================
@@ -844,7 +849,3 @@ bucket_error_xlate({Property, Error}) ->
     [atom_to_list(Property), ": ", io_lib:format("~p", [Error])];
 bucket_error_xlate(X) ->
     io_lib:format("~p", [X]).
-
-
-aae_progress_report([]) ->
-    riak_kv_aae_progress_report:print().
