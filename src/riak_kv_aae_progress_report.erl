@@ -104,7 +104,7 @@ produce2(TimeoutGetVNodes,
      end || {Idx, VNState} <- VVSS].
 
 print() ->
-    print([{omit, "built"}]).
+    print(["--show=built"]).
 print(Options) ->
     case produce() of
         {ok, AA} ->
@@ -113,7 +113,7 @@ print(Options) ->
             io:format("tictacaae_active is set to passive\n")
     end.
 print2(AA, Options) ->
-    Omit = proplists:get_value(omit, Options, "nothing"),
+    Show = parse_options(Options),
     io:format("~22s  ~52s  ~10s  ~21s  ~5s  ~10s  ~21s  ~15s\n", ["Node Name", "Partition ID", "Status", "Last Rebuild Date", "Delay", "Wait", "Next Rebuild Date", "Controller PID"]),
     io:format("~22s  ~52s  ~10s  ~21s  ~5s  ~10s  ~21s  ~15s\n", ["----------------------", "----------------------------------------------------", "----------", "---------------------", "-----", "----------", "---------------------", "----------------"]),
     [begin
@@ -150,10 +150,21 @@ print2(AA, Options) ->
                  {never, true, _} ->
                      "building"
              end,
-         if Status /= Omit ->
+         case lists:member(Status, Show) of
+	     true ->
                  io:format("~22s  ~52b  ~10s  ~21s  ~5b  ~10b  ~21s  ~15s\n", [ControllerNodeName, Idx, Status, LastRebuildDate, RebuildWait, RebuildDelay, NextRebuildDate, pid_to_list(ControllerPid)]);
-            el/=se ->
+             false ->
                  skip
          end
      end || M <- AA],
     ok.
+
+parse_options(Str) ->
+    case string:tokens(Str, "=") of
+        ["--show", "all"] ->
+	    ["unbuilt", "built", "rebuilding", "building"];
+        ["--show", What] ->
+            string:tokens(What, ",");
+        _ ->
+            []
+    end.

@@ -749,6 +749,11 @@ ensemble_status([Str]) ->
             riak_kv_ensemble_console:ensemble_detail(N)
     end.
 
+
+aae_progress_report(Options) ->
+    riak_kv_aae_progress_report:print(Options).
+
+
 %%%===================================================================
 %%% Private
 %%%===================================================================
