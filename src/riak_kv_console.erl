@@ -45,7 +45,9 @@
          bucket_type_create/1,
          bucket_type_update/1,
          bucket_type_reset/1,
-         bucket_type_list/1]).
+         bucket_type_list/1,
+         tictacaae_cmd/1
+        ]).
 
 -export([ensemble_status/1]).
 
@@ -746,6 +748,104 @@ ensemble_status([Str]) ->
         _ ->
             riak_kv_ensemble_console:ensemble_detail(N)
     end.
+
+
+tictacaae_cmd([Item | Args]) ->
+    try
+        Nodes = extract_nodes(Args),
+        Value = extract_value(exclude_options(Args)),
+        case Item of
+            "rebuildwait" when Value == undefined ->
+                print_tictacaae_option(tictacaae_rebuildwait, Nodes);
+            "rebuildwait" ->
+                Hours = list_to_integer(Value),
+                set_tictacaae_option(tictacaae_rebuildwait, Nodes, Hours);
+
+            "rebuilddelay" when Value == undefined ->
+                print_tictacaae_option(tictacaae_rebuilddelay, Nodes);
+            "rebuilddelay" ->
+                Minutes = list_to_integer(Value),
+                set_tictacaae_option(tictacaae_rebuilddelay, Nodes, Minutes);
+
+            "rebuildtick" when Value == undefined ->
+                print_tictacaae_option(tictacaae_rebuildtick, Nodes);
+            "rebuildtick" ->
+                Msec = list_to_integer(Value),
+                set_tictacaae_option(tictacaae_rebuildtick, Nodes, Msec);
+
+            "exchangetick" when Value == undefined ->
+                print_tictacaae_option(tictacaae_exchangetick, Nodes);
+            "exchangetick" ->
+                MSec = list_to_integer(Value),
+                set_tictacaae_option(tictacaae_exchangetick, Nodes, MSec);
+
+            "maxresults" when Value == undefined ->
+                print_tictacaae_option(tictacaae_maxresults, Nodes);
+            "maxresults" ->
+                N = list_to_integer(Value),
+                set_tictacaae_option(tictacaae_maxresults, Nodes, N);
+
+            "storeheads" when Value == undefined ->
+                print_tictacaae_option(tictacaae_storeheads, Nodes);
+            "storeheads" ->
+                Enabled = list_to_boolean(Value),
+                set_tictacaae_option(tictacaae_storeheads, Nodes, Enabled);
+
+            "tokenbucket" when Value == undefined ->
+                print_tictacaae_option(aae_tokenbucket, Nodes);
+            "tokenbucket" ->
+                Enabled = list_to_boolean(Value),
+                set_tictacaae_option(aae_tokenbucket, Nodes, Enabled);
+
+            Unknown ->
+                io:format("Unknown tictacaae option: ~s\n", [Unknown]),
+                uncnown_item
+        end
+    catch
+        error:badarg ->
+            invalid_argument;
+        throw:E ->
+            E
+    end.
+
+print_tictacaae_option(A, Nodes) ->
+    [begin
+         {ok, Current} = rpc:call(Node, application, get_env, [riak_kv, A]),
+         io:format("~s on ~s is ~p\n", [A, Node, Current])
+     end || Node <- Nodes],
+    ok.
+
+set_tictacaae_option(A, Nodes, V) ->
+    [ok = rpc:call(Node, application, set_env, [riak_kv, A, V])
+     || Node <- Nodes],
+    ok.
+
+list_to_boolean("true") -> true;
+list_to_boolean("false") -> false;
+list_to_boolean("enabled") -> true;
+list_to_boolean("disabled") -> false;
+list_to_boolean(_) -> throw(invalid_argument).
+
+extract_nodes(Args) ->
+    extract_nodes(Args, []).
+extract_nodes([], []) -> [node()];
+extract_nodes([], Q) -> Q;
+extract_nodes([Arg|Rest], Q) ->
+    case string:split(Arg, "=") of
+        ["--node", "all"] ->
+            [node() | nodes()];
+        ["--node", N] ->
+            extract_nodes(Rest, [list_to_atom(N) | Q]);
+        _ ->
+            extract_nodes(Rest, Q)
+    end.
+
+exclude_options(Args) ->
+    lists:filter(fun("--" ++ _) -> false; (_) -> true end, Args).
+
+extract_value([A]) -> A;
+extract_value([]) -> undefined.
+
 
 %%%===================================================================
 %%% Private
