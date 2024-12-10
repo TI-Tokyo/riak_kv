@@ -46,7 +46,7 @@
          bucket_type_update/1,
          bucket_type_reset/1,
          bucket_type_list/1,
-         tictacaae_cmd/1
+         tictacaae_cmd/1, ov/2, ov/3
         ]).
 
 -export([ensemble_status/1]).
@@ -752,61 +752,119 @@ ensemble_status([Str]) ->
 
 tictacaae_cmd([Item | Args]) ->
     try
-        Nodes = extract_nodes(Args),
-        Value = extract_value(exclude_options(Args)),
+        Nodes = ov(Args, "--node"),
+        Partitions = ov(Args, "--partition"),
+        VV = xo(Args),
         case Item of
-            "rebuildwait" when Value == undefined ->
-                print_tictacaae_option(tictacaae_rebuildwait, Nodes);
-            "rebuildwait" ->
-                Hours = list_to_integer(Value),
+            "rebuildwait" when length(VV) == 1 ->
+                Hours = list_to_integer(hd(VV)),
                 set_tictacaae_option(tictacaae_rebuildwait, Nodes, Hours);
+            "rebuildwait" ->
+                print_tictacaae_option(tictacaae_rebuildwait, Nodes);
 
-            "rebuilddelay" when Value == undefined ->
-                print_tictacaae_option(tictacaae_rebuilddelay, Nodes);
-            "rebuilddelay" ->
-                Minutes = list_to_integer(Value),
+            "rebuilddelay" when length(VV) == 1 ->
+                Minutes = list_to_integer(hd(VV)),
                 set_tictacaae_option(tictacaae_rebuilddelay, Nodes, Minutes);
+            "rebuilddelay" ->
+                print_tictacaae_option(tictacaae_rebuilddelay, Nodes);
 
-            "rebuildtick" when Value == undefined ->
-                print_tictacaae_option(tictacaae_rebuildtick, Nodes);
-            "rebuildtick" ->
-                Msec = list_to_integer(Value),
+            "rebuildtick" when length(VV) == 1 ->
+                Msec = list_to_integer(hd(VV)),
                 set_tictacaae_option(tictacaae_rebuildtick, Nodes, Msec);
+            "rebuildtick" ->
+                print_tictacaae_option(tictacaae_rebuildtick, Nodes);
 
-            "exchangetick" when Value == undefined ->
-                print_tictacaae_option(tictacaae_exchangetick, Nodes);
-            "exchangetick" ->
-                MSec = list_to_integer(Value),
+            "exchangetick" when length(VV) == 1 ->
+                MSec = list_to_integer(hd(VV)),
                 set_tictacaae_option(tictacaae_exchangetick, Nodes, MSec);
+            "exchangetick" ->
+                print_tictacaae_option(tictacaae_exchangetick, Nodes);
 
-            "maxresults" when Value == undefined ->
-                print_tictacaae_option(tictacaae_maxresults, Nodes);
-            "maxresults" ->
-                N = list_to_integer(Value),
+            "maxresults" when length(VV) == 1 ->
+                N = list_to_integer(hd(VV)),
                 set_tictacaae_option(tictacaae_maxresults, Nodes, N);
+            "maxresults" ->
+                print_tictacaae_option(tictacaae_maxresults, Nodes);
 
-            "storeheads" when Value == undefined ->
-                print_tictacaae_option(tictacaae_storeheads, Nodes);
-            "storeheads" ->
-                Enabled = list_to_boolean(Value),
+            "storeheads" when length(VV) == 1 ->
+                Enabled = list_to_boolean(hd(VV)),
                 set_tictacaae_option(tictacaae_storeheads, Nodes, Enabled);
+            "storeheads" ->
+                print_tictacaae_option(tictacaae_storeheads, Nodes);
 
-            "tokenbucket" when Value == undefined ->
-                print_tictacaae_option(aae_tokenbucket, Nodes);
-            "tokenbucket" ->
-                Enabled = list_to_boolean(Value),
+            "tokenbucket" when length(VV) == 1 ->
+                Enabled = list_to_boolean(hd(VV)),
                 set_tictacaae_option(aae_tokenbucket, Nodes, Enabled);
+            "tokenbucket" ->
+                print_tictacaae_option(aae_tokenbucket, Nodes);
 
-            Unknown ->
-                io:format("Unknown tictacaae option: ~s\n", [Unknown]),
-                uncnown_item
+            "rebuildtreeworkers" when length(VV) == 1 ->
+                N = list_to_integer(hd(VV)),
+                set_tictacaae_option(af1_worker_pool_size, Nodes, N);
+            "rebuildtreeworkers" ->
+                print_tictacaae_option(af1_worker_pool_size, Nodes);
+
+            "rebuildstoreworkers" when length(VV) == 1 ->
+                N = list_to_integer(hd(VV)),
+                set_tictacaae_option(be_worker_pool_size, Nodes, N);
+            "rebuildstoreworkers" ->
+                print_tictacaae_option(be_worker_pool_size, Nodes);
+
+            "aaefoldworkers" when length(VV) == 1 ->
+                N = list_to_integer(hd(VV)),
+                set_tictacaae_option(af4_worker_pool_size, Nodes, N);
+            "aaefoldworkers" ->
+                print_tictacaae_option(af4_worker_pool_size, Nodes);
+
+            "rebuild-soon" when length(VV) == 1 ->
+                AffectedVNodes = schedule_nextrebuild(Nodes, Partitions, list_to_integer(hd(VV))),
+                if length(Nodes) == 1 ->
+                        io:format("scheduled rebuild of aae trees on ~b partition~s on ~s\n",
+                                  [length(AffectedVNodes), ending(AffectedVNodes), hd(Nodes)]);
+                   el/=se ->
+                        io:format("scheduled rebuild of aae trees on ~b nodes\n",
+                                  [length(Nodes)])
+                end;
+
+            "rebuild-now" when length(VV) == 0 ->
+                AffectedVNodes = schedule_nextrebuild(Nodes, Partitions, 0),
+                poke_for_rebuild(AffectedVNodes),
+                if length(Nodes) == 1 ->
+                        io:format("rebuilding aae trees on ~b partition~s on ~s\n",
+                                  [length(AffectedVNodes), ending(AffectedVNodes), hd(Nodes)]);
+                   el/=se ->
+                        io:format("rebuilding of aae trees on ~b nodes\n",
+                                  [length(Nodes)])
+                end;
+
+            _ ->
+                io:format("Unknown item or wrong number of arguments\n", [])
         end
     catch
         error:badarg ->
-            invalid_argument;
+            "Invalid argument";
         throw:E ->
             E
     end.
+
+schedule_nextrebuild(Nodes, Partitions, Delay) ->
+    lists:foldl(
+      fun(Node, Q) ->
+              VVNN = vnodes(Node, Partitions),
+              ok = riak_kv_vnode:aae_schedule_nextrebuild(VVNN, Delay),
+              Q ++ VVNN
+      end, [], Nodes).
+
+vnodes(Node, all) ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    [VN || VN = {_, Owner} <- riak_core_ring:all_owners(Ring), Owner =:= Node];
+vnodes(Node, List) ->
+    [{P, Node} || P <- List].
+
+
+poke_for_rebuild(VNodes) ->
+    riak_core_vnode_master:command(
+      VNodes, tictacaae_rebuildpoke, riak_kv_vnode_master).
 
 print_tictacaae_option(A, Nodes) ->
     [begin
@@ -824,28 +882,32 @@ list_to_boolean("true") -> true;
 list_to_boolean("false") -> false;
 list_to_boolean("enabled") -> true;
 list_to_boolean("disabled") -> false;
-list_to_boolean(_) -> throw(invalid_argument).
+list_to_boolean(_) -> throw("Invalid argument").
 
-extract_nodes(Args) ->
-    extract_nodes(Args, []).
-extract_nodes([], []) -> [node()];
-extract_nodes([], Q) -> Q;
-extract_nodes([Arg|Rest], Q) ->
+ov(Args, Option) ->
+    ov(Args, Option, []).
+ov([], "--node", []) -> [node()];
+ov([], "--partition", []) -> all;
+ov([], _, Q) -> Q;
+ov([Arg|Rest], Option, Q) ->
     case string:split(Arg, "=") of
-        ["--node", "all"] ->
+        [Option, "all"] when Option == "--node" ->
             [node() | nodes()];
-        ["--node", N] ->
-            extract_nodes(Rest, [list_to_atom(N) | Q]);
+        [Option, "all"] when Option == "--partition" ->
+            all;
+        ["--node", N] when Option == "--node" ->
+            ov(Rest, Option, [list_to_atom(N) | Q]);
+        ["--partition", N] when Option == "--partition"  ->
+            ov(Rest, Option, [list_to_integer(N) | Q]);
         _ ->
-            extract_nodes(Rest, Q)
+            ov(Rest, Option, Q)
     end.
 
-exclude_options(Args) ->
+xo(Args) ->
     lists:filter(fun("--" ++ _) -> false; (_) -> true end, Args).
 
-extract_value([A]) -> A;
-extract_value([]) -> undefined.
-
+ending([_]) -> "";
+ending(_) -> "s".
 
 %%%===================================================================
 %%% Private

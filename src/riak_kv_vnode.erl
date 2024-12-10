@@ -59,7 +59,8 @@
          reformat_object/2,
          stop_fold/1,
          get_modstate/1,
-         aae_send/1]).
+         aae_send/1,
+         aae_schedule_nextrebuild/2]).
 
 %% riak_core_vnode API
 -export([init/1,
@@ -609,13 +610,22 @@ tictacrebuild_complete(Vnode, StartTime, ProcessType) ->
                                 erlang:timestamp(),
                                 {atom(), non_neg_integer()}) -> ok.
 %% @doc
-%% Infor the vnode that an aae exchange is complete
+%% Inform the vnode that an aae exchange is complete
 tictacexchange_complete(Vnode, StartTime, ExchangeResult) ->
     riak_core_vnode_master:command(Vnode, 
                                     {exchange_complete,
                                         ExchangeResult,
                                         StartTime},
                                     riak_kv_vnode_master).
+
+-spec aae_schedule_nextrebuild([{partition(), node()}], non_neg_integer()) -> ok.
+%% @doc
+%% Schedule the next rebuilding of tictac trees (emulate tick now, plus a delay)
+aae_schedule_nextrebuild(Vnodes, Delay) ->
+    riak_core_vnode_master:command(Vnodes,
+                                   {schedule_nextrebuild, Delay},
+                                   riak_kv_vnode_master).
+
 
 get(Preflist, BKey, ReqId) ->
     %% Assuming this function is called from a FSM process
@@ -1202,6 +1212,12 @@ handle_command({exchange_complete, ExchangeResult, ST},
                             tictac_deltacount = DC,
                             tictac_exchangetime = XT,
                             tictac_skiptick = 0}};
+
+handle_command({schedule_nextrebuild, Delay},
+               _Sender, State) ->
+    AAECntrl = State#state.aae_controller,
+    ok = aae_controller:aae_schedulenextrebuild(AAECntrl, Delay),
+    {noreply, State};
 
 handle_command({upgrade_hashtree, Node}, _, State=#state{hashtrees=HT}) ->
     %% Make sure we dont kick off an upgrade during a possible handoff
