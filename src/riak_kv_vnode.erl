@@ -60,7 +60,9 @@
          stop_fold/1,
          get_modstate/1,
          aae_send/1,
-         aae_schedule_nextrebuild/2]).
+         aae_schedule_nextrebuild/2,
+         aae_controller/1,
+         aae_rebuilding/1]).
 
 %% riak_core_vnode API
 -export([init/1,
@@ -539,6 +541,16 @@ when_loading_complete(AAECntrl, Preflists, PreflistFun, OnlyIfBroken) ->
             % exited vnode (e.g. one which has completed handoff)
             skipped
     end.
+
+%% @doc Expose aae_controller, mainly for gathering items for `riak admin aae-progress-report`.
+-spec aae_controller(#state{}) -> pid() | undefined.
+aae_controller(#state{aae_controller = A}) ->
+    A.
+
+%% @doc Expose tictac_rebuilding field, for `riak admin aae-progress-report`.
+-spec aae_rebuilding(#state{}) -> erlang:timestamp() | false.
+aae_rebuilding(#state{tictac_rebuilding = A}) ->
+    A.
 
 
 %% @doc Reveal the underlying module state for testing
