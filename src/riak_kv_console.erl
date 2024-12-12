@@ -46,7 +46,7 @@
          bucket_type_update/1,
          bucket_type_reset/1,
          bucket_type_list/1,
-         tictacaae_cmd/1, ov/2, ov/3
+         tictacaae_cmd/1
         ]).
 
 -export([ensemble_status/1]).
@@ -750,10 +750,17 @@ ensemble_status([Str]) ->
     end.
 
 
-tictacaae_cmd([Item | Args]) ->
+tictacaae_cmd(Args) ->
+    case application:get_env(riak_kv, tictacaae_active) of
+        {ok, active} ->
+            tictacaae_cmd2(Args);
+        _ ->
+            io:format("tictacaae not active\n", [])
+    end.
+tictacaae_cmd2([Item | Args]) ->
     try
-        Nodes = ov(Args, "--node"),
-        Partitions = ov(Args, "--partition"),
+        Nodes = ov(Args, "--node", [node()]),
+        Partitions = ov(Args, "--partition", all),
         VV = xo(Args),
         case Item of
             "rebuildwait" when length(VV) == 1 ->
@@ -833,8 +840,16 @@ tictacaae_cmd([Item | Args]) ->
                         io:format("rebuilding aae trees on ~b partition~s on ~s\n",
                                   [length(AffectedVNodes), ending(AffectedVNodes), hd(Nodes)]);
                    el/=se ->
-                        io:format("rebuilding of aae trees on ~b nodes\n",
+                        io:format("rebuilding aae trees on ~b nodes\n",
                                   [length(Nodes)])
+                end;
+
+            "treestatus" when length(VV) == 0 ->
+                case {Nodes, Partitions} of
+                    {[N], all} when N == node() ->
+                        print_aae_progress_report(Args);
+                    _ ->
+                        io:format("treestatus option only supported on local node\n", [])
                 end;
 
             _ ->
@@ -846,25 +861,6 @@ tictacaae_cmd([Item | Args]) ->
         throw:E ->
             E
     end.
-
-schedule_nextrebuild(Nodes, Partitions, Delay) ->
-    lists:foldl(
-      fun(Node, Q) ->
-              VVNN = vnodes(Node, Partitions),
-              ok = riak_kv_vnode:aae_schedule_nextrebuild(VVNN, Delay),
-              Q ++ VVNN
-      end, [], Nodes).
-
-vnodes(Node, all) ->
-    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    [VN || VN = {_, Owner} <- riak_core_ring:all_owners(Ring), Owner =:= Node];
-vnodes(Node, List) ->
-    [{P, Node} || P <- List].
-
-
-poke_for_rebuild(VNodes) ->
-    riak_core_vnode_master:command(
-      VNodes, tictacaae_rebuildpoke, riak_kv_vnode_master).
 
 print_tictacaae_option(A, Nodes) ->
     [begin
@@ -878,29 +874,165 @@ set_tictacaae_option(A, Nodes, V) ->
      || Node <- Nodes],
     ok.
 
+
+schedule_nextrebuild(Nodes, Partitions, Delay) ->
+    lists:foldl(
+      fun(Node, Q) ->
+              VVNN = vnodes(Node, Partitions),
+              ok = rpc:call(Node, riak_kv_vnode, aae_schedule_nextrebuild, [VVNN, Delay]),
+              Q ++ VVNN
+      end, [], Nodes).
+
+vnodes(Node, all) ->
+    {ok, Ring} = rpc:call(Node, riak_core_ring_manager, get_my_ring, []),
+    [VN || VN = {_, Owner} <- rpc:call(Node, riak_core_ring, all_owners, [Ring]), Owner =:= Node];
+vnodes(Node, List) ->
+    [{P, Node} || P <- List].
+
+poke_for_rebuild(VNodes) ->
+    DistinctNodes = lists:usort([N || {_, N} <- VNodes]),
+    lists:foreach(
+      fun(N) ->
+              rpc:call(N, riak_core_vnode_master, command,
+                       [vnodes_at(N, VNodes), tictacaae_rebuildpoke, riak_kv_vnode_master])
+      end, DistinctNodes).
+
+vnodes_at(Node, VVNN) ->
+    [VN || VN = {_, N} <- VVNN, N == Node].
+
+
+produce_aae_progress_report() ->
+    VVSS =
+        lists:append(
+          [case sys:get_state(P) of
+               {active, _CoreVnodeState = {state, Idx, riak_kv_vnode, VSx, _, _, _, _, _, _, _, _}} ->
+                   [{Idx, VSx}];
+               _ ->
+                   []
+           end || {_, P, _, _} <- supervisor:which_children(riak_core_vnode_sup)]),
+
+    [begin
+         AAECntrl = riak_kv_vnode:aae_controller(VNState),
+         TictacRebuilding = riak_kv_vnode:aae_rebuilding(VNState),
+
+         AAECntrlState = sys:get_state(AAECntrl),
+         KeyStore = aae_controller:get_key_store(AAECntrlState),
+
+         KeyStoreCurrentStatus = if is_pid(KeyStore) ->
+                                         element(1, aae_keystore:store_currentstatus(KeyStore));
+                                    el/=se ->
+                                         not_running
+                                 end,
+
+         {_, KeyStoreState} = sys:get_state(KeyStore),
+         LastRebuild = case aae_keystore:get_last_rebuild(KeyStoreState) of
+                           never ->
+                               never;
+                           TS ->
+                               calendar:now_to_local_time(TS)
+                       end,
+         NextRebuild = calendar:now_to_local_time(
+                         aae_controller:get_next_rebuild(AAECntrlState)),
+
+         TreeCaches = aae_controller:get_tree_caches(AAECntrlState),
+         TCStates = [sys:get_state(P) || {_, P} <- TreeCaches],
+         TotalDirtySegments = lists:sum(
+                                [aae_treecache:dirty_segment_count(S) || S <- TCStates]),
+         InProgress = TictacRebuilding /= false,
+         Status =
+             case {LastRebuild, InProgress, NextRebuild} of
+                 {never, false, Scheduled} when Scheduled /= undefined ->
+                     unbuilt;
+                 {Built, false, _} when Built /= never ->
+                     built;
+                 {Built, true, _} when Built /= never ->
+                     rebuilding;
+                 {never, true, _} ->
+                     building
+             end,
+         [{partition, Idx},
+          {key_store_current_status, KeyStoreCurrentStatus},
+          {last_rebuild, time2s(LastRebuild)},
+          {next_rebuild, time2s(NextRebuild)},
+          {total_dirty_segments, TotalDirtySegments},
+          {rebuild_inprogress, InProgress},
+          {controller_pid, list_to_binary(pid_to_list(AAECntrl))},
+          {controller_nodename, node(AAECntrl)},
+          {status, Status}
+         ]
+     end || {Idx, VNState} <- VVSS].
+
+
+print_aae_progress_report(Options) ->
+    Report = produce_aae_progress_report(),
+    Format = ov(Options, "--format", ["table"]),
+    aae_progress_report(Format, Report, Options).
+
+aae_progress_report(["json"], Report, _) ->
+    io:format("~s\n", [mochijson2:encode(Report)]);
+
+aae_progress_report(["table"], Report, Options) ->
+    ShowValue = ov(Options, "--show", ["unbuilt,rebuilding,building"]),
+    Show_ =
+        case string:split(
+               lists:flatten(lists:join(
+                               ",", ShowValue)), ",", all) of
+            ["all"] ->
+                ["unbuilt", "rebuilding", "building", "built"];
+            Other ->
+                Other
+        end,
+    Show = [list_to_atom(A) || A <- Show_],
+    io:format("~52s  ~10s  ~21s  ~20s  ~15s  ~16s\n", ["Partition ID", "Status", "Last Rebuild Date", "Next Rebuild Date", "Controller PID", "Key Store Status"]),
+    io:format("~52s  ~10s  ~21s  ~20s  ~15s  ~16s\n", ["----------------------------------------------------", "----------", "---------------------", "---------------------", "----------------", "----------------"]),
+    [begin
+         Idx = proplists:get_value(partition, M),
+         LastRebuild = proplists:get_value(last_rebuild, M),
+         NextRebuild = proplists:get_value(next_rebuild, M),
+         ControllerPid = proplists:get_value(controller_pid, M),
+         Status = proplists:get_value(status, M),
+         KeyStoreCurrentStatus = proplists:get_value(key_store_current_status, M),
+         case lists:member(Status, Show) of
+             true ->
+                 io:format("~52b  ~10s  ~21s  ~20s  ~15s  ~16s\n",
+                           [Idx, Status, LastRebuild, NextRebuild, ControllerPid, KeyStoreCurrentStatus]);
+             false ->
+                 skip
+         end
+     end || M <- Report],
+    ok.
+
+time2s(never) ->
+    never;
+time2s({{LRY, LRMo, LRD}, {LRH, LRMi, LRS}}) ->
+    iolist_to_binary(
+      io_lib:format("~4.10.0B-~2.10.0B-~2.10.0BT~2.10.0B:~2.10.0B:~2.10.0B",
+                    [LRY, LRMo, LRD, LRH, LRMi, LRS])).
+
 list_to_boolean("true") -> true;
 list_to_boolean("false") -> false;
 list_to_boolean("enabled") -> true;
 list_to_boolean("disabled") -> false;
 list_to_boolean(_) -> throw("Invalid argument").
 
-ov(Args, Option) ->
-    ov(Args, Option, []).
-ov([], "--node", []) -> [node()];
-ov([], "--partition", []) -> all;
-ov([], _, Q) -> Q;
-ov([Arg|Rest], Option, Q) ->
+ov(Args, Option, Default) ->
+    ov(Args, Option, Default, []).
+ov([], _, Default, []) -> Default;
+ov([], _, _, Q) -> Q;
+ov([Arg|Rest], Option, Default, Q) ->
     case string:split(Arg, "=") of
         [Option, "all"] when Option == "--node" ->
             [node() | nodes()];
         [Option, "all"] when Option == "--partition" ->
             all;
         ["--node", N] when Option == "--node" ->
-            ov(Rest, Option, [list_to_atom(N) | Q]);
+            ov(Rest, Option, Default, [list_to_atom(N) | Q]);
         ["--partition", N] when Option == "--partition"  ->
-            ov(Rest, Option, [list_to_integer(N) | Q]);
+            ov(Rest, Option, Default, [list_to_integer(N) | Q]);
+        [Option, Value] ->
+            ov(Rest, Option, Default, [Value | Q]);
         _ ->
-            ov(Rest, Option, Q)
+            ov(Rest, Option, Default, Q)
     end.
 
 xo(Args) ->
