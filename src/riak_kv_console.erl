@@ -757,74 +757,74 @@ tictacaae_cmd(Args) ->
         _ ->
             io:format("tictacaae not active\n", [])
     end.
-tictacaae_cmd2([Item | Args]) ->
+tictacaae_cmd2([Item | Cmdline]) ->
     try
-        Nodes = ov(Args, "--node", [node()]),
-        Partitions = ov(Args, "--partition", all),
-        VV = xo(Args),
+        {ok, {Options, Args}} = getopt:parse(tictacaae_cmd_optspecs(), Cmdline),
+        Nodes = extract_nodes(Options),
+        Partitions = extract_partitions(Options),
         case Item of
-            "rebuildwait" when length(VV) == 1 ->
-                Hours = list_to_integer(hd(VV)),
+            "rebuildwait" when length(Args) == 1 ->
+                Hours = list_to_integer(hd(Args)),
                 set_tictacaae_option(tictacaae_rebuildwait, Nodes, Hours);
             "rebuildwait" ->
                 print_tictacaae_option(tictacaae_rebuildwait, Nodes);
 
-            "rebuilddelay" when length(VV) == 1 ->
-                Minutes = list_to_integer(hd(VV)),
+            "rebuilddelay" when length(Args) == 1 ->
+                Minutes = list_to_integer(hd(Args)),
                 set_tictacaae_option(tictacaae_rebuilddelay, Nodes, Minutes);
             "rebuilddelay" ->
                 print_tictacaae_option(tictacaae_rebuilddelay, Nodes);
 
-            "rebuildtick" when length(VV) == 1 ->
-                Msec = list_to_integer(hd(VV)),
+            "rebuildtick" when length(Args) == 1 ->
+                Msec = list_to_integer(hd(Args)),
                 set_tictacaae_option(tictacaae_rebuildtick, Nodes, Msec);
             "rebuildtick" ->
                 print_tictacaae_option(tictacaae_rebuildtick, Nodes);
 
-            "exchangetick" when length(VV) == 1 ->
-                MSec = list_to_integer(hd(VV)),
+            "exchangetick" when length(Args) == 1 ->
+                MSec = list_to_integer(hd(Args)),
                 set_tictacaae_option(tictacaae_exchangetick, Nodes, MSec);
             "exchangetick" ->
                 print_tictacaae_option(tictacaae_exchangetick, Nodes);
 
-            "maxresults" when length(VV) == 1 ->
-                N = list_to_integer(hd(VV)),
+            "maxresults" when length(Args) == 1 ->
+                N = list_to_integer(hd(Args)),
                 set_tictacaae_option(tictacaae_maxresults, Nodes, N);
             "maxresults" ->
                 print_tictacaae_option(tictacaae_maxresults, Nodes);
 
-            "storeheads" when length(VV) == 1 ->
-                Enabled = list_to_boolean(hd(VV)),
+            "storeheads" when length(Args) == 1 ->
+                Enabled = ("true" == hd(Args)),
                 set_tictacaae_option(tictacaae_storeheads, Nodes, Enabled);
             "storeheads" ->
                 print_tictacaae_option(tictacaae_storeheads, Nodes);
 
-            "tokenbucket" when length(VV) == 1 ->
-                Enabled = list_to_boolean(hd(VV)),
+            "tokenbucket" when length(Args) == 1 ->
+                Enabled = ("true" == hd(Args)),
                 set_tictacaae_option(aae_tokenbucket, Nodes, Enabled);
             "tokenbucket" ->
                 print_tictacaae_option(aae_tokenbucket, Nodes);
 
-            "rebuildtreeworkers" when length(VV) == 1 ->
-                N = list_to_integer(hd(VV)),
+            "rebuildtreeworkers" when length(Args) == 1 ->
+                N = list_to_integer(hd(Args)),
                 set_tictacaae_option(af1_worker_pool_size, Nodes, N);
             "rebuildtreeworkers" ->
                 print_tictacaae_option(af1_worker_pool_size, Nodes);
 
-            "rebuildstoreworkers" when length(VV) == 1 ->
-                N = list_to_integer(hd(VV)),
+            "rebuildstoreworkers" when length(Args) == 1 ->
+                N = list_to_integer(hd(Args)),
                 set_tictacaae_option(be_worker_pool_size, Nodes, N);
             "rebuildstoreworkers" ->
                 print_tictacaae_option(be_worker_pool_size, Nodes);
 
-            "aaefoldworkers" when length(VV) == 1 ->
-                N = list_to_integer(hd(VV)),
+            "aaefoldworkers" when length(Args) == 1 ->
+                N = list_to_integer(hd(Args)),
                 set_tictacaae_option(af4_worker_pool_size, Nodes, N);
             "aaefoldworkers" ->
                 print_tictacaae_option(af4_worker_pool_size, Nodes);
 
-            "rebuild-soon" when length(VV) == 1 ->
-                AffectedVNodes = schedule_nextrebuild(Nodes, Partitions, list_to_integer(hd(VV))),
+            "rebuild-soon" when length(Args) == 1 ->
+                AffectedVNodes = schedule_nextrebuild(Nodes, Partitions, list_to_integer(hd(Args))),
                 if length(Nodes) == 1 ->
                         io:format("scheduled rebuild of aae trees on ~b partition~s on ~s\n",
                                   [length(AffectedVNodes), ending(AffectedVNodes), hd(Nodes)]);
@@ -833,7 +833,7 @@ tictacaae_cmd2([Item | Args]) ->
                                   [length(Nodes)])
                 end;
 
-            "rebuild-now" when length(VV) == 0 ->
+            "rebuild-now" when length(Args) == 0 ->
                 AffectedVNodes = schedule_nextrebuild(Nodes, Partitions, 0),
                 poke_for_rebuild(AffectedVNodes),
                 if length(Nodes) == 1 ->
@@ -844,10 +844,10 @@ tictacaae_cmd2([Item | Args]) ->
                                   [length(Nodes)])
                 end;
 
-            "treestatus" when length(VV) == 0 ->
+            "treestatus" when length(Args) == 0 ->
                 case {Nodes, Partitions} of
                     {[N], all} when N == node() ->
-                        print_aae_progress_report(Args);
+                        print_aae_progress_report(Options);
                     _ ->
                         io:format("treestatus option only supported on local node\n", [])
                 end;
@@ -856,10 +856,23 @@ tictacaae_cmd2([Item | Args]) ->
                 io:format("Unknown item or wrong number of arguments\n", [])
         end
     catch
-        error:badarg ->
-            "Invalid argument";
-        throw:E ->
-            E
+        error:_ ->
+            io:format(
+"Usage: riak admin tictacaae treestatus [-n [<node>]] [-p [<partition>]]
+                                       [--format [<format>]]
+                                       [--show [<show>]] ITEM
+
+  -n, --node       Node, or all [default: dev1@127.0.0.1]
+  -p, --partition  Partition, or all [default: all]
+  --format         table or json [default: table]
+  --show           tree states to show [default:
+                   unbuilt,rebuilding,building]
+
+where ITEM is one of rebuildwait, rebuiddelay, rebuildtick,
+exchangetick, maxresults, storeheads, tokenbucket,
+rebuildtreeworkers, rebuildstoreworkers, aaefoldworkers,
+rebuild-soon, rebuild-now, treestatus.
+")
     end.
 
 print_tictacaae_option(A, Nodes) ->
@@ -955,9 +968,7 @@ produce_aae_progress_report() ->
           {last_rebuild, time2s(LastRebuild)},
           {next_rebuild, time2s(NextRebuild)},
           {total_dirty_segments, TotalDirtySegments},
-          {rebuild_inprogress, InProgress},
           {controller_pid, list_to_binary(pid_to_list(AAECntrl))},
-          {controller_nodename, node(AAECntrl)},
           {status, Status}
          ]
      end || {Idx, VNState} <- VVSS].
@@ -965,24 +976,15 @@ produce_aae_progress_report() ->
 
 print_aae_progress_report(Options) ->
     Report = produce_aae_progress_report(),
-    Format = ov(Options, "--format", ["table"]),
+    Format = proplists:get_value(format, Options),
     aae_progress_report(Format, Report, Options).
 
-aae_progress_report(["json"], Report, _) ->
+aae_progress_report("json", Report, _) ->
     io:format("~s\n", [mochijson2:encode(Report)]);
 
-aae_progress_report(["table"], Report, Options) ->
-    ShowValue = ov(Options, "--show", ["unbuilt,rebuilding,building"]),
-    Show_ =
-        case string:split(
-               lists:flatten(lists:join(
-                               ",", ShowValue)), ",", all) of
-            ["all"] ->
-                ["unbuilt", "rebuilding", "building", "built"];
-            Other ->
-                Other
-        end,
-    Show = [list_to_atom(A) || A <- Show_],
+aae_progress_report("table", Report, Options) ->
+    ShowValue = extract_show(Options),
+    Show = [list_to_atom(A) || A <- ShowValue],
     io:format("~52s  ~10s  ~21s  ~20s  ~15s  ~16s\n", ["Partition ID", "Status", "Last Rebuild Date", "Next Rebuild Date", "Controller PID", "Key Store Status"]),
     io:format("~52s  ~10s  ~21s  ~20s  ~15s  ~16s\n", ["----------------------------------------------------", "----------", "---------------------", "---------------------", "----------------", "----------------"]),
     [begin
@@ -1009,34 +1011,37 @@ time2s({{LRY, LRMo, LRD}, {LRH, LRMi, LRS}}) ->
       io_lib:format("~4.10.0B-~2.10.0B-~2.10.0BT~2.10.0B:~2.10.0B:~2.10.0B",
                     [LRY, LRMo, LRD, LRH, LRMi, LRS])).
 
-list_to_boolean("true") -> true;
-list_to_boolean("false") -> false;
-list_to_boolean("enabled") -> true;
-list_to_boolean("disabled") -> false;
-list_to_boolean(_) -> throw("Invalid argument").
-
-ov(Args, Option, Default) ->
-    ov(Args, Option, Default, []).
-ov([], _, Default, []) -> Default;
-ov([], _, _, Q) -> Q;
-ov([Arg|Rest], Option, Default, Q) ->
-    case string:split(Arg, "=") of
-        [Option, "all"] when Option == "--node" ->
+tictacaae_cmd_optspecs() ->
+    [
+     {node,      $n,        "node",        {string, atom_to_list(node())},  "Node, or all"},
+     {partition, $p,        "partition",   {string, "all"},   "Partition, or all"},
+     {format,   undefined,  "format",      {string, "table"}, "table or json"},
+     {show,     undefined,  "show", {string, "unbuilt,rebuilding,building"}, "tree states to show"}
+    ].
+extract_nodes(Options) ->
+    NN = [N || {node, N} <- Options],
+    case lists:member("all", NN) of
+        true ->
             [node() | nodes()];
-        [Option, "all"] when Option == "--partition" ->
-            all;
-        ["--node", N] when Option == "--node" ->
-            ov(Rest, Option, Default, [list_to_atom(N) | Q]);
-        ["--partition", N] when Option == "--partition"  ->
-            ov(Rest, Option, Default, [list_to_integer(N) | Q]);
-        [Option, Value] ->
-            ov(Rest, Option, Default, [Value | Q]);
-        _ ->
-            ov(Rest, Option, Default, Q)
+        false ->
+            lists:join(",", [list_to_existing_atom(N) || N <- NN])
     end.
-
-xo(Args) ->
-    lists:filter(fun("--" ++ _) -> false; (_) -> true end, Args).
+extract_partitions(Options) ->
+    PP = [P || {partition, P} <- Options],
+    case lists:member("all", PP) of
+        true ->
+            all;
+        false ->
+            [list_to_integer(P) || P <- PP]
+    end.
+extract_show(Options) ->
+    PP = string:split(lists:flatten(lists:join(",", [P || {show, P} <- Options])), ",", all),
+    case lists:member("all", PP) of
+        true ->
+            ["unbuilt", "rebuilding", "building", "built"];
+        false ->
+            PP
+    end.
 
 ending([_]) -> "";
 ending(_) -> "s".
