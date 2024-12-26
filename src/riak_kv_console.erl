@@ -750,129 +750,164 @@ ensemble_status([Str]) ->
     end.
 
 
-tictacaae_cmd(Args) ->
+tictacaae_cmd_optspecs() ->
+    [
+     {node,      $n,        "node",        {string, atom_to_list(node())},  "Node, or all"},
+     {partition, $p,        "partition",   {string, "all"},   "Partition, or all"},
+     {format,   undefined,  "format",      {string, "table"}, "table or json"},
+     {show,     undefined,  "show", {string, "unbuilt,rebuilding,building"}, "tree states to show"}
+    ].
+tictacaae_cmd_usage() ->
+    %% getopt:usage/3 will print to stderr, so:
+    io:format(
+"Usage:
+    Set/show VAR in effect on a NODE:
+
+        riak admin tictacaae VAR [-n NODE]
+
+        where VAR is one of: rebuildwait, rebuiddelay, rebuildtick,
+        exchangetick, maxresults, storeheads, tokenbucket,
+        rebuildtreeworkers, rebuildstoreworkers, aaefoldworkers.
+
+    Set next rebuild time to now + DELAY sec, on all partitions, all
+    partitions on a specific node, or a specific partition (default is
+    all partitions on local node):
+
+        riak admin tictacaae rebuild-soon [-n NODE] [-p PARTITION] DELAY
+
+    Same as above, plus send a rebuild poke:
+
+        riak admin tictacaae rebuild-now [-n NODE] [-p PARTITION] DELAY
+
+    Print the tree rebuild status:
+
+        riak admin tictacaae treestatus [--format table|json] [--show STATES]
+
+        STATES is a comma-separated list of 'unbuilt', 'built',
+        'rebuilding', 'building', or 'all'. Default is
+        'unbuilt,rebuilding,building'.
+
+    Dump a JSON array of keys matching filters:
+
+        riak tictacaae fold findkeys BUCKET KEY_RANGE MODIFIED_RANGE
+                                     sibling_count=COUNT|object_size=BYTES
+
+        where BUCKET is all|BUCKETNAME|TYPENAME,BUCKETNAME,
+        KEY_RANGE is all|FROM,TO, MODIFIED_RANGE is all|FROM,TO (in RFC3339 format).
+").
+
+
+tictacaae_cmd([Item | Cmdline]) ->
     case application:get_env(riak_kv, tictacaae_active) of
         {ok, active} ->
-            tictacaae_cmd2(Args);
+            try
+                {ok, Parsed} = getopt:parse(tictacaae_cmd_optspecs(), Cmdline),
+                tictacaae_cmd2(Item, Parsed)
+            catch
+                error:_ ->
+                    tictacaae_cmd_usage()
+            end;
         _ ->
             io:format("tictacaae not active\n", [])
-    end.
-tictacaae_cmd2([Item | Cmdline]) ->
-    try
-        {ok, {Options, Args}} = getopt:parse(tictacaae_cmd_optspecs(), Cmdline),
-        Nodes = extract_nodes(Options),
-        Partitions = extract_partitions(Options),
-        case Item of
-            "rebuildwait" when length(Args) == 1 ->
-                Hours = list_to_integer(hd(Args)),
-                set_tictacaae_option(tictacaae_rebuildwait, Nodes, Hours);
-            "rebuildwait" ->
-                print_tictacaae_option(tictacaae_rebuildwait, Nodes);
+    end;
+tictacaae_cmd(_) ->
+    tictacaae_cmd_usage().
 
-            "rebuilddelay" when length(Args) == 1 ->
-                Minutes = list_to_integer(hd(Args)),
-                set_tictacaae_option(tictacaae_rebuilddelay, Nodes, Minutes);
-            "rebuilddelay" ->
-                print_tictacaae_option(tictacaae_rebuilddelay, Nodes);
+tictacaae_cmd2(Item, {Options, Args}) ->
+    Nodes = extract_nodes(Options),
+    Partitions = extract_partitions(Options),
+    case Item of
+        "rebuildwait" when length(Args) == 1 ->
+            Hours = list_to_integer(hd(Args)),
+            set_tictacaae_option(tictacaae_rebuildwait, Nodes, Hours);
+        "rebuildwait" ->
+            print_tictacaae_option(tictacaae_rebuildwait, Nodes);
 
-            "rebuildtick" when length(Args) == 1 ->
-                Msec = list_to_integer(hd(Args)),
-                set_tictacaae_option(tictacaae_rebuildtick, Nodes, Msec);
-            "rebuildtick" ->
-                print_tictacaae_option(tictacaae_rebuildtick, Nodes);
+        "rebuilddelay" when length(Args) == 1 ->
+            Minutes = list_to_integer(hd(Args)),
+            set_tictacaae_option(tictacaae_rebuilddelay, Nodes, Minutes);
+        "rebuilddelay" ->
+            print_tictacaae_option(tictacaae_rebuilddelay, Nodes);
 
-            "exchangetick" when length(Args) == 1 ->
-                MSec = list_to_integer(hd(Args)),
-                set_tictacaae_option(tictacaae_exchangetick, Nodes, MSec);
-            "exchangetick" ->
-                print_tictacaae_option(tictacaae_exchangetick, Nodes);
+        "rebuildtick" when length(Args) == 1 ->
+            Msec = list_to_integer(hd(Args)),
+            set_tictacaae_option(tictacaae_rebuildtick, Nodes, Msec);
+        "rebuildtick" ->
+            print_tictacaae_option(tictacaae_rebuildtick, Nodes);
 
-            "maxresults" when length(Args) == 1 ->
-                N = list_to_integer(hd(Args)),
-                set_tictacaae_option(tictacaae_maxresults, Nodes, N);
-            "maxresults" ->
-                print_tictacaae_option(tictacaae_maxresults, Nodes);
+        "exchangetick" when length(Args) == 1 ->
+            MSec = list_to_integer(hd(Args)),
+            set_tictacaae_option(tictacaae_exchangetick, Nodes, MSec);
+        "exchangetick" ->
+            print_tictacaae_option(tictacaae_exchangetick, Nodes);
 
-            "storeheads" when length(Args) == 1 ->
-                Enabled = ("true" == hd(Args)),
-                set_tictacaae_option(tictacaae_storeheads, Nodes, Enabled);
-            "storeheads" ->
-                print_tictacaae_option(tictacaae_storeheads, Nodes);
+        "maxresults" when length(Args) == 1 ->
+            N = list_to_integer(hd(Args)),
+            set_tictacaae_option(tictacaae_maxresults, Nodes, N);
+        "maxresults" ->
+            print_tictacaae_option(tictacaae_maxresults, Nodes);
 
-            "tokenbucket" when length(Args) == 1 ->
-                Enabled = ("true" == hd(Args)),
-                set_tictacaae_option(aae_tokenbucket, Nodes, Enabled);
-            "tokenbucket" ->
-                print_tictacaae_option(aae_tokenbucket, Nodes);
+        "storeheads" when length(Args) == 1 ->
+            Enabled = ("true" == hd(Args)),
+            set_tictacaae_option(tictacaae_storeheads, Nodes, Enabled);
+        "storeheads" ->
+            print_tictacaae_option(tictacaae_storeheads, Nodes);
 
-            "rebuildtreeworkers" when length(Args) == 1 ->
-                N = list_to_integer(hd(Args)),
-                set_tictacaae_option(af1_worker_pool_size, Nodes, N);
-            "rebuildtreeworkers" ->
-                print_tictacaae_option(af1_worker_pool_size, Nodes);
+        "tokenbucket" when length(Args) == 1 ->
+            Enabled = ("true" == hd(Args)),
+            set_tictacaae_option(aae_tokenbucket, Nodes, Enabled);
+        "tokenbucket" ->
+            print_tictacaae_option(aae_tokenbucket, Nodes);
 
-            "rebuildstoreworkers" when length(Args) == 1 ->
-                N = list_to_integer(hd(Args)),
-                set_tictacaae_option(be_worker_pool_size, Nodes, N);
-            "rebuildstoreworkers" ->
-                print_tictacaae_option(be_worker_pool_size, Nodes);
+        "rebuildtreeworkers" when length(Args) == 1 ->
+            N = list_to_integer(hd(Args)),
+            set_tictacaae_option(af1_worker_pool_size, Nodes, N);
+        "rebuildtreeworkers" ->
+            print_tictacaae_option(af1_worker_pool_size, Nodes);
 
-            "aaefoldworkers" when length(Args) == 1 ->
-                N = list_to_integer(hd(Args)),
-                set_tictacaae_option(af4_worker_pool_size, Nodes, N);
-            "aaefoldworkers" ->
-                print_tictacaae_option(af4_worker_pool_size, Nodes);
+        "rebuildstoreworkers" when length(Args) == 1 ->
+            N = list_to_integer(hd(Args)),
+            set_tictacaae_option(be_worker_pool_size, Nodes, N);
+        "rebuildstoreworkers" ->
+            print_tictacaae_option(be_worker_pool_size, Nodes);
 
-            "rebuild-soon" when length(Args) == 1 ->
-                AffectedVNodes = schedule_nextrebuild(Nodes, Partitions, list_to_integer(hd(Args))),
-                if length(Nodes) == 1 ->
-                        io:format("scheduled rebuild of aae trees on ~b partition~s on ~s\n",
-                                  [length(AffectedVNodes), ending(AffectedVNodes), hd(Nodes)]);
-                   el/=se ->
-                        io:format("scheduled rebuild of aae trees on ~b nodes\n",
-                                  [length(Nodes)])
-                end;
+        "aaefoldworkers" when length(Args) == 1 ->
+            N = list_to_integer(hd(Args)),
+            set_tictacaae_option(af4_worker_pool_size, Nodes, N);
+        "aaefoldworkers" ->
+            print_tictacaae_option(af4_worker_pool_size, Nodes);
 
-            "rebuild-now" when length(Args) == 0 ->
-                AffectedVNodes = schedule_nextrebuild(Nodes, Partitions, 0),
-                poke_for_rebuild(AffectedVNodes),
-                if length(Nodes) == 1 ->
-                        io:format("rebuilding aae trees on ~b partition~s on ~s\n",
-                                  [length(AffectedVNodes), ending(AffectedVNodes), hd(Nodes)]);
-                   el/=se ->
-                        io:format("rebuilding aae trees on ~b nodes\n",
-                                  [length(Nodes)])
-                end;
+        "rebuild-soon" when length(Args) == 1 ->
+            AffectedVNodes = schedule_nextrebuild(Nodes, Partitions, list_to_integer(hd(Args))),
+            if length(Nodes) == 1 ->
+                    io:format("scheduled rebuild of aae trees on ~b partition~s on ~s\n",
+                              [length(AffectedVNodes), ending(AffectedVNodes), hd(Nodes)]);
+               el/=se ->
+                    io:format("scheduled rebuild of aae trees on ~b nodes\n",
+                              [length(Nodes)])
+            end;
 
-            "treestatus" when length(Args) == 0 ->
-                case {Nodes, Partitions} of
-                    {[N], all} when N == node() ->
-                        print_aae_progress_report(Options);
-                    _ ->
-                        io:format("treestatus option only supported on local node\n", [])
-                end;
+        "rebuild-now" when length(Args) == 0 ->
+            AffectedVNodes = schedule_nextrebuild(Nodes, Partitions, 0),
+            poke_for_rebuild(AffectedVNodes),
+            if length(Nodes) == 1 ->
+                    io:format("rebuilding aae trees on ~b partition~s on ~s\n",
+                              [length(AffectedVNodes), ending(AffectedVNodes), hd(Nodes)]);
+               el/=se ->
+                    io:format("rebuilding aae trees on ~b nodes\n",
+                              [length(Nodes)])
+            end;
 
-            _ ->
-                io:format("Unknown item or wrong number of arguments\n", [])
-        end
-    catch
-        error:_ ->
-            io:format(
-"Usage: riak admin tictacaae treestatus [-n [<node>]] [-p [<partition>]]
-                                       [--format [<format>]]
-                                       [--show [<show>]] ITEM
+        "treestatus" when length(Args) == 0 ->
+            case {Nodes, Partitions} of
+                {[N], all} when N == node() ->
+                    print_aae_progress_report(Options);
+                _ ->
+                    io:format("treestatus option only supported on local node\n", [])
+            end;
 
-  -n, --node       Node, or all [default: dev1@127.0.0.1]
-  -p, --partition  Partition, or all [default: all]
-  --format         table or json [default: table]
-  --show           tree states to show [default:
-                   unbuilt,rebuilding,building]
-
-where ITEM is one of rebuildwait, rebuiddelay, rebuildtick,
-exchangetick, maxresults, storeheads, tokenbucket,
-rebuildtreeworkers, rebuildstoreworkers, aaefoldworkers,
-rebuild-soon, rebuild-now, treestatus.
-")
+        _ ->
+            tictacaae_cmd3(Item, {Options, Args})
     end.
 
 print_tictacaae_option(A, Nodes) ->
@@ -1004,6 +1039,41 @@ aae_progress_report("table", Report, Options) ->
      end || M <- Report],
     ok.
 
+tictacaae_cmd3(Item, {_Options, Args}) ->
+    case {Item, Args} of
+        {"fold", ["findkeys", Bucket, KeyRange, ModifiedRange, FourthArg]} ->
+            Query =
+                {find_keys,
+                 fold_query_spec(bucket, Bucket),
+                 fold_query_spec(key_range, KeyRange),
+                 fold_query_spec(modified_range, ModifiedRange),
+                 fold_query_spec(sibling_count_or_object_size, FourthArg)
+                },
+            riak_client:aae_fold(Query);
+        _ ->
+            tictacaae_cmd_usage()
+    end.
+fold_query_spec(_, "all") -> all;
+fold_query_spec(bucket, A) -> list_to_binary(A);
+fold_query_spec(key_range, A) ->
+    [From, To] = string:split(A, ","),
+    {list_to_binary(From), list_to_binary(To)};
+fold_query_spec(modified_range, A) ->
+    [From, To] = string:split(A, ","),
+    {calendar:rfc3339_to_system_time(From),
+     calendar:rfc3339_to_system_time(To)};
+fold_query_spec(sibling_count_or_object_size, A) ->
+    case string:split(A, "=") of
+        ["sibling_count", V] ->
+            {sibling_count, list_to_integer(V)};
+        ["object_size", V] ->
+            {object_size, list_to_integer(V)}
+    end.
+
+
+
+
+
 time2s(never) ->
     never;
 time2s({{LRY, LRMo, LRD}, {LRH, LRMi, LRS}}) ->
@@ -1011,13 +1081,6 @@ time2s({{LRY, LRMo, LRD}, {LRH, LRMi, LRS}}) ->
       io_lib:format("~4.10.0B-~2.10.0B-~2.10.0BT~2.10.0B:~2.10.0B:~2.10.0B",
                     [LRY, LRMo, LRD, LRH, LRMi, LRS])).
 
-tictacaae_cmd_optspecs() ->
-    [
-     {node,      $n,        "node",        {string, atom_to_list(node())},  "Node, or all"},
-     {partition, $p,        "partition",   {string, "all"},   "Partition, or all"},
-     {format,   undefined,  "format",      {string, "table"}, "table or json"},
-     {show,     undefined,  "show", {string, "unbuilt,rebuilding,building"}, "tree states to show"}
-    ].
 extract_nodes(Options) ->
     NN = [N || {node, N} <- Options],
     case lists:member("all", NN) of
