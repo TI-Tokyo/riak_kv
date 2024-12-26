@@ -61,6 +61,14 @@
          get_modstate/1,
          aae_send/1,
          aae_schedule_nextrebuild/2,
+         aae_get_rebuild_schedule/1,
+         aae_set_rebuild_schedule/2,
+         aae_get_storeheads/1,
+         aae_set_storeheads/2,
+         aae_get_tokenbucket/1,
+         aae_set_tokenbucket/2,
+         aae_rebuildpoke/1,
+         aae_exchangepoke/1,
          aae_controller/1,
          aae_rebuilding/1]).
 
@@ -637,6 +645,108 @@ aae_schedule_nextrebuild(Vnodes, Delay) ->
     riak_core_vnode_master:command(Vnodes,
                                    {schedule_nextrebuild, Delay},
                                    riak_kv_vnode_master).
+
+-spec aae_rebuildpoke([{partition(), node()}]) -> ok.
+%% @doc
+%% Send a rebuild poke.
+aae_rebuildpoke(Vnodes) ->
+    riak_core_vnode_master:command(Vnodes,
+                                   tictacaae_rebuildpoke,
+                                   riak_kv_vnode_master).
+
+-spec aae_exchangepoke([{partition(), node()}]) -> ok.
+%% @doc
+%% Send an exchange poke.
+aae_exchangepoke(Vnodes) ->
+    riak_core_vnode_master:command(Vnodes,
+                                   tictacaae_exchangepoke,
+                                   riak_kv_vnode_master).
+
+-spec aae_get_rebuild_schedule({partition(), node()}) ->
+          {ok, aae_controller:rebuild_schedule()} | {error, aae_inactive}.
+%% @doc
+%% Return rebuild schedule in effect on a vnode's AAE Controller
+aae_get_rebuild_schedule(Vnode) ->
+    Ref = make_ref(),
+    Sender = {raw, Ref, self()},
+    riak_core_vnode_master:command(Vnode,
+                                   get_rebuild_schedule,
+                                   Sender,
+                                   riak_kv_vnode_master),
+    receive_with_ref(Ref).
+
+-spec aae_set_rebuild_schedule({partition(), node()}, aae_controller:rebuild_schedule()) ->
+          ok | {error, aae_inactive}.
+%% @doc
+%% Set rebuild schedule on a vnode's AAE Controller
+aae_set_rebuild_schedule(Vnode, RS) ->
+    Ref = make_ref(),
+    Sender = {raw, Ref, self()},
+    riak_core_vnode_master:command(Vnode,
+                                   {set_rebuild_schedule, RS},
+                                   Sender,
+                                   riak_kv_vnode_master),
+    receive_with_ref(Ref).
+
+-spec aae_get_storeheads({partition(), node()}) ->
+          {ok, boolean()} | {error, aae_inactive}.
+%% @doc
+%% Return storeheads flag in effect on a vnode's AAE Controller
+aae_get_storeheads(Vnode) ->
+    Ref = make_ref(),
+    Sender = {raw, Ref, self()},
+    riak_core_vnode_master:command(Vnode,
+                                   get_storeheads,
+                                   Sender,
+                                   riak_kv_vnode_master),
+    receive_with_ref(Ref).
+
+-spec aae_set_storeheads({partition(), node()}, boolean()) ->
+          ok | {error, aae_inactive}.
+%% @doc
+%% Set storeheads on a vnode's AAE Controller
+aae_set_storeheads(Vnode, A) ->
+    Ref = make_ref(),
+    Sender = {raw, Ref, self()},
+    riak_core_vnode_master:command(Vnode,
+                                   {set_storeheads, A},
+                                   Sender,
+                                   riak_kv_vnode_master),
+    receive_with_ref(Ref).
+
+-spec aae_get_tokenbucket({partition(), node()}) ->
+          {ok, boolean()}.
+%% @doc
+%% Return tokenbucket flag in effect on a vnode
+aae_get_tokenbucket(Vnode) ->
+    Ref = make_ref(),
+    Sender = {raw, Ref, self()},
+    riak_core_vnode_master:command(Vnode,
+                                   get_tokenbucket,
+                                   Sender,
+                                   riak_kv_vnode_master),
+    receive_with_ref(Ref).
+
+-spec aae_set_tokenbucket({partition(), node()}, boolean()) ->
+          ok.
+%% @doc
+%% Set tokenbucket on a vnode
+aae_set_tokenbucket(Vnode, A) ->
+    Ref = make_ref(),
+    Sender = {raw, Ref, self()},
+    riak_core_vnode_master:command(Vnode,
+                                   {set_tokenbucket, A},
+                                   Sender,
+                                   riak_kv_vnode_master),
+    receive_with_ref(Ref).
+
+receive_with_ref(Ref) ->
+    receive
+        {Ref, Res} ->
+            Res
+    after 5000 ->
+            {error, timeout}
+    end.
 
 
 get(Preflist, BKey, ReqId) ->
@@ -1230,6 +1340,64 @@ handle_command({schedule_nextrebuild, Delay},
     AAECntrl = State#state.aae_controller,
     ok = aae_controller:aae_schedulenextrebuild(AAECntrl, Delay),
     {noreply, State};
+
+handle_command(get_rebuild_schedule,
+               Sender, State) ->
+    case State#state.aae_controller of
+        undefined ->
+            riak_core_vnode:reply(Sender, {error, aae_inactive}),
+            {noreply, State};
+        AAECntrl ->
+            Res = aae_controller:aae_get_rebuild_schedule(AAECntrl),
+            riak_core_vnode:reply(Sender, {ok, Res}),
+            {noreply, State}
+    end;
+
+handle_command({set_rebuild_schedule, RS},
+               Sender, State) ->
+    case State#state.aae_controller of
+        undefined ->
+            riak_core_vnode:reply(Sender, {error, aae_inactive}),
+            {reply, {error, aae_inactive}, State};
+        AAECntrl ->
+            Res = aae_controller:aae_set_rebuild_schedule(AAECntrl, RS),
+            riak_core_vnode:reply(Sender, Res),
+            {noreply, State}
+    end;
+
+handle_command(get_storeheads,
+               Sender, State) ->
+    case State#state.aae_controller of
+        undefined ->
+            riak_core_vnode:reply(Sender, {error, aae_inactive}),
+            {reply, {error, aae_inactive}, State};
+        AAECntrl ->
+            Res = aae_controller:aae_get_storeheads(AAECntrl),
+            riak_core_vnode:reply(Sender, Res),
+            {noreply, State}
+    end;
+
+handle_command({set_storeheads, A},
+               Sender, State) ->
+    case State#state.aae_controller of
+        undefined ->
+            riak_core_vnode:reply(Sender, {error, aae_inactive}),
+            {reply, {error, aae_inactive}, State};
+        AAECntrl ->
+            Res = aae_controller:aae_set_storeheads(AAECntrl, A),
+            riak_core_vnode:reply(Sender, Res),
+            {noreply, State}
+    end;
+
+handle_command(get_tokenbucket,
+               Sender, State) ->
+    riak_core_vnode:reply(Sender, State#state.aae_tokenbucket),
+    {noreply, State};
+
+handle_command({set_tokenbucket, A},
+               Sender, State) ->
+    riak_core_vnode:reply(Sender, ok),
+    {noreply, State#state{aae_tokenbucket = A}};
 
 handle_command({upgrade_hashtree, Node}, _, State=#state{hashtrees=HT}) ->
     %% Make sure we dont kick off an upgrade during a possible handoff

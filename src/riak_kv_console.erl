@@ -750,130 +750,270 @@ ensemble_status([Str]) ->
     end.
 
 
-tictacaae_cmd(Args) ->
+-define(DEFAULT_AAEFOLD_OUTFILE, "aaefold-%o-results-%t.json").
+
+tictacaae_cmd_optspecs() ->
+    [
+     {node,      $n,        "node",        {string, atom_to_list(node())},  "Node, or all"},
+     {partition, $p,        "partition",   {string, "all"},   "Partition, or all"},
+     {format,   undefined,  "format",      {string, "table"}, "table or json"},
+     {show,     undefined,  "show", {string, "unbuilt,rebuilding,building"}, "tree states to show"},
+     {output,    $o,        "output", {string, ?DEFAULT_AAEFOLD_OUTFILE}, "dump results of an aae fold operation to file (\"-\" for stdout)"}
+    ].
+
+tictacaae_cmd_ensure_options_consistent(_, all) -> ok;
+tictacaae_cmd_ensure_options_consistent(NN, Specific) when length(NN) > 1,
+                                                           Specific /= all ->
+    io:format("With multiple nodes, only -p=all is acceptable\n", []),
+    throw(inconsistent_options);
+tictacaae_cmd_ensure_options_consistent(_, _) -> ok.
+
+
+tictacaae_cmd_usage() ->
+    %% getopt:usage/3 will print to stderr, so:
+    io:format(
+"Usage:
+    Set/show rebuild schedule on an AAE controller managing PARTITION on NODE:
+
+        riak admin tictacaae rebuild_schedule [-n NODE] [-p PARTITION] [RW RD]
+
+    Set/show storeheads flag on an AAE controller managing PARTITION on NODE:
+
+        riak admin tictacaae storeheads [-n NODE] [-p PARTITION] [VALUE]
+
+    Set/show tokenbucket flag on a vnode managing PARTITION on NODE:
+
+        riak admin tictacaae tokenbucket [-n NODE] [-p PARTITION] [VALUE]
+
+    Set/show riak_kv tictacaae VAR on NODE:
+
+        riak admin tictacaae VAR [-n NODE] [VAL]
+
+        VAR is one of rebuildtick, exchangetick, maxresults, rangeboost.
+
+    Set next rebuild time to now + DELAY sec, on PARTITION on NODE (default is
+    all partitions on local node):
+
+        riak admin tictacaae rebuild-soon [-n NODE] [-p PARTITION] DELAY
+
+    Same as \"rebuild-soon 0\", plus send a rebuild poke:
+
+        riak admin tictacaae rebuild-now [-n NODE] [-p PARTITION] DELAY
+
+    Print the tree rebuild status:
+
+        riak admin tictacaae treestatus [--format table|json] [--show STATES]
+
+        STATES is a comma-separated list of 'unbuilt', 'built',
+        'rebuilding', 'building', or 'all'. Default is
+        'unbuilt,rebuilding,building'.
+
+    AAE fold operations, dumping results in JSON format to a file specified with '-o'.
+
+    List buckets:
+
+        riak tictacaae fold list-buckets NVAL
+
+    Find keys matching filters:
+
+        riak tictacaae fold find-keys BUCKET KEY_RANGE MODIFIED_RANGE
+                                      sibling_count=COUNT|object_size=BYTES
+
+        where BUCKET is BUCKETNAME|TYPENAME/BUCKETNAME,
+        KEY_RANGE is all|FROM,TO, MODIFIED_RANGE is all|FROM,TO (in RFC3339 format).
+
+    Count keys matching filters:
+
+        riak tictacaae fold find-keys BUCKET KEY_RANGE MODIFIED_RANGE
+                                      sibling_count=COUNT|object_size=BYTES
+
+        Same as above, only return the count of keys.
+
+    Find/count tombstones in the range that match the criteria:
+
+        riak tictacaae fold find|count-tombstones KEY_RANGE SEGMENTS MODIFIED_RANGE
+
+        where KEY_RANGE and MODIFIED_RANGE are as above, and SEGMENTS is
+        all|S1,S2,...;TREE_SIZE and TREE_SIZE is xxsmall|xsmall|small|medium|large|xlarge.
+
+    Reap tombstones in the range that match the criteria:
+
+        riak tictacaae fold reap-tombstones KEY_RANGE SEGMENTS MODIFIED_RANGE CHANGE_METHOD
+
+        where KEY_RANGE, MODIFIED_RANGE and SEGMENTS are as above and CHANGE_METHOD is
+        jobs=N|local|count.
+
+    Collect object stats in the specified ranges:
+
+        riak tictacaae fold object-stats BUCKET KEY_RANGE MODIFIED_RANGE
+
+        Returns the following:
+          - the total count of objects in the key range;
+          - the accumulated total size of all objects in the range;
+          - a list [{Magnitude, ObjectCount}] tuples where Magnitude represents
+            the order of magnitude of the size of the object.
+
+    Erase keys matching filters:
+
+        riak tictacaae fold erase-keys BUCKET KEY_RANGE SEGMENTS MODIFIED_RANGE CHANGE_METHOD
+
+        BUCKET, KEY_RANGE and MODIFIED_RANGE are as above.
+
+    Repair keys matching filters:
+
+        riak tictacaae fold repair-keys BUCKET KEY_RANGE MODIFIED_RANGE
+
+        BUCKET, KEY_RANGE and MODIFIED_RANGE are as above.
+").
+
+
+tictacaae_cmd([Item | Cmdline]) ->
     case application:get_env(riak_kv, tictacaae_active) of
         {ok, active} ->
-            tictacaae_cmd2(Args);
+            try
+                {ok, Parsed} = getopt:parse(tictacaae_cmd_optspecs(), Cmdline),
+                tictacaae_cmd2(Item, Parsed)
+            catch
+                error:_e:_st ->
+                    io:format("~p / ~p\n\n", [_e, _st]),
+                    tictacaae_cmd_usage();
+                throw:_ ->
+                    tictacaae_cmd_usage()
+            end;
         _ ->
             io:format("tictacaae not active\n", [])
+    end;
+tictacaae_cmd(_) ->
+    tictacaae_cmd_usage().
+
+tictacaae_cmd2(Item, {Options, Args}) ->
+    Nodes = extract_nodes(Options),
+    Partitions = extract_partitions(Options),
+    ok = tictacaae_cmd_ensure_options_consistent(Nodes, Partitions),
+    PostSetResultF =
+        fun(Res, Par, Val) ->
+            case Res of
+                [{ok, {P, N}}] ->
+                    io:format("Set ~s to ~s on partition ~b on ~s\n",
+                              [Par, Val, P, N]);
+                Multiple ->
+                    case length([PN || {Resx, PN} <- Multiple, Resx == ok]) of
+                        AllSucceeded when AllSucceeded == length(Multiple) ->
+                            io:format("Set ~s to ~s on ~b vnodes\n",
+                                      [Par, Val, length(Multiple)]);
+                        SomeSucceeded when SomeSucceeded > 0 ->
+                            io:format("Successfully set ~s to ~s on ~b vnodes, but"
+                                      " failed on ~b vnodes\n",
+                                      [Par, Val, SomeSucceeded, length(Multiple) - SomeSucceeded]);
+                        _ ->
+                            io:format("Failed to set ~s to ~s on all ~b vnodes\n",
+                                      [Par, Val, length(Multiple)])
+                    end
+            end
+        end,
+
+    case {Item, Args} of
+        {"rebuildtick", []} ->
+            print_tictacaae_option(tictacaae_rebuildtick, Nodes);
+        {"rebuildtick", [Arg1]} ->
+            Msec = list_to_integer(Arg1),
+            set_tictacaae_option(tictacaae_rebuildtick, Nodes, Msec);
+
+        {"exchangetick", []} ->
+            print_tictacaae_option(tictacaae_exchangetick, Nodes);
+        {"exchangetick", [Arg1]} ->
+            MSec = list_to_integer(Arg1),
+            set_tictacaae_option(tictacaae_exchangetick, Nodes, MSec);
+
+        {"maxresults", []} ->
+            print_tictacaae_option(tictacaae_maxresults, Nodes);
+        {"maxresults", [Arg1]} ->
+            A = list_to_integer(Arg1),
+            set_tictacaae_option(tictacaae_maxresults, Nodes, A);
+
+        {"rangeboost", []} ->
+            print_tictacaae_option(tictacaae_rangeboost, Nodes);
+        {"rangeboost", [Arg1]} ->
+            A = list_to_integer(Arg1),
+            set_tictacaae_option(tictacaae_rangeboost, Nodes, A);
+
+        {"rebuild_schedule", [Arg1, Arg2]} ->
+            RS = {RW = list_to_integer(Arg1), RD = list_to_integer(Arg2)},
+            PostSetResultF(
+              set_rebuild_schedule(Nodes, Partitions, RS),
+              "rebuild_schedule",
+              io_lib:format("to RW: ~b, RD: ~b", [RW, RD]));
+        {"rebuild_schedule", []} ->
+            FmtF = fun({ok, {RW, RD}}) ->
+                           io_lib:format("RW: ~b, RD: ~b", [RW, RD]);
+                      ({error, Reason}) ->
+                           io_lib:format("(error: ~p)", [Reason])
+                   end,
+            [io:format("rebuild_schedule on ~s/~b is: ~s\n", [N, P, FmtF(Res)])
+             || {Res, {P, N}} <- get_rebuild_schedule(Nodes, Partitions)],
+            ok;
+
+        {"storeheads", [Arg1]} ->
+            Val = list_to_boolean(Arg1),
+            PostSetResultF(
+              set_storeheads(Nodes, Partitions, Val),
+              "storeheads",
+              Val);
+        {"storeheads", []} ->
+            [io:format("storeheads on ~s/~b is: ~s\n", [N, P, Res])
+             || {Res, {P, N}} <- get_storeheads(Nodes, Partitions)],
+            ok;
+
+        {"tokenbucket", [Arg1]} ->
+            Val = list_to_boolean(Arg1),
+            PostSetResultF(
+              set_tokenbucket(Nodes, Partitions, Val),
+              "tokenbucket",
+              Val);
+        {"tokenbucket", []} ->
+            [io:format("tokenbucket on ~s/~b is: ~s\n", [N, P, Res])
+             || {Res, {P, N}} <- get_tokenbucket(Nodes, Partitions)],
+            ok;
+
+        {"rebuild-soon", [Arg1]} ->
+            AffectedVNodes = schedule_nextrebuild(Nodes, Partitions, list_to_integer(Arg1)),
+            if length(Nodes) == 1 ->
+                    io:format("scheduled rebuild of aae trees on ~b partition~s on ~s\n",
+                              [length(AffectedVNodes), ending(AffectedVNodes), hd(Nodes)]);
+               el/=se ->
+                    io:format("scheduled rebuild of aae trees on ~b nodes\n",
+                              [length(Nodes)])
+            end;
+
+        {"rebuild-now", []} ->
+            AffectedVNodes = schedule_nextrebuild(Nodes, Partitions, 0),
+            send_rebuildpoke(Nodes, Partitions),
+            if length(Nodes) == 1 ->
+                    io:format("rebuilding aae trees on ~b partition~s on ~s\n",
+                              [length(AffectedVNodes), ending(AffectedVNodes), hd(Nodes)]);
+               el/=se ->
+                    io:format("rebuilding aae trees on ~b nodes\n",
+                              [length(Nodes)])
+            end;
+
+        {"treestatus", []} ->
+            case {Nodes, Partitions} of
+                {[N], all} when N == node() ->
+                    print_aae_progress_report(Options);
+                _ ->
+                    io:format("treestatus option only supported on local node\n", [])
+            end;
+
+        _ ->
+            tictacaae_cmd3(Item, {Options, Args})
     end.
-tictacaae_cmd2([Item | Cmdline]) ->
-    try
-        {ok, {Options, Args}} = getopt:parse(tictacaae_cmd_optspecs(), Cmdline),
-        Nodes = extract_nodes(Options),
-        Partitions = extract_partitions(Options),
-        case Item of
-            "rebuildwait" when length(Args) == 1 ->
-                Hours = list_to_integer(hd(Args)),
-                set_tictacaae_option(tictacaae_rebuildwait, Nodes, Hours);
-            "rebuildwait" ->
-                print_tictacaae_option(tictacaae_rebuildwait, Nodes);
 
-            "rebuilddelay" when length(Args) == 1 ->
-                Minutes = list_to_integer(hd(Args)),
-                set_tictacaae_option(tictacaae_rebuilddelay, Nodes, Minutes);
-            "rebuilddelay" ->
-                print_tictacaae_option(tictacaae_rebuilddelay, Nodes);
-
-            "rebuildtick" when length(Args) == 1 ->
-                Msec = list_to_integer(hd(Args)),
-                set_tictacaae_option(tictacaae_rebuildtick, Nodes, Msec);
-            "rebuildtick" ->
-                print_tictacaae_option(tictacaae_rebuildtick, Nodes);
-
-            "exchangetick" when length(Args) == 1 ->
-                MSec = list_to_integer(hd(Args)),
-                set_tictacaae_option(tictacaae_exchangetick, Nodes, MSec);
-            "exchangetick" ->
-                print_tictacaae_option(tictacaae_exchangetick, Nodes);
-
-            "maxresults" when length(Args) == 1 ->
-                N = list_to_integer(hd(Args)),
-                set_tictacaae_option(tictacaae_maxresults, Nodes, N);
-            "maxresults" ->
-                print_tictacaae_option(tictacaae_maxresults, Nodes);
-
-            "storeheads" when length(Args) == 1 ->
-                Enabled = ("true" == hd(Args)),
-                set_tictacaae_option(tictacaae_storeheads, Nodes, Enabled);
-            "storeheads" ->
-                print_tictacaae_option(tictacaae_storeheads, Nodes);
-
-            "tokenbucket" when length(Args) == 1 ->
-                Enabled = ("true" == hd(Args)),
-                set_tictacaae_option(aae_tokenbucket, Nodes, Enabled);
-            "tokenbucket" ->
-                print_tictacaae_option(aae_tokenbucket, Nodes);
-
-            "rebuildtreeworkers" when length(Args) == 1 ->
-                N = list_to_integer(hd(Args)),
-                set_tictacaae_option(af1_worker_pool_size, Nodes, N);
-            "rebuildtreeworkers" ->
-                print_tictacaae_option(af1_worker_pool_size, Nodes);
-
-            "rebuildstoreworkers" when length(Args) == 1 ->
-                N = list_to_integer(hd(Args)),
-                set_tictacaae_option(be_worker_pool_size, Nodes, N);
-            "rebuildstoreworkers" ->
-                print_tictacaae_option(be_worker_pool_size, Nodes);
-
-            "aaefoldworkers" when length(Args) == 1 ->
-                N = list_to_integer(hd(Args)),
-                set_tictacaae_option(af4_worker_pool_size, Nodes, N);
-            "aaefoldworkers" ->
-                print_tictacaae_option(af4_worker_pool_size, Nodes);
-
-            "rebuild-soon" when length(Args) == 1 ->
-                AffectedVNodes = schedule_nextrebuild(Nodes, Partitions, list_to_integer(hd(Args))),
-                if length(Nodes) == 1 ->
-                        io:format("scheduled rebuild of aae trees on ~b partition~s on ~s\n",
-                                  [length(AffectedVNodes), ending(AffectedVNodes), hd(Nodes)]);
-                   el/=se ->
-                        io:format("scheduled rebuild of aae trees on ~b nodes\n",
-                                  [length(Nodes)])
-                end;
-
-            "rebuild-now" when length(Args) == 0 ->
-                AffectedVNodes = schedule_nextrebuild(Nodes, Partitions, 0),
-                poke_for_rebuild(AffectedVNodes),
-                if length(Nodes) == 1 ->
-                        io:format("rebuilding aae trees on ~b partition~s on ~s\n",
-                                  [length(AffectedVNodes), ending(AffectedVNodes), hd(Nodes)]);
-                   el/=se ->
-                        io:format("rebuilding aae trees on ~b nodes\n",
-                                  [length(Nodes)])
-                end;
-
-            "treestatus" when length(Args) == 0 ->
-                case {Nodes, Partitions} of
-                    {[N], all} when N == node() ->
-                        print_aae_progress_report(Options);
-                    _ ->
-                        io:format("treestatus option only supported on local node\n", [])
-                end;
-
-            _ ->
-                io:format("Unknown item or wrong number of arguments\n", [])
-        end
-    catch
-        error:_ ->
-            io:format(
-"Usage: riak admin tictacaae treestatus [-n [<node>]] [-p [<partition>]]
-                                       [--format [<format>]]
-                                       [--show [<show>]] ITEM
-
-  -n, --node       Node, or all [default: dev1@127.0.0.1]
-  -p, --partition  Partition, or all [default: all]
-  --format         table or json [default: table]
-  --show           tree states to show [default:
-                   unbuilt,rebuilding,building]
-
-where ITEM is one of rebuildwait, rebuiddelay, rebuildtick,
-exchangetick, maxresults, storeheads, tokenbucket,
-rebuildtreeworkers, rebuildstoreworkers, aaefoldworkers,
-rebuild-soon, rebuild-now, treestatus.
-")
-    end.
+list_to_boolean("true") -> true;
+list_to_boolean("enabled") -> true;
+list_to_boolean("on") -> true;
+list_to_boolean("false") -> false;
+list_to_boolean("disabled") -> false;
+list_to_boolean("off") -> false.
 
 print_tictacaae_option(A, Nodes) ->
     [begin
@@ -887,31 +1027,36 @@ set_tictacaae_option(A, Nodes, V) ->
      || Node <- Nodes],
     ok.
 
-
 schedule_nextrebuild(Nodes, Partitions, Delay) ->
+    exec_command_on_vnodes(Nodes, Partitions, {aae_schedule_nextrebuild, [Delay]}).
+get_rebuild_schedule(Nodes, Partitions) ->
+    exec_command_on_vnodes(Nodes, Partitions, {aae_get_rebuild_schedule, []}).
+set_rebuild_schedule(Nodes, Partitions, RS) ->
+    exec_command_on_vnodes(Nodes, Partitions, {aae_set_rebuild_schedule, [RS]}).
+get_storeheads(Nodes, Partitions) ->
+    exec_command_on_vnodes(Nodes, Partitions, {aae_get_storeheads, []}).
+set_storeheads(Nodes, Partitions, A) ->
+    exec_command_on_vnodes(Nodes, Partitions, {aae_set_storeheads, [A]}).
+get_tokenbucket(Nodes, Partitions) ->
+    exec_command_on_vnodes(Nodes, Partitions, {aae_get_tokenbucket, []}).
+set_tokenbucket(Nodes, Partitions, A) ->
+    exec_command_on_vnodes(Nodes, Partitions, {aae_set_tokenbucket, [A]}).
+send_rebuildpoke(Nodes, Partitions) ->
+    exec_command_on_vnodes(Nodes, Partitions, {aae_rebuildpoke, []}).
+
+exec_command_on_vnodes(Nodes, Partitions, {F, A}) ->
     lists:foldl(
       fun(Node, Q) ->
               VVNN = vnodes(Node, Partitions),
-              ok = rpc:call(Node, riak_kv_vnode, aae_schedule_nextrebuild, [VVNN, Delay]),
-              Q ++ VVNN
+              Res = [{rpc:call(Node, riak_kv_vnode, F, [VN | A]), VN} || VN <- VVNN],
+              Q ++ Res
       end, [], Nodes).
-
 vnodes(Node, all) ->
     {ok, Ring} = rpc:call(Node, riak_core_ring_manager, get_my_ring, []),
     [VN || VN = {_, Owner} <- rpc:call(Node, riak_core_ring, all_owners, [Ring]), Owner =:= Node];
 vnodes(Node, List) ->
     [{P, Node} || P <- List].
 
-poke_for_rebuild(VNodes) ->
-    DistinctNodes = lists:usort([N || {_, N} <- VNodes]),
-    lists:foreach(
-      fun(N) ->
-              rpc:call(N, riak_core_vnode_master, command,
-                       [vnodes_at(N, VNodes), tictacaae_rebuildpoke, riak_kv_vnode_master])
-      end, DistinctNodes).
-
-vnodes_at(Node, VVNN) ->
-    [VN || VN = {_, N} <- VVNN, N == Node].
 
 
 produce_aae_progress_report() ->
@@ -928,8 +1073,7 @@ produce_aae_progress_report() ->
          AAECntrl = riak_kv_vnode:aae_controller(VNState),
          TictacRebuilding = riak_kv_vnode:aae_rebuilding(VNState),
 
-         AAECntrlState = sys:get_state(AAECntrl),
-         KeyStore = aae_controller:get_key_store(AAECntrlState),
+         KeyStore = aae_controller:aae_get_key_store(AAECntrl),
 
          KeyStoreCurrentStatus = if is_pid(KeyStore) ->
                                          element(1, aae_keystore:store_currentstatus(KeyStore));
@@ -937,20 +1081,18 @@ produce_aae_progress_report() ->
                                          not_running
                                  end,
 
-         {_, KeyStoreState} = sys:get_state(KeyStore),
-         LastRebuild = case aae_keystore:get_last_rebuild(KeyStoreState) of
+         LastRebuild = case aae_keystore:store_last_rebuild(KeyStore) of
                            never ->
                                never;
                            TS ->
                                calendar:now_to_local_time(TS)
                        end,
          NextRebuild = calendar:now_to_local_time(
-                         aae_controller:get_next_rebuild(AAECntrlState)),
+                         aae_controller:aae_nextrebuild(AAECntrl)),
 
-         TreeCaches = aae_controller:get_tree_caches(AAECntrlState),
-         TCStates = [sys:get_state(P) || {_, P} <- TreeCaches],
+         TreeCaches = [Pid || {_Preflist, Pid} <- aae_controller:aae_get_tree_caches(AAECntrl)],
          TotalDirtySegments = lists:sum(
-                                [aae_treecache:dirty_segment_count(S) || S <- TCStates]),
+                                [aae_treecache:cache_segment_count(P) || P <- TreeCaches]),
          InProgress = TictacRebuilding /= false,
          Status =
              case {LastRebuild, InProgress, NextRebuild} of
@@ -1004,20 +1146,254 @@ aae_progress_report("table", Report, Options) ->
      end || M <- Report],
     ok.
 
+tictacaae_cmd3(Item, {Options, Args}) ->
+    DumpF =
+        fun(Op, Fun) ->
+                Outfile =
+                    iolist_to_binary(
+                      string:replace(
+                        string:replace(
+                          proplists:get_value(output, Options, ?DEFAULT_AAEFOLD_OUTFILE),
+                          "%o", Op),
+                        "%t", time2s(now))),
+                case file:open(Outfile, [write]) of
+                    {ok, FD} ->
+                        {ok, CWD} = file:get_cwd(),
+                        io:format("Results will be written to ~s/~s\n", [CWD, Outfile]),
+                        spawn(fun() -> Fun(FD) end),
+                        timer:sleep(2000),
+                        ok;
+                    {error, Reason} ->
+                        io:format("Failed to open \"~p\" for writing: ~p\n", [Outfile, Reason])
+                end
+        end,
+    case {Item, Args} of
+        {"fold", ["list-buckets", NVal]} ->
+            DumpF(
+              "list-buckets",
+              fun(FD) ->
+                      Query =
+                          {list_buckets,
+                           list_to_integer(NVal)
+                          },
+                      {ok, BB} = riak_client:aae_fold(Query),
+                      Printable = [printable_bin(B) || B <- BB],
+                      io:format(FD, "~s\n", [mochijson2:encode(Printable)]),
+                      file:close(FD)
+              end);
+
+        {"fold", ["find-keys", Bucket, KeyRange, ModifiedRange, FourthArg]} ->
+            DumpF(
+              "find-keys",
+              fun(FD) ->
+                      Query =
+                          {find_keys,
+                           fold_query_spec(bucket, Bucket),
+                           fold_query_spec(key_range, KeyRange),
+                           fold_query_spec(modified_range, ModifiedRange),
+                           fold_query_spec(sibling_count_or_object_size, FourthArg)
+                          },
+                      {ok, KK} = riak_client:aae_fold(Query),
+                      Printable = [#{<<"key">> => printable_bin(K),
+                                     <<"sibling_count">> => SibCnt
+                                    } || {_B, K, SibCnt} <- KK],
+                      io:format(FD, "~s\n", [mochijson2:encode(Printable)]),
+                      file:close(FD)
+              end);
+
+        {"fold", ["count-keys", Bucket, KeyRange, ModifiedRange, FourthArg]} ->
+            DumpF(
+              "count-keys",
+              fun(FD) ->
+                      Query =
+                          {find_keys,
+                           fold_query_spec(bucket, Bucket),
+                           fold_query_spec(key_range, KeyRange),
+                           fold_query_spec(modified_range, ModifiedRange),
+                           fold_query_spec(sibling_count_or_object_size, FourthArg)
+                          },
+                      {ok, KK} = riak_client:aae_fold(Query),
+                      io:format(FD, "~b\n", [length(KK)]),
+                      file:close(FD)
+              end);
+
+        {"fold", ["find-tombstones", Bucket, KeyRange, Segments, ModifiedRange]} ->
+            DumpF(
+              "find-tombstones",
+              fun(FD) ->
+                      Query =
+                          {find_tombs,
+                           fold_query_spec(bucket, Bucket),
+                           fold_query_spec(key_range, KeyRange),
+                           fold_query_spec(segments, Segments),
+                           fold_query_spec(modified_range, ModifiedRange)
+                          },
+                      {ok, TT} = riak_client:aae_fold(Query),
+                      Printable = [printable_bin(T) || T <- TT],
+                      io:format(FD, "~s\n", [mochijson2:encode(Printable)]),
+                      file:close(FD)
+              end);
+
+        {"fold", ["count-tombstones", Bucket, KeyRange, Segments, ModifiedRange]} ->
+            DumpF(
+              "count-tombstones",
+              fun(FD) ->
+                      Query =
+                          {find_tombs,
+                           fold_query_spec(bucket, Bucket),
+                           fold_query_spec(key_range, KeyRange),
+                           fold_query_spec(segments, Segments),
+                           fold_query_spec(modified_range, ModifiedRange)
+                          },
+                      {ok, TT} = riak_client:aae_fold(Query),
+                      Printable = [{tombstones_found, length(TT)}],
+                      io:format(FD, "~s\n", [mochijson2:encode(Printable)]),
+                      file:close(FD)
+              end);
+
+        {"fold", ["reap-tombstones", Bucket, KeyRange, Segments, ModifiedRange, ChangeMethod]} ->
+            DumpF(
+              "reap-tombstones",
+              fun(FD) ->
+                      Query =
+                          {reap_tombs,
+                           fold_query_spec(bucket, Bucket),
+                           fold_query_spec(key_range, KeyRange),
+                           fold_query_spec(segments, Segments),
+                           fold_query_spec(modified_range, ModifiedRange),
+                           fold_query_spec(change_method, ChangeMethod)
+                          },
+                      {ok, TT} = riak_client:aae_fold(Query),
+                      Printable = [{tombstones_reaped, TT}],
+                      io:format(FD, "~s\n", [mochijson2:encode(Printable)]),
+                      file:close(FD)
+              end);
+
+        {"fold", ["object-stats", Bucket, KeyRange, ModifiedRange]} ->
+            DumpF(
+              "object-stats",
+              fun(FD) ->
+                      Query =
+                          {object_stats,
+                           fold_query_spec(bucket, Bucket),
+                           fold_query_spec(key_range, KeyRange),
+                           fold_query_spec(modified_range, ModifiedRange)
+                          },
+                      {ok, SS} = riak_client:aae_fold(Query),
+                      io:format(FD, "~s\n", [mochijson2:encode(SS)]),
+                      file:close(FD)
+              end);
+
+        {"fold", ["erase-keys", Bucket, KeyRange, Segments, ModifiedRange, ChangeMethod]} ->
+            DumpF(
+              "erase-keys",
+              fun(FD) ->
+                      Query =
+                          {erase_keys,
+                           fold_query_spec(bucket, Bucket),
+                           fold_query_spec(key_range, KeyRange),
+                           fold_query_spec(segments, Segments),
+                           fold_query_spec(modified_range, ModifiedRange),
+                           fold_query_spec(change_method, ChangeMethod)
+                          },
+                      {ok, Res} = riak_client:aae_fold(Query),
+                      Printable = [{keys_erased, Res}],
+                      io:format(FD, "~s\n", [mochijson2:encode(Printable)]),
+                      file:close(FD)
+              end);
+
+        {"fold", ["repair-keys", Bucket, KeyRange, ModifiedRange]} ->
+            DumpF(
+              "erase-keys",
+              fun(FD) ->
+                      Query =
+                          {repair_keys_range,
+                           fold_query_spec(bucket, Bucket),
+                           fold_query_spec(key_range, KeyRange),
+                           fold_query_spec(modified_range, ModifiedRange),
+                           all
+                          },
+                      {ok, {_Tail, Count, all, _RBS}} = riak_client:aae_fold(Query),
+                      Printable = [{keys_repaired, Count}],
+                      io:format(FD, "~s\n", [mochijson2:encode(Printable)]),
+                      file:close(FD)
+              end);
+
+        _ ->
+            tictacaae_cmd_usage()
+    end.
+
+fold_query_spec(bucket, A) ->
+    case string:split(A, "/") of
+        [BT, B] ->
+            case lists:last(BT) of
+                $\\ ->
+                    bin_from_maybe_hex(A);
+                _ ->
+                    {bin_from_maybe_hex(BT), bin_from_maybe_hex(B)}
+            end;
+        _ ->
+            bin_from_maybe_hex(A)
+    end;
+fold_query_spec(key_range, "all") -> all;
+fold_query_spec(key_range, A) ->
+    [From, To] = string:split(A, ","),
+    {list_to_binary(From), list_to_binary(To)};
+fold_query_spec(modified_range, "all") -> all;
+fold_query_spec(modified_range, A) ->
+    [From, To] = string:split(A, ","),
+    {date, calendar:rfc3339_to_system_time(From),
+     calendar:rfc3339_to_system_time(To)};
+fold_query_spec(segments, "all") -> all;
+fold_query_spec(segments, A) ->
+    [SegmentFilter_, TreeSize_] = string:split(A, ";"),
+    SegmentFilter = [list_to_integer(S) || S <- string:split(SegmentFilter_, ",", all)],
+    TreeSize = tree_size(TreeSize_),
+    {segments, SegmentFilter, TreeSize};
+fold_query_spec(sibling_count_or_object_size, A) ->
+    case string:split(A, "=") of
+        ["sibling_count", V] ->
+            {sibling_count, list_to_integer(V)};
+        ["object_size", V] ->
+            {object_size, list_to_integer(V)}
+    end;
+fold_query_spec(change_method, A) ->
+    case string:split(A, "=") of
+        ["jobs", V] ->
+            {jobs, list_to_integer(V)};
+        ["local"] ->
+            local;
+        ["count"] ->
+            count
+    end.
+
+
+printable_bin(K) ->
+    case re:run(K, <<"[[:alnum:][:punct:]]+">>) of
+        {match, [{0, N}]} when N == size(K) ->
+            K;
+        _ ->
+            iolist_to_binary(["0x", mochihex:to_hex(K)])
+    end.
+bin_from_maybe_hex("0x" ++ A) -> mochihex:to_bin(A);
+bin_from_maybe_hex(A) -> list_to_binary(A).
+
+tree_size("xxsmall") -> xxsmall;
+tree_size("xsmall") -> xsmall;
+tree_size("small") -> small;
+tree_size("medium") -> medium;
+tree_size("large") -> large;
+tree_size("xlarge") -> xlarge.
+
 time2s(never) ->
     never;
+time2s(now) ->
+    time2s(calendar:local_time());
 time2s({{LRY, LRMo, LRD}, {LRH, LRMi, LRS}}) ->
     iolist_to_binary(
       io_lib:format("~4.10.0B-~2.10.0B-~2.10.0BT~2.10.0B:~2.10.0B:~2.10.0B",
                     [LRY, LRMo, LRD, LRH, LRMi, LRS])).
 
-tictacaae_cmd_optspecs() ->
-    [
-     {node,      $n,        "node",        {string, atom_to_list(node())},  "Node, or all"},
-     {partition, $p,        "partition",   {string, "all"},   "Partition, or all"},
-     {format,   undefined,  "format",      {string, "table"}, "table or json"},
-     {show,     undefined,  "show", {string, "unbuilt,rebuilding,building"}, "tree states to show"}
-    ].
 extract_nodes(Options) ->
     NN = [N || {node, N} <- Options],
     case lists:member("all", NN) of
