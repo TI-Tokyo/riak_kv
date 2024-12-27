@@ -787,13 +787,27 @@ tictacaae_cmd_usage() ->
         'rebuilding', 'building', or 'all'. Default is
         'unbuilt,rebuilding,building'.
 
-    Dump a JSON array of keys matching filters:
+    AAE fold operations, returning results in JSON format:
 
-        riak tictacaae fold findkeys BUCKET KEY_RANGE MODIFIED_RANGE
-                                     sibling_count=COUNT|object_size=BYTES
+    List buckets:
 
-        where BUCKET is all|BUCKETNAME|TYPENAME,BUCKETNAME,
+        riak tictacaae fold list-buckets NVAL
+
+    List keys matching filters:
+
+        riak tictacaae fold find-keys BUCKET KEY_RANGE MODIFIED_RANGE
+                                      sibling_count=COUNT|object_size=BYTES
+
+        where BUCKET is BUCKETNAME|TYPENAME/BUCKETNAME,
         KEY_RANGE is all|FROM,TO, MODIFIED_RANGE is all|FROM,TO (in RFC3339 format).
+
+    Find all tombstones in the range that match the criteria:
+
+        riak tictacaae find-tombstones KEY_RANGE SEGMENTS MODIFIED_RANGE
+
+        where KEY_RANGE and MODIFIED_RANGE are as above, and SEGMENTS is
+        all|S1,S2,...;TREE_SIZE and TREE_SIZE is xxsmall|xsmall|small|medium|large|xlarge.
+
 ").
 
 
@@ -804,7 +818,8 @@ tictacaae_cmd([Item | Cmdline]) ->
                 {ok, Parsed} = getopt:parse(tictacaae_cmd_optspecs(), Cmdline),
                 tictacaae_cmd2(Item, Parsed)
             catch
-                error:_ ->
+                error:_e:_st ->
+                    io:format("~p / ~p\n\n", [_e, _st]),
                     tictacaae_cmd_usage()
             end;
         _ ->
@@ -1040,8 +1055,20 @@ aae_progress_report("table", Report, Options) ->
     ok.
 
 tictacaae_cmd3(Item, {_Options, Args}) ->
-    case {Item, Args} of
-        {"fold", ["findkeys", Bucket, KeyRange, ModifiedRange, FourthArg]} ->
+    case {application:get_env(riak_kv, tictacaae_storeheads), Item, Args} of
+        {{ok, false}, _, _} ->
+            io:format("tictacaae_storeheads not enabled\n", []);
+
+        {_, "fold", ["list-buckets", NVal]} ->
+            Query =
+                {list_buckets,
+                 list_to_integer(NVal)
+                },
+            {ok, BB} = riak_client:aae_fold(Query),
+            Printable = [printable_bin(B) || B <- BB],
+            io:format("~s\n", [mochijson2:encode(Printable)]);
+
+        {_, "fold", ["find-keys", Bucket, KeyRange, ModifiedRange, FourthArg]} ->
             Query =
                 {find_keys,
                  fold_query_spec(bucket, Bucket),
@@ -1049,19 +1076,55 @@ tictacaae_cmd3(Item, {_Options, Args}) ->
                  fold_query_spec(modified_range, ModifiedRange),
                  fold_query_spec(sibling_count_or_object_size, FourthArg)
                 },
-            riak_client:aae_fold(Query);
+            {ok, KK} = riak_client:aae_fold(Query),
+            Printable = [#{<<"key">> => printable_bin(K),
+                           <<"sibling_count">> => SibCnt
+                          } || {_B, K, SibCnt} <- KK],
+            io:format("~s\n", [mochijson2:encode(Printable)]);
+
+        {_, "fold", ["find-tombstones", Bucket, KeyRange, Segments, ModifiedRange]} ->
+            Query =
+                {find_tombs,
+                 fold_query_spec(bucket, Bucket),
+                 fold_query_spec(key_range, KeyRange),
+                 fold_query_spec(segments, Segments),
+                 fold_query_spec(modified_range, ModifiedRange)
+                },
+            {ok, BB} = riak_client:aae_fold(Query),
+            Printable = [printable_bin(B) || B <- BB],
+            io:format("~s\n", [mochijson2:encode(Printable)]);
+
         _ ->
             tictacaae_cmd_usage()
     end.
-fold_query_spec(_, "all") -> all;
-fold_query_spec(bucket, A) -> list_to_binary(A);
+
+fold_query_spec(bucket, A) ->
+    case string:split(A, "/") of
+        [BT, B] ->
+            case lists:last(BT) of
+                $\\ ->
+                    bin_from_maybe_hex(A);
+                _ ->
+                    {bin_from_maybe_hex(BT), bin_from_maybe_hex(B)}
+            end;
+        _ ->
+            bin_from_maybe_hex(A)
+    end;
+fold_query_spec(key_range, "all") -> all;
 fold_query_spec(key_range, A) ->
     [From, To] = string:split(A, ","),
     {list_to_binary(From), list_to_binary(To)};
+fold_query_spec(modified_range, "all") -> all;
 fold_query_spec(modified_range, A) ->
     [From, To] = string:split(A, ","),
-    {calendar:rfc3339_to_system_time(From),
+    {date, calendar:rfc3339_to_system_time(From),
      calendar:rfc3339_to_system_time(To)};
+fold_query_spec(segments, "all") -> all;
+fold_query_spec(segments, A) ->
+    [SegmentFilter_, TreeSize_] = string:split(A, ";"),
+    SegmentFilter = [list_to_integer(S) || S <- string:split(SegmentFilter_, ",", all)],
+    TreeSize = tree_size(TreeSize_),
+    {segments, SegmentFilter, TreeSize};
 fold_query_spec(sibling_count_or_object_size, A) ->
     case string:split(A, "=") of
         ["sibling_count", V] ->
@@ -1070,9 +1133,22 @@ fold_query_spec(sibling_count_or_object_size, A) ->
             {object_size, list_to_integer(V)}
     end.
 
+printable_bin(K) ->
+    case re:run(K, <<"[[:alnum:]]+">>) of
+        {match, [{0, N}]} when N == size(K) ->
+            K;
+        _ ->
+            iolist_to_binary(["0x", mochihex:to_hex(K)])
+    end.
+bin_from_maybe_hex("0x" ++ A) -> mochihex:to_bin(A);
+bin_from_maybe_hex(A) -> list_to_binary(A).
 
-
-
+tree_size("xxsmall") -> xxsmall;
+tree_size("xsmall") -> xsmall;
+tree_size("small") -> small;
+tree_size("medium") -> medium;
+tree_size("large") -> large;
+tree_size("xlarge") -> xlarge.
 
 time2s(never) ->
     never;
