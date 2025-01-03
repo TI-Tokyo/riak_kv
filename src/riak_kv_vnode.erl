@@ -61,6 +61,8 @@
          get_modstate/1,
          aae_send/1,
          aae_schedule_nextrebuild/2,
+         aae_get_rebuild_schedule/1,
+         aae_set_rebuild_schedule/2,
          aae_controller/1,
          aae_rebuilding/1]).
 
@@ -636,6 +638,24 @@ tictacexchange_complete(Vnode, StartTime, ExchangeResult) ->
 aae_schedule_nextrebuild(Vnodes, Delay) ->
     riak_core_vnode_master:command(Vnodes,
                                    {schedule_nextrebuild, Delay},
+                                   riak_kv_vnode_master).
+
+-spec aae_get_rebuild_schedule({partition(), node()}) ->
+          {ok, aae_controller:rebuild_schedule()} | {error, aae_inactive}.
+%% @doc
+%% Return rebuild schedule in effect on a vnode's AAE Controller
+aae_get_rebuild_schedule(Vnode) ->
+    riak_core_vnode_master:command(Vnode,
+                                   get_rebuild_schedule,
+                                   riak_kv_vnode_master).
+
+-spec aae_set_rebuild_schedule({partition(), node()}, aae_controller:rebuild_schedule()) ->
+          ok | {error, aae_inactive}.
+%% @doc
+%% Set rebuild schedule on a vnode's AAE Controller
+aae_set_rebuild_schedule(Vnode, RS) ->
+    riak_core_vnode_master:command(Vnode,
+                                   {set_rebuild_schedule, RS},
                                    riak_kv_vnode_master).
 
 
@@ -1230,6 +1250,26 @@ handle_command({schedule_nextrebuild, Delay},
     AAECntrl = State#state.aae_controller,
     ok = aae_controller:aae_schedulenextrebuild(AAECntrl, Delay),
     {noreply, State};
+
+handle_command(get_rebuild_schedule,
+               _Sender, State) ->
+    case State#state.aae_controller of
+        undefined ->
+            {reply, {error, aae_inactive}, State};
+        AAECntrl ->
+            RS = aae_controller:aae_get_rebuild_schedule(AAECntrl),
+            {reply, {ok, RS}, State}
+    end;
+
+handle_command({set_rebuild_schedule, RS},
+               _Sender, State) ->
+    case State#state.aae_controller of
+        undefined ->
+            {reply, {error, aae_inactive}, State};
+        AAECntrl ->
+            RS = aae_controller:aae_set_rebuild_schedule(AAECntrl, RS),
+            {reply, {ok, RS}, State}
+    end;
 
 handle_command({upgrade_hashtree, Node}, _, State=#state{hashtrees=HT}) ->
     %% Make sure we dont kick off an upgrade during a possible handoff
