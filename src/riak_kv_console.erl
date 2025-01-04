@@ -758,7 +758,8 @@ tictacaae_cmd_optspecs() ->
      {show,     undefined,  "show", {string, "unbuilt,rebuilding,building"}, "tree states to show"}
     ].
 tictacaae_cmd_ensure_options_consistent(_, all) -> ok;
-tictacaae_cmd_ensure_options_consistent([_|_], Specific) when Specific /= all ->
+tictacaae_cmd_ensure_options_consistent(NN, Specific) when length(NN) > 1,
+                                                           Specific /= all ->
     io:format("With multiple nodes, only -p=all is acceptable\n", []),
     throw(inconsistent_options);
 tictacaae_cmd_ensure_options_consistent(_, _) -> ok.
@@ -854,16 +855,30 @@ tictacaae_cmd2(Item, {Options, Args}) ->
     ok = tictacaae_cmd_ensure_options_consistent(Nodes, Partitions),
     case {Item, Args} of
         {"rebuild_schedule", [Arg1, Arg2]} ->
-            RS = {list_to_integer(Arg1), list_to_integer(Arg2)},
+            RS = {RW = list_to_integer(Arg1), RD = list_to_integer(Arg2)},
             case set_rebuild_schedule(Nodes, Partitions, RS) of
-                [{P, N}] ->
-                    io:format("Set rebuild_schedule to ~p on partition ~b on ~s\n", [RS, P, N]);
+                [{ok, {P, N}}] ->
+                    io:format("Set rebuild_schedule to RW: ~b, RD: ~b on partition ~b on ~s\n",
+                              [RW, RD, P, N]);
                 Multiple ->
-                    io:format("Set rebuild_schedule to ~p on ~b vnodes\n", [RS, length(Multiple)])
+                    case length([PN || {Res, PN} <- Multiple, Res == ok]) of
+                        AllSucceeded when AllSucceeded == length(Multiple) ->
+                            io:format("Set rebuild_schedule to RW: ~b, RD: ~b on ~b vnodes\n",
+                                      [RW, RD, length(Multiple)]);
+                        SomeSucceeded ->
+                            io:format("Successfully set rebuild_schedule to RW: ~b, RD: ~b on ~b vnodes, but"
+                                      " failed on ~b vnodes\n",
+                                      [RW, RD, SomeSucceeded, length(Multiple) - SomeSucceeded])
+                    end
             end;
         {"rebuild_schedule", []} ->
-            [io:format("rebuild_schedule on ~p is ~p\n", [N, RS])
-             || {RS, N} <- get_rebuild_schedule(Nodes, Partitions)],
+            FmtF = fun({ok, {RW, RD}}) ->
+                           io_lib:format("RW: ~b, RD: ~b", [RW, RD]);
+                      ({error, Reason}) ->
+                           io_lib:format("(error: ~p)", [Reason])
+                   end,
+            [io:format("rebuild_schedule on ~s/~b is: ~s\n", [N, P, FmtF(Res)])
+             || {Res, {P, N}} <- get_rebuild_schedule(Nodes, Partitions)],
             ok;
 
         {"rebuild-soon", [Arg1]} ->
@@ -913,7 +928,7 @@ exec_command_on_vnodes(Nodes, Partitions, {F, A}) ->
       fun(Node, Q) ->
               VVNN = vnodes(Node, Partitions),
               Res = [{rpc:call(Node, riak_kv_vnode, F, [VN | A]), VN} || VN <- VVNN],
-              Q ++ [Res]
+              Q ++ Res
       end, [], Nodes).
 vnodes(Node, all) ->
     {ok, Ring} = rpc:call(Node, riak_core_ring_manager, get_my_ring, []),

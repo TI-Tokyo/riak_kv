@@ -645,18 +645,36 @@ aae_schedule_nextrebuild(Vnodes, Delay) ->
 %% @doc
 %% Return rebuild schedule in effect on a vnode's AAE Controller
 aae_get_rebuild_schedule(Vnode) ->
+    Ref = make_ref(),
+    Sender = {raw, Ref, self()},
     riak_core_vnode_master:command(Vnode,
                                    get_rebuild_schedule,
-                                   riak_kv_vnode_master).
+                                   Sender,
+                                   riak_kv_vnode_master),
+    receive
+        {Ref, Res} ->
+            Res
+    after 5000 ->
+            {error, timeout}
+    end.
 
 -spec aae_set_rebuild_schedule({partition(), node()}, aae_controller:rebuild_schedule()) ->
           ok | {error, aae_inactive}.
 %% @doc
 %% Set rebuild schedule on a vnode's AAE Controller
 aae_set_rebuild_schedule(Vnode, RS) ->
+    Ref = make_ref(),
+    Sender = {raw, Ref, self()},
     riak_core_vnode_master:command(Vnode,
                                    {set_rebuild_schedule, RS},
-                                   riak_kv_vnode_master).
+                                   Sender,
+                                   riak_kv_vnode_master),
+    receive
+        {Ref, Res} ->
+            Res
+    after 5000 ->
+            {error, timeout}
+    end.
 
 
 get(Preflist, BKey, ReqId) ->
@@ -1252,23 +1270,27 @@ handle_command({schedule_nextrebuild, Delay},
     {noreply, State};
 
 handle_command(get_rebuild_schedule,
-               _Sender, State) ->
+               Sender, State) ->
     case State#state.aae_controller of
         undefined ->
-            {reply, {error, aae_inactive}, State};
+            riak_core_vnode:reply(Sender, {error, aae_inactive}),
+            {noreply, State};
         AAECntrl ->
-            RS = aae_controller:aae_get_rebuild_schedule(AAECntrl),
-            {reply, {ok, RS}, State}
+            Res = aae_controller:aae_get_rebuild_schedule(AAECntrl),
+            riak_core_vnode:reply(Sender, Res),
+            {noreply, State}
     end;
 
 handle_command({set_rebuild_schedule, RS},
-               _Sender, State) ->
+               Sender, State) ->
     case State#state.aae_controller of
         undefined ->
+            riak_core_vnode:reply(Sender, {error, aae_inactive}),
             {reply, {error, aae_inactive}, State};
         AAECntrl ->
-            RS = aae_controller:aae_set_rebuild_schedule(AAECntrl, RS),
-            {reply, {ok, RS}, State}
+            Res = aae_controller:aae_set_rebuild_schedule(AAECntrl, RS),
+            riak_core_vnode:reply(Sender, Res),
+            {noreply, State}
     end;
 
 handle_command({upgrade_hashtree, Node}, _, State=#state{hashtrees=HT}) ->
