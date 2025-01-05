@@ -1277,7 +1277,7 @@ handle_command(get_rebuild_schedule,
             {noreply, State};
         AAECntrl ->
             Res = aae_controller:aae_get_rebuild_schedule(AAECntrl),
-            riak_core_vnode:reply(Sender, Res),
+            riak_core_vnode:reply(Sender, {ok, Res}),
             {noreply, State}
     end;
 

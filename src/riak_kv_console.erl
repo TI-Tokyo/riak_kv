@@ -980,8 +980,7 @@ produce_aae_progress_report() ->
          AAECntrl = riak_kv_vnode:aae_controller(VNState),
          TictacRebuilding = riak_kv_vnode:aae_rebuilding(VNState),
 
-         AAECntrlState = sys:get_state(AAECntrl),
-         KeyStore = aae_controller:get_key_store(AAECntrlState),
+         KeyStore = aae_controller:aae_get_key_store(AAECntrl),
 
          KeyStoreCurrentStatus = if is_pid(KeyStore) ->
                                          element(1, aae_keystore:store_currentstatus(KeyStore));
@@ -989,20 +988,18 @@ produce_aae_progress_report() ->
                                          not_running
                                  end,
 
-         {_, KeyStoreState} = sys:get_state(KeyStore),
-         LastRebuild = case aae_keystore:get_last_rebuild(KeyStoreState) of
+         LastRebuild = case aae_keystore:store_last_rebuild(KeyStore) of
                            never ->
                                never;
                            TS ->
                                calendar:now_to_local_time(TS)
                        end,
          NextRebuild = calendar:now_to_local_time(
-                         aae_controller:get_next_rebuild(AAECntrlState)),
+                         aae_controller:aae_nextrebuild(AAECntrl)),
 
-         TreeCaches = aae_controller:get_tree_caches(AAECntrlState),
-         TCStates = [sys:get_state(P) || {_, P} <- TreeCaches],
+         TreeCaches = [Pid || {_Preflist, Pid} <- aae_controller:aae_get_tree_caches(AAECntrl)],
          TotalDirtySegments = lists:sum(
-                                [aae_treecache:dirty_segment_count(S) || S <- TCStates]),
+                                [aae_treecache:dirty_segment_count(P) || P <- TreeCaches]),
          InProgress = TictacRebuilding /= false,
          Status =
              case {LastRebuild, InProgress, NextRebuild} of
