@@ -773,6 +773,10 @@ tictacaae_cmd_usage() ->
 
         riak admin tictacaae rebuild_schedule [-n NODE] [-p PARTITION] [RW RD]
 
+    Set/show rebuild/exchange tick on NODE:
+
+        riak admin tictacaae rebuildtick|exchangetick [-n NODE] [MSEC]
+
     Set next rebuild time to now + DELAY sec, on PARTITION on NODE (default is
     all partitions on local node):
 
@@ -854,6 +858,18 @@ tictacaae_cmd2(Item, {Options, Args}) ->
     Partitions = extract_partitions(Options),
     ok = tictacaae_cmd_ensure_options_consistent(Nodes, Partitions),
     case {Item, Args} of
+        {"rebuildtick", []} ->
+            print_tictacaae_option(tictacaae_rebuildtick, Nodes);
+        {"rebuildtick", [Arg1]} ->
+            Msec = list_to_integer(Arg1),
+            set_tictacaae_option(tictacaae_rebuildtick, Nodes, Msec);
+
+        {"exchangetick", []} ->
+            print_tictacaae_option(tictacaae_exchangetick, Nodes);
+        {"exchangetick", [Arg1]} ->
+            MSec = list_to_integer(Arg1),
+            set_tictacaae_option(tictacaae_exchangetick, Nodes, MSec);
+
         {"rebuild_schedule", [Arg1, Arg2]} ->
             RS = {RW = list_to_integer(Arg1), RD = list_to_integer(Arg2)},
             case set_rebuild_schedule(Nodes, Partitions, RS) of
@@ -915,6 +931,18 @@ tictacaae_cmd2(Item, {Options, Args}) ->
         _ ->
             tictacaae_cmd3(Item, {Options, Args})
     end.
+
+print_tictacaae_option(A, Nodes) ->
+    [begin
+         {ok, Current} = rpc:call(Node, application, get_env, [riak_kv, A]),
+         io:format("~s on ~s is ~p\n", [A, Node, Current])
+     end || Node <- Nodes],
+    ok.
+
+set_tictacaae_option(A, Nodes, V) ->
+    [ok = rpc:call(Node, application, set_env, [riak_kv, A, V])
+     || Node <- Nodes],
+    ok.
 
 schedule_nextrebuild(Nodes, Partitions, Delay) ->
     exec_command_on_vnodes(Nodes, Partitions, {aae_schedule_nextrebuild, [Delay]}).
