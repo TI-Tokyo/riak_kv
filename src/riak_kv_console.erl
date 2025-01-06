@@ -857,6 +857,25 @@ tictacaae_cmd2(Item, {Options, Args}) ->
     Nodes = extract_nodes(Options),
     Partitions = extract_partitions(Options),
     ok = tictacaae_cmd_ensure_options_consistent(Nodes, Partitions),
+    PostSetResultF =
+        fun(Res, Par, Val) ->
+            case Res of
+                [{ok, {P, N}}] ->
+                    io:format("Set ~s to ~s on partition ~b on ~s\n",
+                              [Par, Val, P, N]);
+                Multiple ->
+                    case length([PN || {Resx, PN} <- Multiple, Resx == ok]) of
+                        AllSucceeded when AllSucceeded == length(Multiple) ->
+                            io:format("Set ~s to ~s on ~b vnodes\n",
+                                      [Par, Val, length(Multiple)]);
+                        SomeSucceeded ->
+                            io:format("Successfully set ~s to ~s on ~b vnodes, but"
+                                      " failed on ~b vnodes\n",
+                                      [Par, Val, SomeSucceeded, length(Multiple) - SomeSucceeded])
+                    end
+            end
+        end,
+
     case {Item, Args} of
         {"rebuildtick", []} ->
             print_tictacaae_option(tictacaae_rebuildtick, Nodes);
@@ -872,21 +891,10 @@ tictacaae_cmd2(Item, {Options, Args}) ->
 
         {"rebuild_schedule", [Arg1, Arg2]} ->
             RS = {RW = list_to_integer(Arg1), RD = list_to_integer(Arg2)},
-            case set_rebuild_schedule(Nodes, Partitions, RS) of
-                [{ok, {P, N}}] ->
-                    io:format("Set rebuild_schedule to RW: ~b, RD: ~b on partition ~b on ~s\n",
-                              [RW, RD, P, N]);
-                Multiple ->
-                    case length([PN || {Res, PN} <- Multiple, Res == ok]) of
-                        AllSucceeded when AllSucceeded == length(Multiple) ->
-                            io:format("Set rebuild_schedule to RW: ~b, RD: ~b on ~b vnodes\n",
-                                      [RW, RD, length(Multiple)]);
-                        SomeSucceeded ->
-                            io:format("Successfully set rebuild_schedule to RW: ~b, RD: ~b on ~b vnodes, but"
-                                      " failed on ~b vnodes\n",
-                                      [RW, RD, SomeSucceeded, length(Multiple) - SomeSucceeded])
-                    end
-            end;
+            PostSetResultF(
+              set_rebuild_schedule(Nodes, Partitions, RS),
+              "rebuild_schedule",
+              io_lib:format("to RW: ~b, RD: ~b", [RW, RD]));
         {"rebuild_schedule", []} ->
             FmtF = fun({ok, {RW, RD}}) ->
                            io_lib:format("RW: ~b, RD: ~b", [RW, RD]);
@@ -897,8 +905,20 @@ tictacaae_cmd2(Item, {Options, Args}) ->
              || {Res, {P, N}} <- get_rebuild_schedule(Nodes, Partitions)],
             ok;
 
+        {"storeheads", [Arg1]} ->
+            Val = list_to_boolean(Arg1),
+            PostSetResultF(
+              set_storeheads(Nodes, Partitions, Val),
+              "storeheads",
+              Val);
+        {"storeheads", []} ->
+            [io:format("rebuild_schedule on ~s/~b is: ~s\n", [N, P, Res])
+             || {Res, {P, N}} <- get_rebuild_schedule(Nodes, Partitions)],
+            ok;
+
         {"rebuild-soon", [Arg1]} ->
             AffectedVNodes = schedule_nextrebuild(Nodes, Partitions, list_to_integer(Arg1)),
+            send_rebuildpoke(Nodes, Partitions),
             if length(Nodes) == 1 ->
                     io:format("scheduled rebuild of aae trees on ~b partition~s on ~s\n",
                               [length(AffectedVNodes), ending(AffectedVNodes), hd(Nodes)]);
@@ -909,9 +929,7 @@ tictacaae_cmd2(Item, {Options, Args}) ->
 
         {"rebuild-now", []} ->
             AffectedVNodes = schedule_nextrebuild(Nodes, Partitions, 0),
-            
-            %% send a poke, too
-            
+            send_rebuildpoke(Nodes, Partitions),
             if length(Nodes) == 1 ->
                     io:format("rebuilding aae trees on ~b partition~s on ~s\n",
                               [length(AffectedVNodes), ending(AffectedVNodes), hd(Nodes)]);
@@ -932,6 +950,9 @@ tictacaae_cmd2(Item, {Options, Args}) ->
             tictacaae_cmd3(Item, {Options, Args})
     end.
 
+list_to_boolean("true") -> true;
+list_to_boolean("false") -> false.
+
 print_tictacaae_option(A, Nodes) ->
     [begin
          {ok, Current} = rpc:call(Node, application, get_env, [riak_kv, A]),
@@ -950,6 +971,10 @@ get_rebuild_schedule(Nodes, Partitions) ->
     exec_command_on_vnodes(Nodes, Partitions, {aae_get_rebuild_schedule, []}).
 set_rebuild_schedule(Nodes, Partitions, RS) ->
     exec_command_on_vnodes(Nodes, Partitions, {aae_set_rebuild_schedule, [RS]}).
+set_storeheads(Nodes, Partitions, A) ->
+    exec_command_on_vnodes(Nodes, Partitions, {aae_set_storeheads, [A]}).
+send_rebuildpoke(Nodes, Partitions) ->
+    exec_command_on_vnodes(Nodes, Partitions, {aae_rebuildpoke, []}).
 
 exec_command_on_vnodes(Nodes, Partitions, {F, A}) ->
     lists:foldl(
@@ -999,7 +1024,7 @@ produce_aae_progress_report() ->
 
          TreeCaches = [Pid || {_Preflist, Pid} <- aae_controller:aae_get_tree_caches(AAECntrl)],
          TotalDirtySegments = lists:sum(
-                                [aae_treecache:dirty_segment_count(P) || P <- TreeCaches]),
+                                [aae_treecache:cache_segment_count(P) || P <- TreeCaches]),
          InProgress = TictacRebuilding /= false,
          Status =
              case {LastRebuild, InProgress, NextRebuild} of
