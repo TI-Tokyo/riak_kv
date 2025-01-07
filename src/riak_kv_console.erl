@@ -750,13 +750,17 @@ ensemble_status([Str]) ->
     end.
 
 
+-define(DEFAULT_AAEFOLD_OUTFILE, "aaefold-%o-results-%t.json").
+
 tictacaae_cmd_optspecs() ->
     [
      {node,      $n,        "node",        {string, atom_to_list(node())},  "Node, or all"},
      {partition, $p,        "partition",   {string, "all"},   "Partition, or all"},
      {format,   undefined,  "format",      {string, "table"}, "table or json"},
-     {show,     undefined,  "show", {string, "unbuilt,rebuilding,building"}, "tree states to show"}
+     {show,     undefined,  "show", {string, "unbuilt,rebuilding,building"}, "tree states to show"},
+     {output,    $o,        "output", {string, ?DEFAULT_AAEFOLD_OUTFILE}, "dump results of an aae fold operation to file (\"-\" for stdout)"}
     ].
+
 tictacaae_cmd_ensure_options_consistent(_, all) -> ok;
 tictacaae_cmd_ensure_options_consistent(NN, Specific) when length(NN) > 1,
                                                            Specific /= all ->
@@ -798,7 +802,7 @@ tictacaae_cmd_usage() ->
         'rebuilding', 'building', or 'all'. Default is
         'unbuilt,rebuilding,building'.
 
-    AAE fold operations, returning results in JSON format:
+    AAE fold operations, dumping results in JSON format to a file specified with '-o'.
 
     List buckets:
 
@@ -1083,35 +1087,60 @@ aae_progress_report("table", Report, Options) ->
      end || M <- Report],
     ok.
 
-tictacaae_cmd3(Item, {_Options, Args}) ->
-    case {application:get_env(riak_kv, tictacaae_storeheads), Item, Args} of
-        {{ok, false}, _, _} ->
-            io:format("tictacaae_storeheads not enabled\n", []);
+tictacaae_cmd3(Item, {Options, Args}) ->
+    DumpF =
+        fun(Op, Fun) ->
+                Outfile =
+                    iolist_to_binary(
+                      string:replace(
+                        string:replace(
+                          proplists:get_value(output, Options, ?DEFAULT_AAEFOLD_OUTFILE),
+                          "%o", Op),
+                        "%t", time2s(now))),
+                case file:open(Outfile, [write]) of
+                    {ok, FD} ->
+                        spawn(fun() -> Fun(FD) end),
+                        timer:sleep(2000),
+                        ok;
+                    {error, Reason} ->
+                        io:format("Failed to open \"~p\" for writing: ~p\n", [Outfile, Reason])
+                end
+        end,
+    case {Item, Args} of
+        {"fold", ["list-buckets", NVal]} ->
+            DumpF(
+              "list-buckets",
+              fun(FD) ->
+                      Query =
+                          {list_buckets,
+                           list_to_integer(NVal)
+                          },
+                      {ok, BB} = riak_client:aae_fold(Query),
+                      Printable = [printable_bin(B) || B <- BB],
+                      io:format(FD, "~s\n", [mochijson2:encode(Printable)]),
+                      file:close(FD)
+              end);
 
-        {_, "fold", ["list-buckets", NVal]} ->
-            Query =
-                {list_buckets,
-                 list_to_integer(NVal)
-                },
-            {ok, BB} = riak_client:aae_fold(Query),
-            Printable = [printable_bin(B) || B <- BB],
-            io:format("~s\n", [mochijson2:encode(Printable)]);
+        {"fold", ["find-keys", Bucket, KeyRange, ModifiedRange, FourthArg]} ->
+            DumpF(
+              "find-keys",
+              fun(FD) ->
+                      Query =
+                          {find_keys,
+                           fold_query_spec(bucket, Bucket),
+                           fold_query_spec(key_range, KeyRange),
+                           fold_query_spec(modified_range, ModifiedRange),
+                           fold_query_spec(sibling_count_or_object_size, FourthArg)
+                          },
+                      {ok, KK} = riak_client:aae_fold(Query),
+                      Printable = [#{<<"key">> => printable_bin(K),
+                                     <<"sibling_count">> => SibCnt
+                                    } || {_B, K, SibCnt} <- KK],
+                      io:format(FD, "~s\n", [mochijson2:encode(Printable)]),
+                      file:close(FD)
+              end);
 
-        {_, "fold", ["find-keys", Bucket, KeyRange, ModifiedRange, FourthArg]} ->
-            Query =
-                {find_keys,
-                 fold_query_spec(bucket, Bucket),
-                 fold_query_spec(key_range, KeyRange),
-                 fold_query_spec(modified_range, ModifiedRange),
-                 fold_query_spec(sibling_count_or_object_size, FourthArg)
-                },
-            {ok, KK} = riak_client:aae_fold(Query),
-            Printable = [#{<<"key">> => printable_bin(K),
-                           <<"sibling_count">> => SibCnt
-                          } || {_B, K, SibCnt} <- KK],
-            io:format("~s\n", [mochijson2:encode(Printable)]);
-
-        {_, "fold", ["count-keys", Bucket, KeyRange, ModifiedRange, FourthArg]} ->
+        {"fold", ["count-keys", Bucket, KeyRange, ModifiedRange, FourthArg]} ->
             Query =
                 {find_keys,
                  fold_query_spec(bucket, Bucket),
@@ -1122,7 +1151,7 @@ tictacaae_cmd3(Item, {_Options, Args}) ->
             {ok, KK} = riak_client:aae_fold(Query),
             io:format("~b\n", [length(KK)]);
 
-        {_, "fold", ["find-tombstones", Bucket, KeyRange, Segments, ModifiedRange]} ->
+        {"fold", ["find-tombstones", Bucket, KeyRange, Segments, ModifiedRange]} ->
             Query =
                 {find_tombs,
                  fold_query_spec(bucket, Bucket),
@@ -1135,7 +1164,7 @@ tictacaae_cmd3(Item, {_Options, Args}) ->
             Printable = [printable_bin(T) || T <- TT],
             io:format("~s\n", [mochijson2:encode(Printable)]);
 
-        {_, "fold", ["object-stats", Bucket, KeyRange, ModifiedRange]} ->
+        {"fold", ["object-stats", Bucket, KeyRange, ModifiedRange]} ->
             Query =
                 {object_stats,
                  fold_query_spec(bucket, Bucket),
@@ -1203,6 +1232,8 @@ tree_size("xlarge") -> xlarge.
 
 time2s(never) ->
     never;
+time2s(now) ->
+    time2s(calendar:local_time());
 time2s({{LRY, LRMo, LRD}, {LRH, LRMi, LRS}}) ->
     iolist_to_binary(
       io_lib:format("~4.10.0B-~2.10.0B-~2.10.0BT~2.10.0B:~2.10.0B:~2.10.0B",
