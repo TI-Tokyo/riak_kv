@@ -63,6 +63,7 @@
          aae_schedule_nextrebuild/2,
          aae_get_rebuild_schedule/1,
          aae_set_rebuild_schedule/2,
+         aae_get_storeheads/1,
          aae_set_storeheads/2,
          aae_rebuildpoke/1,
          aae_exchangepoke/1,
@@ -670,12 +671,7 @@ aae_get_rebuild_schedule(Vnode) ->
                                    get_rebuild_schedule,
                                    Sender,
                                    riak_kv_vnode_master),
-    receive
-        {Ref, Res} ->
-            Res
-    after 5000 ->
-            {error, timeout}
-    end.
+    receive_with_ref(Ref).
 
 -spec aae_set_rebuild_schedule({partition(), node()}, aae_controller:rebuild_schedule()) ->
           ok | {error, aae_inactive}.
@@ -688,12 +684,20 @@ aae_set_rebuild_schedule(Vnode, RS) ->
                                    {set_rebuild_schedule, RS},
                                    Sender,
                                    riak_kv_vnode_master),
-    receive
-        {Ref, Res} ->
-            Res
-    after 5000 ->
-            {error, timeout}
-    end.
+    receive_with_ref(Ref).
+
+-spec aae_get_storeheads({partition(), node()}) ->
+          {ok, boolean()} | {error, aae_inactive}.
+%% @doc
+%% Return storeheads flag in effect on a vnode's AAE Controller
+aae_get_storeheads(Vnode) ->
+    Ref = make_ref(),
+    Sender = {raw, Ref, self()},
+    riak_core_vnode_master:command(Vnode,
+                                   get_storeheads,
+                                   Sender,
+                                   riak_kv_vnode_master),
+    receive_with_ref(Ref).
 
 -spec aae_set_storeheads({partition(), node()}, boolean()) ->
           ok | {error, aae_inactive}.
@@ -706,6 +710,9 @@ aae_set_storeheads(Vnode, A) ->
                                    {set_storeheads, A},
                                    Sender,
                                    riak_kv_vnode_master),
+    receive_with_ref(Ref).
+
+receive_with_ref(Ref) ->
     receive
         {Ref, Res} ->
             Res
@@ -1330,6 +1337,18 @@ handle_command({set_rebuild_schedule, RS},
             {noreply, State}
     end;
 
+handle_command(get_storeheads,
+               Sender, State) ->
+    case State#state.aae_controller of
+        undefined ->
+            riak_core_vnode:reply(Sender, {error, aae_inactive}),
+            {reply, {error, aae_inactive}, State};
+        AAECntrl ->
+            Res = aae_controller:aae_get_storeheads(AAECntrl),
+            riak_core_vnode:reply(Sender, Res),
+            {noreply, State}
+    end;
+
 handle_command({set_storeheads, A},
                Sender, State) ->
     case State#state.aae_controller of
@@ -1337,8 +1356,7 @@ handle_command({set_storeheads, A},
             riak_core_vnode:reply(Sender, {error, aae_inactive}),
             {reply, {error, aae_inactive}, State};
         AAECntrl ->
-            ObjSplitFun = riak_object:aae_from_object_binary(A),
-            Res = aae_controller:aae_set_storeheads(AAECntrl, ObjSplitFun),
+            Res = aae_controller:aae_set_storeheads(AAECntrl, A),
             riak_core_vnode:reply(Sender, Res),
             {noreply, State}
     end;

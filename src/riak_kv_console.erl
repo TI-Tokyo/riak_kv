@@ -773,6 +773,10 @@ tictacaae_cmd_usage() ->
 
         riak admin tictacaae rebuild_schedule [-n NODE] [-p PARTITION] [RW RD]
 
+    Set/show storeheads flag on an AAE controller managing PARTITION on NODE:
+
+        riak admin tictacaae storeheads [-n NODE] [-p PARTITION] [VALUE]
+
     Set/show rebuild/exchange tick on NODE:
 
         riak admin tictacaae rebuildtick|exchangetick [-n NODE] [MSEC]
@@ -782,7 +786,7 @@ tictacaae_cmd_usage() ->
 
         riak admin tictacaae rebuild-soon [-n NODE] [-p PARTITION] DELAY
 
-    Same as above, plus send a rebuild poke:
+    Same as \"rebuild-soon 0\", plus send a rebuild poke:
 
         riak admin tictacaae rebuild-now [-n NODE] [-p PARTITION] DELAY
 
@@ -912,13 +916,12 @@ tictacaae_cmd2(Item, {Options, Args}) ->
               "storeheads",
               Val);
         {"storeheads", []} ->
-            [io:format("rebuild_schedule on ~s/~b is: ~s\n", [N, P, Res])
-             || {Res, {P, N}} <- get_rebuild_schedule(Nodes, Partitions)],
+            [io:format("storeheads on ~s/~b is: ~s\n", [N, P, Res])
+             || {Res, {P, N}} <- get_storeheads(Nodes, Partitions)],
             ok;
 
         {"rebuild-soon", [Arg1]} ->
             AffectedVNodes = schedule_nextrebuild(Nodes, Partitions, list_to_integer(Arg1)),
-            send_rebuildpoke(Nodes, Partitions),
             if length(Nodes) == 1 ->
                     io:format("scheduled rebuild of aae trees on ~b partition~s on ~s\n",
                               [length(AffectedVNodes), ending(AffectedVNodes), hd(Nodes)]);
@@ -971,6 +974,8 @@ get_rebuild_schedule(Nodes, Partitions) ->
     exec_command_on_vnodes(Nodes, Partitions, {aae_get_rebuild_schedule, []}).
 set_rebuild_schedule(Nodes, Partitions, RS) ->
     exec_command_on_vnodes(Nodes, Partitions, {aae_set_rebuild_schedule, [RS]}).
+get_storeheads(Nodes, Partitions) ->
+    exec_command_on_vnodes(Nodes, Partitions, {aae_get_storeheads, []}).
 set_storeheads(Nodes, Partitions, A) ->
     exec_command_on_vnodes(Nodes, Partitions, {aae_set_storeheads, [A]}).
 send_rebuildpoke(Nodes, Partitions) ->
