@@ -1141,38 +1141,52 @@ tictacaae_cmd3(Item, {Options, Args}) ->
               end);
 
         {"fold", ["count-keys", Bucket, KeyRange, ModifiedRange, FourthArg]} ->
-            Query =
-                {find_keys,
-                 fold_query_spec(bucket, Bucket),
-                 fold_query_spec(key_range, KeyRange),
-                 fold_query_spec(modified_range, ModifiedRange),
-                 fold_query_spec(sibling_count_or_object_size, FourthArg)
-                },
-            {ok, KK} = riak_client:aae_fold(Query),
-            io:format("~b\n", [length(KK)]);
+            DumpF(
+              "count-keys",
+              fun(FD) ->
+                      Query =
+                          {find_keys,
+                           fold_query_spec(bucket, Bucket),
+                           fold_query_spec(key_range, KeyRange),
+                           fold_query_spec(modified_range, ModifiedRange),
+                           fold_query_spec(sibling_count_or_object_size, FourthArg)
+                          },
+                      {ok, KK} = riak_client:aae_fold(Query),
+                      io:format(FD, "~b\n", [length(KK)]),
+                      file:close(FD)
+              end);
 
         {"fold", ["find-tombstones", Bucket, KeyRange, Segments, ModifiedRange]} ->
-            Query =
-                {find_tombs,
-                 fold_query_spec(bucket, Bucket),
-                 fold_query_spec(key_range, KeyRange),
-                 fold_query_spec(segments, Segments),
-                 fold_query_spec(modified_range, ModifiedRange)
-                },
-            {ok, TT} = riak_client:aae_fold(Query),
-            io:format("TT: ~p\n", [TT]),
-            Printable = [printable_bin(T) || T <- TT],
-            io:format("~s\n", [mochijson2:encode(Printable)]);
+            DumpF(
+              "find-tombstones",
+              fun(FD) ->
+                      Query =
+                          {find_tombs,
+                           fold_query_spec(bucket, Bucket),
+                           fold_query_spec(key_range, KeyRange),
+                           fold_query_spec(segments, Segments),
+                           fold_query_spec(modified_range, ModifiedRange)
+                          },
+                      {ok, TT} = riak_client:aae_fold(Query),
+                      Printable = [printable_bin(T) || T <- TT],
+                      io:format(FD, "~s\n", [mochijson2:encode(Printable)]),
+                      file:close(FD)
+              end);
 
         {"fold", ["object-stats", Bucket, KeyRange, ModifiedRange]} ->
-            Query =
-                {object_stats,
-                 fold_query_spec(bucket, Bucket),
-                 fold_query_spec(key_range, KeyRange),
-                 fold_query_spec(modified_range, ModifiedRange)
-                },
-            {ok, SS} = riak_client:aae_fold(Query),
-            io:format("~s\n", [mochijson2:encode(SS)]);
+            DumpF(
+              "object-stats",
+              fun(FD) ->
+                      Query =
+                          {object_stats,
+                           fold_query_spec(bucket, Bucket),
+                           fold_query_spec(key_range, KeyRange),
+                           fold_query_spec(modified_range, ModifiedRange)
+                          },
+                      {ok, SS} = riak_client:aae_fold(Query),
+                      io:format(FD, "~s\n", [mochijson2:encode(SS)]),
+                      file:close(FD)
+              end);
 
         _ ->
             tictacaae_cmd_usage()
