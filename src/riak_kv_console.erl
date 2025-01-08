@@ -781,9 +781,15 @@ tictacaae_cmd_usage() ->
 
         riak admin tictacaae storeheads [-n NODE] [-p PARTITION] [VALUE]
 
-    Set/show rebuild/exchange tick on NODE:
+    Set/show tokenbucket flag on a vnode managing PARTITION on NODE:
 
-        riak admin tictacaae rebuildtick|exchangetick [-n NODE] [MSEC]
+        riak admin tictacaae tokenbucket [-n NODE] [-p PARTITION] [VALUE]
+
+    Set/show riak_kv tictacaae VAR on NODE:
+
+        riak admin tictacaae Var [-n NODE] [VAL]
+
+        VAR is one of rebuildtick, exchangetick, maxresults, rangeboost.
 
     Set next rebuild time to now + DELAY sec, on PARTITION on NODE (default is
     all partitions on local node):
@@ -876,10 +882,13 @@ tictacaae_cmd2(Item, {Options, Args}) ->
                         AllSucceeded when AllSucceeded == length(Multiple) ->
                             io:format("Set ~s to ~s on ~b vnodes\n",
                                       [Par, Val, length(Multiple)]);
-                        SomeSucceeded ->
+                        SomeSucceeded when SomeSucceeded > 0 ->
                             io:format("Successfully set ~s to ~s on ~b vnodes, but"
                                       " failed on ~b vnodes\n",
-                                      [Par, Val, SomeSucceeded, length(Multiple) - SomeSucceeded])
+                                      [Par, Val, SomeSucceeded, length(Multiple) - SomeSucceeded]);
+                        _ ->
+                            io:format("Failed to set ~s to ~s on all ~b vnodes\n",
+                                      [Par, Val, length(Multiple)])
                     end
             end
         end,
@@ -896,6 +905,18 @@ tictacaae_cmd2(Item, {Options, Args}) ->
         {"exchangetick", [Arg1]} ->
             MSec = list_to_integer(Arg1),
             set_tictacaae_option(tictacaae_exchangetick, Nodes, MSec);
+
+        {"maxresults", []} ->
+            print_tictacaae_option(tictacaae_maxresults, Nodes);
+        {"maxresults", [Arg1]} ->
+            A = list_to_integer(Arg1),
+            set_tictacaae_option(tictacaae_maxresults, Nodes, A);
+
+        {"rangeboost", []} ->
+            print_tictacaae_option(tictacaae_rangeboost, Nodes);
+        {"rangeboost", [Arg1]} ->
+            A = list_to_integer(Arg1),
+            set_tictacaae_option(tictacaae_rangeboost, Nodes, A);
 
         {"rebuild_schedule", [Arg1, Arg2]} ->
             RS = {RW = list_to_integer(Arg1), RD = list_to_integer(Arg2)},
@@ -922,6 +943,17 @@ tictacaae_cmd2(Item, {Options, Args}) ->
         {"storeheads", []} ->
             [io:format("storeheads on ~s/~b is: ~s\n", [N, P, Res])
              || {Res, {P, N}} <- get_storeheads(Nodes, Partitions)],
+            ok;
+
+        {"tokenbucket", [Arg1]} ->
+            Val = list_to_boolean(Arg1),
+            PostSetResultF(
+              set_tokenbucket(Nodes, Partitions, Val),
+              "tokenbucket",
+              Val);
+        {"tokenbucket", []} ->
+            [io:format("tokenbucket on ~s/~b is: ~s\n", [N, P, Res])
+             || {Res, {P, N}} <- get_tokenbucket(Nodes, Partitions)],
             ok;
 
         {"rebuild-soon", [Arg1]} ->
@@ -958,7 +990,11 @@ tictacaae_cmd2(Item, {Options, Args}) ->
     end.
 
 list_to_boolean("true") -> true;
-list_to_boolean("false") -> false.
+list_to_boolean("enabled") -> true;
+list_to_boolean("on") -> true;
+list_to_boolean("false") -> false;
+list_to_boolean("disabled") -> false;
+list_to_boolean("off") -> false.
 
 print_tictacaae_option(A, Nodes) ->
     [begin
@@ -982,6 +1018,10 @@ get_storeheads(Nodes, Partitions) ->
     exec_command_on_vnodes(Nodes, Partitions, {aae_get_storeheads, []}).
 set_storeheads(Nodes, Partitions, A) ->
     exec_command_on_vnodes(Nodes, Partitions, {aae_set_storeheads, [A]}).
+get_tokenbucket(Nodes, Partitions) ->
+    exec_command_on_vnodes(Nodes, Partitions, {aae_get_tokenbucket, []}).
+set_tokenbucket(Nodes, Partitions, A) ->
+    exec_command_on_vnodes(Nodes, Partitions, {aae_set_tokenbucket, [A]}).
 send_rebuildpoke(Nodes, Partitions) ->
     exec_command_on_vnodes(Nodes, Partitions, {aae_rebuildpoke, []}).
 
@@ -1099,6 +1139,8 @@ tictacaae_cmd3(Item, {Options, Args}) ->
                         "%t", time2s(now))),
                 case file:open(Outfile, [write]) of
                     {ok, FD} ->
+                        {ok, CWD} = file:get_cwd(),
+                        io:format("Results will be written to ~s/~s\n", [CWD, Outfile]),
                         spawn(fun() -> Fun(FD) end),
                         timer:sleep(2000),
                         ok;

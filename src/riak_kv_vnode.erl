@@ -65,6 +65,8 @@
          aae_set_rebuild_schedule/2,
          aae_get_storeheads/1,
          aae_set_storeheads/2,
+         aae_get_tokenbucket/1,
+         aae_set_tokenbucket/2,
          aae_rebuildpoke/1,
          aae_exchangepoke/1,
          aae_controller/1,
@@ -708,6 +710,32 @@ aae_set_storeheads(Vnode, A) ->
     Sender = {raw, Ref, self()},
     riak_core_vnode_master:command(Vnode,
                                    {set_storeheads, A},
+                                   Sender,
+                                   riak_kv_vnode_master),
+    receive_with_ref(Ref).
+
+-spec aae_get_tokenbucket({partition(), node()}) ->
+          {ok, boolean()}.
+%% @doc
+%% Return tokenbucket flag in effect on a vnode
+aae_get_tokenbucket(Vnode) ->
+    Ref = make_ref(),
+    Sender = {raw, Ref, self()},
+    riak_core_vnode_master:command(Vnode,
+                                   get_tokenbucket,
+                                   Sender,
+                                   riak_kv_vnode_master),
+    receive_with_ref(Ref).
+
+-spec aae_set_tokenbucket({partition(), node()}, boolean()) ->
+          ok.
+%% @doc
+%% Set tokenbucket on a vnode
+aae_set_tokenbucket(Vnode, A) ->
+    Ref = make_ref(),
+    Sender = {raw, Ref, self()},
+    riak_core_vnode_master:command(Vnode,
+                                   {set_tokenbucket, A},
                                    Sender,
                                    riak_kv_vnode_master),
     receive_with_ref(Ref).
@@ -1360,6 +1388,16 @@ handle_command({set_storeheads, A},
             riak_core_vnode:reply(Sender, Res),
             {noreply, State}
     end;
+
+handle_command(get_tokenbucket,
+               Sender, State) ->
+    riak_core_vnode:reply(Sender, State#state.aae_tokenbucket),
+    {noreply, State};
+
+handle_command({set_tokenbucket, A},
+               Sender, State) ->
+    riak_core_vnode:reply(Sender, ok),
+    {noreply, State#state{aae_tokenbucket = A}};
 
 handle_command({upgrade_hashtree, Node}, _, State=#state{hashtrees=HT}) ->
     %% Make sure we dont kick off an upgrade during a possible handoff
