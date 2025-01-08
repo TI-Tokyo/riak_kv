@@ -814,7 +814,7 @@ tictacaae_cmd_usage() ->
 
         riak tictacaae fold list-buckets NVAL
 
-    List keys matching filters:
+    Find keys matching filters:
 
         riak tictacaae fold find-keys BUCKET KEY_RANGE MODIFIED_RANGE
                                       sibling_count=COUNT|object_size=BYTES
@@ -829,12 +829,19 @@ tictacaae_cmd_usage() ->
 
         Same as above, only return the count of keys.
 
-    Find all tombstones in the range that match the criteria:
+    Find/count tombstones in the range that match the criteria:
 
-        riak tictacaae find-tombstones KEY_RANGE SEGMENTS MODIFIED_RANGE
+        riak tictacaae find|count-tombstones KEY_RANGE SEGMENTS MODIFIED_RANGE
 
         where KEY_RANGE and MODIFIED_RANGE are as above, and SEGMENTS is
         all|S1,S2,...;TREE_SIZE and TREE_SIZE is xxsmall|xsmall|small|medium|large|xlarge.
+
+    Reap tombstones in the range that match the criteria:
+
+        riak tictacaae reap-tombstones KEY_RANGE SEGMENTS MODIFIED_RANGE CHANGE_METHOD
+
+        where KEY_RANGE, MODIFIED_RANGE and SEGMENTS are as above and CHANGE_METHOD is
+        jobs=N|local|count.
 
     Collect object stats in the specified ranges:
 
@@ -845,6 +852,18 @@ tictacaae_cmd_usage() ->
           - the accumulated total size of all objects in the range;
           - a list [{Magnitude, ObjectCount}] tuples where Magnitude represents
             the order of magnitude of the size of the object.
+
+    Erase keys matching filters:
+
+        riak tictacaae fold erase-keys BUCKET KEY_RANGE SEGMENTS MODIFIED_RANGE CHANGE_METHOD
+
+        BUCKET, KEY_RANGE and MODIFIED_RANGE are as above.
+
+    Repair keys matching filters:
+
+        riak tictacaae fold repair-keys BUCKET KEY_RANGE MODIFIED_RANGE
+
+        BUCKET, KEY_RANGE and MODIFIED_RANGE are as above.
 ").
 
 
@@ -1215,6 +1234,41 @@ tictacaae_cmd3(Item, {Options, Args}) ->
                       file:close(FD)
               end);
 
+        {"fold", ["count-tombstones", Bucket, KeyRange, Segments, ModifiedRange]} ->
+            DumpF(
+              "count-tombstones",
+              fun(FD) ->
+                      Query =
+                          {find_tombs,
+                           fold_query_spec(bucket, Bucket),
+                           fold_query_spec(key_range, KeyRange),
+                           fold_query_spec(segments, Segments),
+                           fold_query_spec(modified_range, ModifiedRange)
+                          },
+                      {ok, TT} = riak_client:aae_fold(Query),
+                      Printable = [{tombstones_found, length(TT)}],
+                      io:format(FD, "~s\n", [mochijson2:encode(Printable)]),
+                      file:close(FD)
+              end);
+
+        {"fold", ["reap-tombstones", Bucket, KeyRange, Segments, ModifiedRange, ChangeMethod]} ->
+            DumpF(
+              "reap-tombstones",
+              fun(FD) ->
+                      Query =
+                          {reap_tombs,
+                           fold_query_spec(bucket, Bucket),
+                           fold_query_spec(key_range, KeyRange),
+                           fold_query_spec(segments, Segments),
+                           fold_query_spec(modified_range, ModifiedRange),
+                           fold_query_spec(change_method, ChangeMethod)
+                          },
+                      {ok, TT} = riak_client:aae_fold(Query),
+                      Printable = [{tombstones_reaped, TT}],
+                      io:format(FD, "~s\n", [mochijson2:encode(Printable)]),
+                      file:close(FD)
+              end);
+
         {"fold", ["object-stats", Bucket, KeyRange, ModifiedRange]} ->
             DumpF(
               "object-stats",
@@ -1227,6 +1281,41 @@ tictacaae_cmd3(Item, {Options, Args}) ->
                           },
                       {ok, SS} = riak_client:aae_fold(Query),
                       io:format(FD, "~s\n", [mochijson2:encode(SS)]),
+                      file:close(FD)
+              end);
+
+        {"fold", ["erase-keys", Bucket, KeyRange, Segments, ModifiedRange, ChangeMethod]} ->
+            DumpF(
+              "erase-keys",
+              fun(FD) ->
+                      Query =
+                          {erase_keys,
+                           fold_query_spec(bucket, Bucket),
+                           fold_query_spec(key_range, KeyRange),
+                           fold_query_spec(segments, Segments),
+                           fold_query_spec(modified_range, ModifiedRange),
+                           fold_query_spec(change_method, ChangeMethod)
+                          },
+                      {ok, Res} = riak_client:aae_fold(Query),
+                      Printable = [{keys_erased, Res}],
+                      io:format(FD, "~s\n", [mochijson2:encode(Printable)]),
+                      file:close(FD)
+              end);
+
+        {"fold", ["repair-keys", Bucket, KeyRange, ModifiedRange]} ->
+            DumpF(
+              "erase-keys",
+              fun(FD) ->
+                      Query =
+                          {repair_keys_range,
+                           fold_query_spec(bucket, Bucket),
+                           fold_query_spec(key_range, KeyRange),
+                           fold_query_spec(modified_range, ModifiedRange),
+                           all
+                          },
+                      {ok, {_Tail, Count, all, _RBS}} = riak_client:aae_fold(Query),
+                      Printable = [{keys_repaired, Count}],
+                      io:format(FD, "~s\n", [mochijson2:encode(Printable)]),
                       file:close(FD)
               end);
 
@@ -1267,7 +1356,17 @@ fold_query_spec(sibling_count_or_object_size, A) ->
             {sibling_count, list_to_integer(V)};
         ["object_size", V] ->
             {object_size, list_to_integer(V)}
+    end;
+fold_query_spec(change_method, A) ->
+    case string:split(A, "=") of
+        ["jobs", V] ->
+            {jobs, list_to_integer(V)};
+        ["local"] ->
+            local;
+        ["count"] ->
+            count
     end.
+
 
 printable_bin(K) ->
     case re:run(K, <<"[[:alnum:][:punct:]]+">>) of
