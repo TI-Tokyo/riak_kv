@@ -875,7 +875,6 @@ tictacaae_cmd([Item | Cmdline]) ->
                 tictacaae_cmd2(Item, Parsed)
             catch
                 error:_e:_st ->
-                    io:format("~p / ~p\n\n", [_e, _st]),
                     tictacaae_cmd_usage();
                 throw:_ ->
                     tictacaae_cmd_usage()
@@ -1161,7 +1160,6 @@ tictacaae_cmd3(Item, {Options, Args}) ->
                         {ok, CWD} = file:get_cwd(),
                         io:format("Results will be written to ~s/~s\n", [CWD, Outfile]),
                         spawn(fun() -> Fun(FD) end),
-                        timer:sleep(2000),
                         ok;
                     {error, Reason} ->
                         io:format("Failed to open \"~p\" for writing: ~p\n", [Outfile, Reason])
