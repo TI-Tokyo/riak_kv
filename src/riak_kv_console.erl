@@ -791,6 +791,12 @@ tictacaae_cmd_usage() ->
 
         VAR is one of rebuildtick, exchangetick, maxresults, rangeboost.
 
+    Set/show node worker pool sizes on NODE:
+
+        riak admin tictacaae POOL [-n NODE] [VAL]
+
+        POOL is one of rebuildtreeworkers, rebuildstoreworkers, aaefoldworkers.
+
     Set next rebuild time to now + DELAY sec, on PARTITION on NODE (default is
     all partitions on local node):
 
@@ -893,19 +899,22 @@ tictacaae_cmd2(Item, {Options, Args}) ->
         fun(Res, Par, Val) ->
             case Res of
                 [{ok, {P, N}}] ->
-                    io:format("Set ~s to ~s on partition ~b on ~s\n",
+                    io:format("Set ~s to ~p on partition ~b on ~s\n",
                               [Par, Val, P, N]);
+                [{ok, N}] ->
+                    io:format("Set ~s to ~p on on ~s\n",
+                              [Par, Val, N]);
                 Multiple ->
                     case length([PN || {Resx, PN} <- Multiple, Resx == ok]) of
                         AllSucceeded when AllSucceeded == length(Multiple) ->
-                            io:format("Set ~s to ~s on ~b vnodes\n",
+                            io:format("Set ~s to ~p on ~b (v)nodes\n",
                                       [Par, Val, length(Multiple)]);
                         SomeSucceeded when SomeSucceeded > 0 ->
-                            io:format("Successfully set ~s to ~s on ~b vnodes, but"
-                                      " failed on ~b vnodes\n",
+                            io:format("Successfully set ~s to ~p on ~b (v)vnodes, but"
+                                      " failed on ~b (v)nodes\n",
                                       [Par, Val, SomeSucceeded, length(Multiple) - SomeSucceeded]);
                         _ ->
-                            io:format("Failed to set ~s to ~s on all ~b vnodes\n",
+                            io:format("Failed to set ~s to ~p on all ~b (v)nodes\n",
                                       [Par, Val, length(Multiple)])
                     end
             end
@@ -995,6 +1004,39 @@ tictacaae_cmd2(Item, {Options, Args}) ->
                               [length(Nodes)])
             end;
 
+        {"rebuildtreeworkers", [Arg1]} ->
+            Val = list_to_integer(Arg1),
+            PostSetResultF(
+              set_worker_pool_size(Nodes, af1_pool, Val),
+              "rebuildtreeworkers",
+              Val);
+        {"rebuildtreeworkers", []} ->
+            [io:format("rebuildtreeworkers on ~s is: ~b\n", [N, Res])
+             || {Res, N} <- get_worker_pool_size(Nodes, af1_pool)],
+            ok;
+
+        {"aaefoldworkers", [Arg1]} ->
+            Val = list_to_integer(Arg1),
+            PostSetResultF(
+              set_worker_pool_size(Nodes, af4_pool, Val),
+              "aaefoldworkers",
+              Val);
+        {"aaefoldworkers", []} ->
+            [io:format("aaefoldworkers on ~s is: ~b\n", [N, Res])
+             || {Res, N} <- get_worker_pool_size(Nodes, af4_pool)],
+            ok;
+
+        {"rebuildstoreworkers", [Arg1]} ->
+            Val = list_to_integer(Arg1),
+            PostSetResultF(
+              set_worker_pool_size(Nodes, be_pool, Val),
+              "rebuildstoreworkers",
+              Val);
+        {"rebuildstoreworkers", []} ->
+            [io:format("rebuildstoreworkers on ~s is: ~b\n", [N, Res])
+             || {Res, N} <- get_worker_pool_size(Nodes, be_pool)],
+            ok;
+
         {"treestatus", []} ->
             case {Nodes, Partitions} of
                 {[N], all} when N == node() ->
@@ -1056,6 +1098,10 @@ vnodes(Node, all) ->
 vnodes(Node, List) ->
     [{P, Node} || P <- List].
 
+set_worker_pool_size(Nodes, Pool, A) ->
+    [{rpc:call(N, riak_core_node_worker_pool, set_worker_pool_size, [Pool, A]), N} || N <- Nodes].
+get_worker_pool_size(Nodes, Pool) ->
+    [{rpc:call(N, riak_core_node_worker_pool, get_worker_pool_size, [Pool]), N} || N <- Nodes].
 
 
 produce_aae_progress_report() ->
