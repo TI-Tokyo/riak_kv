@@ -872,7 +872,6 @@ tictacaae_cmd_usage() ->
         BUCKET, KEY_RANGE and MODIFIED_RANGE are as above.
 ").
 
-
 tictacaae_cmd([Item | Cmdline]) ->
     case application:get_env(riak_kv, tictacaae_active) of
         {ok, active} ->
@@ -881,6 +880,7 @@ tictacaae_cmd([Item | Cmdline]) ->
                 tictacaae_cmd2(Item, Parsed)
             catch
                 error:_e:_st ->
+                    io:format("~p / ~p\n\n", [_e, _st]),
                     tictacaae_cmd_usage();
                 throw:_ ->
                     tictacaae_cmd_usage()
@@ -902,7 +902,7 @@ tictacaae_cmd2(Item, {Options, Args}) ->
                     io:format("Set ~s to ~p on partition ~b on ~s\n",
                               [Par, Val, P, N]);
                 [{ok, N}] ->
-                    io:format("Set ~s to ~p on on ~s\n",
+                    io:format("Set ~s to ~p on ~s\n",
                               [Par, Val, N]);
                 Multiple ->
                     case length([PN || {Resx, PN} <- Multiple, Resx == ok]) of
@@ -924,29 +924,30 @@ tictacaae_cmd2(Item, {Options, Args}) ->
         {"rebuildtick", []} ->
             print_tictacaae_option(tictacaae_rebuildtick, Nodes);
         {"rebuildtick", [Arg1]} ->
-            Msec = list_to_integer(Arg1),
+            Msec = ensure_valid_range(Arg1, 0, 60*60*1000*1000),
             set_tictacaae_option(tictacaae_rebuildtick, Nodes, Msec);
 
         {"exchangetick", []} ->
             print_tictacaae_option(tictacaae_exchangetick, Nodes);
         {"exchangetick", [Arg1]} ->
-            MSec = list_to_integer(Arg1),
+            MSec = ensure_valid_range(Arg1, 0, 60*60*1000*1000),
             set_tictacaae_option(tictacaae_exchangetick, Nodes, MSec);
 
         {"maxresults", []} ->
             print_tictacaae_option(tictacaae_maxresults, Nodes);
         {"maxresults", [Arg1]} ->
-            A = list_to_integer(Arg1),
+            A = ensure_valid_range(Arg1, 1, 1000*1000),
             set_tictacaae_option(tictacaae_maxresults, Nodes, A);
 
         {"rangeboost", []} ->
             print_tictacaae_option(tictacaae_rangeboost, Nodes);
         {"rangeboost", [Arg1]} ->
-            A = list_to_integer(Arg1),
+            A = ensure_valid_range(Arg1, 0, 60*60*1000*1000),
             set_tictacaae_option(tictacaae_rangeboost, Nodes, A);
 
         {"rebuild_schedule", [Arg1, Arg2]} ->
-            RS = {RW = list_to_integer(Arg1), RD = list_to_integer(Arg2)},
+            RS = {RW = ensure_valid_range(Arg1, 0, 5*365*24),  %% ~5 years in hours
+                  RD = ensure_valid_range(Arg2, 0, 1*365*24*3600)},  %% one year
             PostSetResultF(
               set_rebuild_schedule(Nodes, Partitions, RS),
               "rebuild_schedule",
@@ -1005,7 +1006,7 @@ tictacaae_cmd2(Item, {Options, Args}) ->
             end;
 
         {"rebuildtreeworkers", [Arg1]} ->
-            Val = list_to_integer(Arg1),
+            Val = ensure_valid_range(Arg1, 1, 500),
             PostSetResultF(
               set_worker_pool_size(Nodes, af1_pool, Val),
               "rebuildtreeworkers",
@@ -1016,7 +1017,7 @@ tictacaae_cmd2(Item, {Options, Args}) ->
             ok;
 
         {"aaefoldworkers", [Arg1]} ->
-            Val = list_to_integer(Arg1),
+            Val = ensure_valid_range(Arg1, 1, 500),
             PostSetResultF(
               set_worker_pool_size(Nodes, af4_pool, Val),
               "aaefoldworkers",
@@ -1027,7 +1028,7 @@ tictacaae_cmd2(Item, {Options, Args}) ->
             ok;
 
         {"rebuildstoreworkers", [Arg1]} ->
-            Val = list_to_integer(Arg1),
+            Val = ensure_valid_range(Arg1, 1, 500),
             PostSetResultF(
               set_worker_pool_size(Nodes, be_pool, Val),
               "rebuildstoreworkers",
@@ -1218,7 +1219,7 @@ tictacaae_cmd3(Item, {Options, Args}) ->
               fun(FD) ->
                       Query =
                           {list_buckets,
-                           list_to_integer(NVal)
+                           ensure_valid_range(NVal, 1, 999)
                           },
                       {ok, BB} = riak_client:aae_fold(Query),
                       Printable = [printable_bin(B) || B <- BB],
@@ -1382,7 +1383,7 @@ fold_query_spec(bucket, A) ->
 fold_query_spec(key_range, "all") -> all;
 fold_query_spec(key_range, A) ->
     [From, To] = string:split(A, ","),
-    {list_to_binary(From), list_to_binary(To)};
+    {bin_from_maybe_hex(From), bin_from_maybe_hex(To)};
 fold_query_spec(modified_range, "all") -> all;
 fold_query_spec(modified_range, A) ->
     [From, To] = string:split(A, ","),
@@ -1391,24 +1392,40 @@ fold_query_spec(modified_range, A) ->
 fold_query_spec(segments, "all") -> all;
 fold_query_spec(segments, A) ->
     [SegmentFilter_, TreeSize_] = string:split(A, ";"),
-    SegmentFilter = [list_to_integer(S) || S <- string:split(SegmentFilter_, ",", all)],
+    SegmentFilter = [ensure_valid_range(S, 0, infinity)
+                     || S <- string:split(SegmentFilter_, ",", all)],
     TreeSize = tree_size(TreeSize_),
     {segments, SegmentFilter, TreeSize};
 fold_query_spec(sibling_count_or_object_size, A) ->
     case string:split(A, "=") of
         ["sibling_count", V] ->
-            {sibling_count, list_to_integer(V)};
+            {sibling_count, ensure_valid_range(V, 0, infinity)};
         ["object_size", V] ->
-            {object_size, list_to_integer(V)}
+            {object_size, ensure_valid_range(V, 0, infinity)}
     end;
 fold_query_spec(change_method, A) ->
     case string:split(A, "=") of
         ["jobs", V] ->
-            {jobs, list_to_integer(V)};
+            {jobs, ensure_valid_range(V, 1, infinity)};
         ["local"] ->
             local;
         ["count"] ->
             count
+    end.
+
+ensure_valid_range(V_, Min, infinity) ->
+    case list_to_integer(V_) of
+        V when V >= Min ->
+            V;
+        _ ->
+            throw(arg_out_of_range)
+    end;
+ensure_valid_range(V_, Min, Max) ->
+    case list_to_integer(V_) of
+        V when V >= Min, V =< Max ->
+            V;
+        _ ->
+            throw(arg_out_of_range)
     end.
 
 
