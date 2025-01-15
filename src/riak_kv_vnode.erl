@@ -1372,8 +1372,10 @@ handle_command(get_storeheads,
             riak_core_vnode:reply(Sender, {error, aae_inactive}),
             {reply, {error, aae_inactive}, State};
         AAECntrl ->
-            Res = aae_controller:aae_get_storeheads(AAECntrl),
-            riak_core_vnode:reply(Sender, Res),
+            StoreheadsIsOn = aae_controller:wrapped_splitobjfun(
+                               riak_object:aae_from_object_binary(true)),
+            Res = aae_controller:aae_get_object_splitfun(AAECntrl),
+            riak_core_vnode:reply(Sender, (Res == StoreheadsIsOn)),
             {noreply, State}
     end;
 
@@ -1384,7 +1386,9 @@ handle_command({set_storeheads, A},
             riak_core_vnode:reply(Sender, {error, aae_inactive}),
             {reply, {error, aae_inactive}, State};
         AAECntrl ->
-            Res = aae_controller:aae_set_storeheads(AAECntrl, A),
+            A2 = aae_controller:wrapped_splitobjfun(
+                   riak_object:aae_from_object_binary(A)),
+            Res = aae_controller:aae_set_object_splitfun(AAECntrl, A2),
             riak_core_vnode:reply(Sender, Res),
             {noreply, State}
     end;
