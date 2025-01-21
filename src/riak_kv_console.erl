@@ -969,7 +969,7 @@ tictacaae_cmd2(Item, {Options, Args}) ->
               "storeheads",
               Val);
         {"storeheads", []} ->
-            [io:format("storeheads on ~s/~b is: ~s\n", [N, P, Res])
+            [io:format("tictacaae_storeheads on ~s/~b is: ~s\n", [N, P, Res])
              || {Res, {P, N}} <- get_storeheads(Nodes, Partitions)],
             ok;
 
@@ -980,7 +980,7 @@ tictacaae_cmd2(Item, {Options, Args}) ->
               "tokenbucket",
               Val);
         {"tokenbucket", []} ->
-            [io:format("tokenbucket on ~s/~b is: ~s\n", [N, P, Res])
+            [io:format("tictacaae_tokenbucket on ~s/~b is: ~s\n", [N, P, Res])
              || {Res, {P, N}} <- get_tokenbucket(Nodes, Partitions)],
             ok;
 
@@ -1060,7 +1060,7 @@ list_to_boolean("off") -> false.
 print_tictacaae_option(A, Nodes) ->
     [begin
          {ok, Current} = rpc:call(Node, application, get_env, [riak_kv, A]),
-         io:format("~s on ~s is ~p\n", [A, Node, Current])
+         io:format("~s on ~s is: ~p\n", [A, Node, Current])
      end || Node <- Nodes],
     ok.
 
