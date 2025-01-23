@@ -1204,9 +1204,16 @@ tictacaae_cmd3(Item, {Options, Args}) ->
                         "%t", time2s(now))),
                 case file:open(Outfile, [write]) of
                     {ok, FD} ->
+                        spawn(fun() -> Fun(FD) end),
                         {ok, CWD} = file:get_cwd(),
                         io:format("Results will be written to ~s/~s\n", [CWD, Outfile]),
-                        spawn(fun() -> Fun(FD) end),
+                        timer:sleep(11),
+                        %% Without a delay (1 ms is too small, 11
+                        %% seems good enough), the aae_fold fun
+                        %% doesn't even get to be called. No exception
+                        %% is thrown or caught. process executing Fun
+                        %% just dies without a trace. What's going on
+                        %% here?
                         ok;
                     {error, Reason} ->
                         io:format("Failed to open \"~p\" for writing: ~p\n", [Outfile, Reason])
@@ -1217,13 +1224,18 @@ tictacaae_cmd3(Item, {Options, Args}) ->
             DumpF(
               "list-buckets",
               fun(FD) ->
+                      io:format("o\n", []),
                       Query =
                           {list_buckets,
                            ensure_valid_range(NVal, 1, 999)
                           },
+                      io:format("o\n", []),
                       {ok, BB} = riak_client:aae_fold(Query),
+                      io:format("o\n", []),
                       Printable = [printable_bin(B) || B <- BB],
+                      io:format("o\n", []),
                       io:format(FD, "~s\n", [mochijson2:encode(Printable)]),
+                      io:format("o\n", []),
                       file:close(FD)
               end);
 
