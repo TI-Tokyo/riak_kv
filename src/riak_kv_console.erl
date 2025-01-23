@@ -899,15 +899,15 @@ tictacaae_cmd2(Item, {Options, Args}) ->
         fun(Res, Par, Val) ->
             case Res of
                 [{ok, {P, N}}] ->
-                    io:format("Set ~s to ~p on partition ~b on ~s\n",
+                    io:format("Set ~s to ~s on partition ~b on ~s\n",
                               [Par, Val, P, N]);
                 [{ok, N}] ->
-                    io:format("Set ~s to ~p on ~s\n",
+                    io:format("Set ~s to ~s on ~s\n",
                               [Par, Val, N]);
                 Multiple ->
                     case length([PN || {Resx, PN} <- Multiple, Resx == ok]) of
                         AllSucceeded when AllSucceeded == length(Multiple) ->
-                            io:format("Set ~s to ~p on ~b (v)nodes\n",
+                            io:format("Set ~s to ~s on ~b (v)nodes\n",
                                       [Par, Val, length(Multiple)]);
                         SomeSucceeded when SomeSucceeded > 0 ->
                             io:format("Successfully set ~s to ~p on ~b (v)vnodes, but"
@@ -951,7 +951,7 @@ tictacaae_cmd2(Item, {Options, Args}) ->
             PostSetResultF(
               set_rebuild_schedule(Nodes, Partitions, RS),
               "rebuild_schedule",
-              io_lib:format("to RW: ~b, RD: ~b", [RW, RD]));
+              io_lib:format("RW: ~b, RD: ~b", [RW, RD]));
         {"rebuild_schedule", []} ->
             FmtF = fun({ok, {RW, RD}}) ->
                            io_lib:format("RW: ~b, RD: ~b", [RW, RD]);
@@ -1010,7 +1010,7 @@ tictacaae_cmd2(Item, {Options, Args}) ->
             PostSetResultF(
               set_worker_pool_size(Nodes, af1_pool, Val),
               "rebuildtreeworkers",
-              Val);
+              integer_to_list(Val));
         {"rebuildtreeworkers", []} ->
             [io:format("rebuildtreeworkers on ~s is: ~b\n", [N, Res])
              || {Res, N} <- get_worker_pool_size(Nodes, af1_pool)],
@@ -1021,7 +1021,7 @@ tictacaae_cmd2(Item, {Options, Args}) ->
             PostSetResultF(
               set_worker_pool_size(Nodes, af4_pool, Val),
               "aaefoldworkers",
-              Val);
+              integer_to_list(Val));
         {"aaefoldworkers", []} ->
             [io:format("aaefoldworkers on ~s is: ~b\n", [N, Res])
              || {Res, N} <- get_worker_pool_size(Nodes, af4_pool)],
@@ -1032,7 +1032,7 @@ tictacaae_cmd2(Item, {Options, Args}) ->
             PostSetResultF(
               set_worker_pool_size(Nodes, be_pool, Val),
               "rebuildstoreworkers",
-              Val);
+              integer_to_list(Val));
         {"rebuildstoreworkers", []} ->
             [io:format("rebuildstoreworkers on ~s is: ~b\n", [N, Res])
              || {Res, N} <- get_worker_pool_size(Nodes, be_pool)],
