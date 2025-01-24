@@ -1202,41 +1202,32 @@ tictacaae_cmd3(Item, {Options, Args}) ->
                           proplists:get_value(output, Options, ?DEFAULT_AAEFOLD_OUTFILE),
                           "%o", Op),
                         "%t", time2s(now))),
-                case file:open(Outfile, [write]) of
-                    {ok, FD} ->
-                        spawn(fun() -> Fun(FD) end),
-                        {ok, CWD} = file:get_cwd(),
-                        io:format("Results will be written to ~s/~s\n", [CWD, Outfile]),
-                        timer:sleep(11),
-                        %% Without a delay (1 ms is too small, 11
-                        %% seems good enough), the aae_fold fun
-                        %% doesn't even get to be called. No exception
-                        %% is thrown or caught. process executing Fun
-                        %% just dies without a trace. What's going on
-                        %% here?
-                        ok;
-                    {error, Reason} ->
-                        io:format("Failed to open \"~p\" for writing: ~p\n", [Outfile, Reason])
-                end
+                spawn(
+                  fun() ->
+                          case file:open(Outfile, [write]) of
+                              {ok, FD} ->
+                                  {ok, CWD} = file:get_cwd(),
+                                  io:format("Results will be written to ~s/~s\n", [CWD, Outfile]),
+                                  Fun(FD),
+                                  file:close(FD);
+                              {error, Reason} ->
+                                  io:format("Failed to open \"~p\" for writing: ~p\n", [Outfile, Reason])
+                          end
+                  end),
+                ok
         end,
     case {Item, Args} of
         {"fold", ["list-buckets", NVal]} ->
             DumpF(
               "list-buckets",
               fun(FD) ->
-                      io:format("o\n", []),
                       Query =
                           {list_buckets,
                            ensure_valid_range(NVal, 1, 999)
                           },
-                      io:format("o\n", []),
                       {ok, BB} = riak_client:aae_fold(Query),
-                      io:format("o\n", []),
                       Printable = [printable_bin(B) || B <- BB],
-                      io:format("o\n", []),
-                      io:format(FD, "~s\n", [mochijson2:encode(Printable)]),
-                      io:format("o\n", []),
-                      file:close(FD)
+                      io:format(FD, "~s\n", [mochijson2:encode(Printable)])
               end);
 
         {"fold", ["find-keys", Bucket, KeyRange, ModifiedRange, FourthArg]} ->
@@ -1254,8 +1245,7 @@ tictacaae_cmd3(Item, {Options, Args}) ->
                       Printable = [#{<<"key">> => printable_bin(K),
                                      <<"sibling_count">> => SibCnt
                                     } || {_B, K, SibCnt} <- KK],
-                      io:format(FD, "~s\n", [mochijson2:encode(Printable)]),
-                      file:close(FD)
+                      io:format(FD, "~s\n", [mochijson2:encode(Printable)])
               end);
 
         {"fold", ["count-keys", Bucket, KeyRange, ModifiedRange, FourthArg]} ->
@@ -1270,8 +1260,7 @@ tictacaae_cmd3(Item, {Options, Args}) ->
                            fold_query_spec(sibling_count_or_object_size, FourthArg)
                           },
                       {ok, KK} = riak_client:aae_fold(Query),
-                      io:format(FD, "~b\n", [length(KK)]),
-                      file:close(FD)
+                      io:format(FD, "~b\n", [length(KK)])
               end);
 
         {"fold", ["find-tombstones", Bucket, KeyRange, Segments, ModifiedRange]} ->
@@ -1287,8 +1276,7 @@ tictacaae_cmd3(Item, {Options, Args}) ->
                           },
                       {ok, TT} = riak_client:aae_fold(Query),
                       Printable = [printable_bin(T) || T <- TT],
-                      io:format(FD, "~s\n", [mochijson2:encode(Printable)]),
-                      file:close(FD)
+                      io:format(FD, "~s\n", [mochijson2:encode(Printable)])
               end);
 
         {"fold", ["count-tombstones", Bucket, KeyRange, Segments, ModifiedRange]} ->
@@ -1304,8 +1292,7 @@ tictacaae_cmd3(Item, {Options, Args}) ->
                           },
                       {ok, TT} = riak_client:aae_fold(Query),
                       Printable = [{tombstones_found, length(TT)}],
-                      io:format(FD, "~s\n", [mochijson2:encode(Printable)]),
-                      file:close(FD)
+                      io:format(FD, "~s\n", [mochijson2:encode(Printable)])
               end);
 
         {"fold", ["reap-tombstones", Bucket, KeyRange, Segments, ModifiedRange, ChangeMethod]} ->
@@ -1322,8 +1309,7 @@ tictacaae_cmd3(Item, {Options, Args}) ->
                           },
                       {ok, TT} = riak_client:aae_fold(Query),
                       Printable = [{tombstones_reaped, TT}],
-                      io:format(FD, "~s\n", [mochijson2:encode(Printable)]),
-                      file:close(FD)
+                      io:format(FD, "~s\n", [mochijson2:encode(Printable)])
               end);
 
         {"fold", ["object-stats", Bucket, KeyRange, ModifiedRange]} ->
@@ -1337,8 +1323,7 @@ tictacaae_cmd3(Item, {Options, Args}) ->
                            fold_query_spec(modified_range, ModifiedRange)
                           },
                       {ok, SS} = riak_client:aae_fold(Query),
-                      io:format(FD, "~s\n", [mochijson2:encode(SS)]),
-                      file:close(FD)
+                      io:format(FD, "~s\n", [mochijson2:encode(SS)])
               end);
 
         {"fold", ["erase-keys", Bucket, KeyRange, Segments, ModifiedRange, ChangeMethod]} ->
@@ -1355,8 +1340,7 @@ tictacaae_cmd3(Item, {Options, Args}) ->
                           },
                       {ok, Res} = riak_client:aae_fold(Query),
                       Printable = [{keys_erased, Res}],
-                      io:format(FD, "~s\n", [mochijson2:encode(Printable)]),
-                      file:close(FD)
+                      io:format(FD, "~s\n", [mochijson2:encode(Printable)])
               end);
 
         {"fold", ["repair-keys", Bucket, KeyRange, ModifiedRange]} ->
@@ -1372,8 +1356,7 @@ tictacaae_cmd3(Item, {Options, Args}) ->
                           },
                       {ok, {_Tail, Count, all, _RBS}} = riak_client:aae_fold(Query),
                       Printable = [{keys_repaired, Count}],
-                      io:format(FD, "~s\n", [mochijson2:encode(Printable)]),
-                      file:close(FD)
+                      io:format(FD, "~s\n", [mochijson2:encode(Printable)])
               end);
 
         _ ->
