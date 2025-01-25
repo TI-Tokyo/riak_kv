@@ -1195,19 +1195,26 @@ aae_progress_report("table", Report, Options) ->
 tictacaae_cmd3(Item, {Options, Args}) ->
     DumpF =
         fun(Op, Fun) ->
-                Outfile =
+                Outfile_ =
                     iolist_to_binary(
                       string:replace(
                         string:replace(
                           proplists:get_value(output, Options, ?DEFAULT_AAEFOLD_OUTFILE),
                           "%o", Op),
                         "%t", time2s(now))),
+                Outfile =
+                    case Outfile_ of
+                        <<$/, _/binary>> ->
+                            Outfile_;
+                        _ ->
+                            {ok, CWD} = file:get_cwd(),
+                            filename:join([CWD, Outfile_])
+                    end,
                 spawn(
                   fun() ->
                           case file:open(Outfile, [write]) of
                               {ok, FD} ->
-                                  {ok, CWD} = file:get_cwd(),
-                                  io:format("Results will be written to ~s/~s\n", [CWD, Outfile]),
+                                  io:format("Results will be written to ~s\n", [Outfile]),
                                   Fun(FD),
                                   file:close(FD);
                               {error, Reason} ->
