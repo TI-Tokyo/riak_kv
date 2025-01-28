@@ -1330,7 +1330,18 @@ tictacaae_cmd3(Item, {Options, Args}) ->
                            fold_query_spec(modified_range, ModifiedRange)
                           },
                       {ok, SS} = riak_client:aae_fold(Query),
-                      io:format(FD, "~s\n", [mochijson2:encode(SS)])
+                      TC = proplists:get_value(total_count, SS),
+                      TS = proplists:get_value(total_size, SS),
+                      Sizes = proplists:get_value(sizes, SS),
+                      Siblings = proplists:get_value(siblings, SS),
+                      io:format(FD, "~s\n", [mochijson2:encode(
+                                               #{total_count => TC,
+                                                 total_size => TS,
+                                                 sizes => [#{min => Min,
+                                                             max => Max} || {Min, Max} <- Sizes],
+                                                 siblings => [#{min => Min,
+                                                                max => Max} || {Min, Max} <- Siblings]
+                                                })])
               end);
 
         {"fold", ["erase-keys", Bucket, KeyRange, Segments, ModifiedRange, ChangeMethod]} ->
