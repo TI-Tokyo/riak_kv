@@ -1282,7 +1282,9 @@ tictacaae_cmd3(Item, {Options, Args}) ->
                            fold_query_spec(modified_range, ModifiedRange)
                           },
                       {ok, TT} = riak_client:aae_fold(Query),
-                      Printable = [printable_bin(T) || T <- TT],
+                      Printable = [#{bucket => printable_bin(B),
+                                     key => printable_bin(K),
+                                     vclock => printable_vclock(VC)} || {B, K, VC} <- TT],
                       io:format(FD, "~s\n", [mochijson2:encode(Printable)])
               end);
 
@@ -1440,6 +1442,9 @@ printable_bin(K) ->
     end.
 bin_from_maybe_hex("0x" ++ A) -> mochihex:to_bin(A);
 bin_from_maybe_hex(A) -> list_to_binary(A).
+
+printable_vclock(A) ->
+    base64:encode(riak_object:encode_vclock(A)).
 
 tree_size("xxsmall") -> xxsmall;
 tree_size("xsmall") -> xsmall;
