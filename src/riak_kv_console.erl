@@ -1300,8 +1300,7 @@ tictacaae_cmd3(Item, {Options, Args}) ->
                            fold_query_spec(modified_range, ModifiedRange)
                           },
                       {ok, TT} = riak_client:aae_fold(Query),
-                      Printable = [{tombstones_found, length(TT)}],
-                      io:format(FD, "~s\n", [mochijson2:encode(Printable)])
+                      io:format(FD, "~b\n", [length(TT)])
               end);
 
         {"fold", ["reap-tombstones", Bucket, KeyRange, Segments, ModifiedRange, ChangeMethod]} ->
@@ -1317,8 +1316,7 @@ tictacaae_cmd3(Item, {Options, Args}) ->
                            fold_query_spec(change_method, ChangeMethod)
                           },
                       {ok, TT} = riak_client:aae_fold(Query),
-                      Printable = [{tombstones_reaped, TT}],
-                      io:format(FD, "~s\n", [mochijson2:encode(Printable)])
+                      io:format(FD, "~b\n", [TT])
               end);
 
         {"fold", ["object-stats", Bucket, KeyRange, ModifiedRange]} ->
