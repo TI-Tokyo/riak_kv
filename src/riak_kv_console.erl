@@ -1357,8 +1357,7 @@ tictacaae_cmd3(Item, {Options, Args}) ->
                            fold_query_spec(change_method, ChangeMethod)
                           },
                       {ok, Res} = riak_client:aae_fold(Query),
-                      Printable = [{keys_erased, Res}],
-                      io:format(FD, "~s\n", [mochijson2:encode(Printable)])
+                      io:format(FD, "~b\n", [Res])
               end);
 
         {"fold", ["repair-keys", Bucket, KeyRange, ModifiedRange]} ->
@@ -1373,8 +1372,7 @@ tictacaae_cmd3(Item, {Options, Args}) ->
                            all
                           },
                       {ok, {_Tail, Count, all, _RBS}} = riak_client:aae_fold(Query),
-                      Printable = [{keys_repaired, Count}],
-                      io:format(FD, "~s\n", [mochijson2:encode(Printable)])
+                      io:format(FD, "~b\n", [Count])
               end);
 
         _ ->
