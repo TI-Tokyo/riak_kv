@@ -85,6 +85,7 @@ produce2(TimeoutGetVNodes,
                            TS ->
                                calendar:now_to_local_time(TS)
                        end,
+	 {ok, {LastRebuild, IsEmpty}, _} = aae_keystore:store_startupdata(KeyStore),
 
          NextRebuild = calendar:now_to_local_time(element(8, AAECntrlState)),
          {RebuildWait, RebuildDelay} = element(9, AAECntrlState),
@@ -93,6 +94,7 @@ produce2(TimeoutGetVNodes,
          TotalDirtySegments = [element(8, S) || S <- TCStates],
          [{partition, Idx},
           {key_store_current_status, KeyStoreCurrentStatus},
+	  {is_empty, IsEmpty},
           {last_rebuild, LastRebuild},
           {next_rebuild, NextRebuild},
           {total_dirty_segments, length(lists:append(TotalDirtySegments))},
@@ -113,11 +115,12 @@ print(Options) ->
             io:format("tictacaae_active is set to passive\n")
     end.
 print2(AA, Options) ->
-    Show = proplists:get_value(show, parse_options(Options, []), ["unbuilt", "rebuilding", "building"]),
+    Show = proplists:get_value(show, parse_options(Options, []), ["empty", "unbuilt", "rebuilding", "building"]),
     io:format("~22s  ~52s  ~10s  ~21s  ~5s  ~10s  ~21s  ~15s\n", ["Node Name", "Partition ID", "Status", "Last Rebuild Date", "Delay", "Wait", "Next Rebuild Date", "Controller PID"]),
     io:format("~22s  ~52s  ~10s  ~21s  ~5s  ~10s  ~21s  ~15s\n", ["----------------------", "----------------------------------------------------", "----------", "---------------------", "-----", "----------", "---------------------", "----------------"]),
     [begin
          Idx = proplists:get_value(partition, M),
+         IsEmpty = proplists:get_value(is_empty, M),
          LastRebuild = proplists:get_value(last_rebuild, M),
          InProgress = proplists:get_value(rebuild_inprogress, M),
          NextRebuild = proplists:get_value(next_rebuild, M),
@@ -140,14 +143,16 @@ print2(AA, Options) ->
                      io_lib:format("~4.10.0B-~2.10.0B-~2.10.0BT~2.10.0B:~2.10.0B:~2.10.0B", [NRY, NRMo, NRD, NRH, NRMi, NRS])
              end,
          Status =
-             case {LastRebuild, InProgress, NextRebuild} of
-                 {never, false, Scheduled} when Scheduled /= undefined ->
+             case {IsEmpty, LastRebuild, InProgress, NextRebuild} of
+	         {true, _, _, _} ->
+		     "empty";
+                 {_, never, false, Scheduled} when Scheduled /= undefined ->
                      "unbuilt";
-                 {Built, false, _} when Built /= never ->
+                 {_, Built, false, _} when Built /= never ->
                      "built";
-                 {Built, true, _} when Built /= never ->
+                 {_, Built, true, _} when Built /= never ->
                      "rebuilding";
-                 {never, true, _} ->
+                 {_, never, true, _} ->
                      "building"
              end,
          case lists:member(Status, Show) of
