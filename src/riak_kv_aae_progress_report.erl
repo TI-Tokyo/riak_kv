@@ -24,38 +24,35 @@
 
 -define(TIMEOUT_GET_VNODES, 30000).
 -define(TIMEOUT_GET_AAECONTROLLER_STATE, 30000).
--define(TIMEOUT_GET_KEYSTORE_STATE, 30000).
 -define(TIMEOUT_GET_TREECACHE_STATE, 30000).
 
 -export([produce/0,
          produce/1,
-         produce/4,
+         produce/3,
          print/0,
          print/1]).
 
 -spec produce() -> [{atom(), term()}].
 -spec produce(timeout()) -> [{atom(), term()}].
--spec produce(timeout(), timeout(), timeout(), timeout()) -> [{atom(), term()}].
+-spec produce(timeout(), timeout(), timeout()) -> [{atom(), term()}].
 
 produce() ->
     produce(?TIMEOUT_GET_VNODES,
             ?TIMEOUT_GET_AAECONTROLLER_STATE,
-            ?TIMEOUT_GET_KEYSTORE_STATE,
             ?TIMEOUT_GET_TREECACHE_STATE).
 
 produce(Timeout) ->
-    produce(Timeout, Timeout, Timeout, Timeout).
+    produce(Timeout, Timeout, Timeout).
 
-produce(T1, T2, T3, T4) ->
+produce(T1, T2, T3) ->
     case application:get_env(riak_kv, tictacaae_active) of
         {ok, active} ->
-            {ok, produce2(T1, T2, T3, T4)};
+            {ok, produce2(T1, T2, T3)};
         _ ->
             {error, tictacaae_not_active}
     end.
 produce2(TimeoutGetVNodes,
         TimeoutGetAAEControllerState,
-        TimeoutGetKeyStoreState,
         TimeoutGetTreeCacheState) ->
     {AllNodeResponses, _} = rpc:multicall(
                               supervisor, which_children, [riak_core_vnode_sup],
@@ -77,15 +74,14 @@ produce2(TimeoutGetVNodes,
                                     el/=se ->
                                          not_running
                                  end,
-         {_, KeyStoreState} = sys:get_state(KeyStore, TimeoutGetKeyStoreState),
          %% in 2.9.10, last_rebuild is at pos 11; in 3.2.x, it is 12
-         LastRebuild = case element(11, KeyStoreState) of
+	 {ok, {LastRebuild_, IsEmpty}, _} = aae_keystore:store_startupdata(KeyStore),
+         LastRebuild = case LastRebuild_ of
                            never ->
                                never;
                            TS ->
                                calendar:now_to_local_time(TS)
                        end,
-	 {ok, {LastRebuild, IsEmpty}, _} = aae_keystore:store_startupdata(KeyStore),
 
          NextRebuild = calendar:now_to_local_time(element(8, AAECntrlState)),
          {RebuildWait, RebuildDelay} = element(9, AAECntrlState),
@@ -169,7 +165,7 @@ parse_options([], Q) ->
 parse_options([Str|Rest], Q) ->
     case string:tokens(Str, "=") of
         ["--show", "all"] ->
-	    O = {show, ["unbuilt", "built", "rebuilding", "building"]},
+	    O = {show, ["empty", "unbuilt", "built", "rebuilding", "building"]},
 	    parse_options(Rest, [O | Q]);
         ["--show", What] ->
             O = {show, string:tokens(What, ",")},
