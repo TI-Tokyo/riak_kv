@@ -26,7 +26,7 @@
 -export([to_binary/2, to_binary/1, from_binary/1]).
 -export([log_merge_errors/4, meta/2, merge_value/2, maybe_apply_props/2]).
 %% MR helper funs
--export([value/1, counter_value/1, set_value/1, map_value/1, hll_value/1, gset_value/1]).
+-export([value/1, counter_value/1, set_value/1, map_value/1, gset_value/1]).
 %% Other helper funs
 -export([is_crdt/1,
          is_crdt/2,
@@ -138,13 +138,6 @@ set_value(RObj) ->
     simple_value(RObj, ?SET_TYPE).
 
 %% @doc convenience for (e.g.) MapReduce functions. Pass an object,
-%% get a 2.0+ Hyperloglog-set type card-value, or zero if no Hyperloglog set is
-%% present.
--spec hll_value(riak_object:riak_object()) -> riak_kv_hll:card().
-hll_value(RObj) ->
-    simple_value(RObj, ?HLL_TYPE).
-
-%% @doc convenience for (e.g.) MapReduce functions. Pass an object,
 %% get a 2.0+ GSet type value, or `[]' if no Set is present.
 -spec gset_value(riak_object:riak_object()) -> list().
 gset_value(RObj) ->
@@ -158,11 +151,7 @@ map_value(RObj) ->
     simple_value(RObj, ?MAP_TYPE).
 
 %% @doc Maybe apply/use bucket property setting/configuration
-%%      to certain datatypes, e.g. Hll DT Precision. Exported
-%%      for use in other modules.
--spec maybe_apply_props(riak_kv_bucket:props(), crdt()) -> crdt().
-maybe_apply_props(BProps, {?HLL_TYPE, _, _}=Crdt) ->
-    riak_kv_hll:check_precision_and_reduce(BProps, Crdt);
+%%      to certain datatypes.
 maybe_apply_props(_Bucket, Crdt) ->
     Crdt.
 
@@ -227,8 +216,6 @@ crdt_value(Type, {ok, {_Meta, ?CRDT{mod=Type, value=Value}}}) ->
     {get_context(Type, Value), Type:value(Value)}.
 
 crdt_stats(_, error) -> [];
-crdt_stats(Type, {ok, {_Meta, ?CRDT{mod=?HLL_TYPE}}}=DType) ->
-    crdt_stats(Type, DType, ?HLL_STATS);
 crdt_stats(Type, {ok, _}=DType) ->
     crdt_stats(Type, DType, ?DATATYPE_STATS_DEFAULTS).
 crdt_stats(Type, {ok, {_Meta, ?CRDT{mod=Type, value=Value}}}, Stats) ->
@@ -307,17 +294,10 @@ merge_value({MD, <<?TAG:8/integer, Version:8/integer, CRDTBin/binary>>=Content},
 merge_value(NonCRDT, {Dict, NonCRDTSiblings, Errors}) ->
     {Dict, [NonCRDT | NonCRDTSiblings], Errors}.
 
-deserialize_crdt(?V1_VERS, CounterBin) ->
-    v1_counter_from_binary(CounterBin);
 deserialize_crdt(?V2_VERS, CRDTBin) ->
     crdt_from_binary(CRDTBin);
 deserialize_crdt(V, _Bin) ->
     {error, {invalid_version, V}}.
-
-counter_op(N) when N < 0 ->
-    {decrement, -N};
-counter_op(N) ->
-    {increment, N}.
 
 %% @private Apply the updates to the CRDT. If there is no context for
 %% the operation then apply the operation to the local merged replica,
@@ -327,11 +307,6 @@ counter_op(N) ->
 -spec update_crdt(orddict:orddict(), riak_dt:actor(),
                   riak_object:bucket(), crdt_op() |
                   non_neg_integer()) -> orddict:orddict() | precondition_error().
-update_crdt(Dict, Actor, Bucket, Amt) when is_integer(Amt) ->
-    %% Handle legacy 1.4 counter operation, upgrade to current OP
-    CounterOp = counter_op(Amt),
-    Op = ?CRDT_OP{mod=?V1_COUNTER_TYPE, op=CounterOp},
-    update_crdt(Dict, Actor, Bucket, Op);
 update_crdt(Dict, Actor, Bucket, ?CRDT_OP{mod=Mod, op=Op, ctx=undefined}) ->
     {Meta, Record, Value} = fetch_with_default(Mod, Dict, Bucket),
     case Mod:update(Op, Actor, Value) of
@@ -445,8 +420,6 @@ new(B, K, Mod) ->
 %% @doc turn a `crdt()' record into a binary for storage on disk /
 %% passing on the network
 -spec to_binary(crdt()) -> binary().
-to_binary(CRDT=?CRDT{mod=?V1_COUNTER_TYPE}) ->
-    to_binary(CRDT, ?V1_VERS);
 to_binary(?CRDT{mod=Mod, value=Value}) ->
     %% Store the CRDT in the version that is negotiated cluster wide
     Version = crdt_version(Mod),
@@ -460,33 +433,18 @@ to_binary(?CRDT{mod=Mod, value=Value}) ->
 %% disk / passing on the network
 -spec to_binary(crdt(), Version::pos_integer()) -> binary().
 to_binary(CRDT, ?V2_VERS) ->
-    to_binary(CRDT);
-to_binary(?CRDT{mod=?V1_COUNTER_TYPE, value=Value}, ?V1_VERS) ->
-    CounterBin = ?V1_COUNTER_TYPE:to_binary(Value),
-    <<?TAG:8/integer, ?V1_VERS:8/integer, CounterBin/binary>>.
+    to_binary(CRDT).
 
 %% @doc deserialize a crdt from it's binary format.  The binary must
 %% start with the riak_kv_crdt tag and a version If the binary can be
 %% deserailised into a `crdt()' returns `{ok, crdt()}', otherwise
 %% `{error, term()}'
 -spec from_binary(binary()) -> {ok, crdt()} | {error, term()}.
-from_binary(<<?TAG:8/integer, ?V1_VERS:8/integer, CounterBin/binary>>) ->
-    v1_counter_from_binary(CounterBin);
 from_binary(<<?TAG:8/integer, ?V2_VERS:8/integer, CRDTBin/binary>>) ->
     crdt_from_binary(CRDTBin);
 from_binary(Bin) ->
     {error, {invalid_binary, Bin}}.
 
-%% @private attempt to deserialize a v1 counter (riak 1.4.x counter)
-v1_counter_from_binary(CounterBin) ->
-    try
-        to_record(?V1_COUNTER_TYPE, ?V1_COUNTER_TYPE:from_binary(CounterBin)) of
-        ?CRDT{}=Counter ->
-            {ok, Counter}
-    catch
-        Class:Err ->
-            {error, {Class, Err}}
-        end.
 
 %% @private attempt to deserialize a v2 CRDT (That is a data type, not a 1.4 counter)
 crdt_from_binary(<<TypeLen:32/integer, Type:TypeLen/binary, CRDTBin/binary>>) ->
@@ -506,16 +464,12 @@ crdt_from_binary(<<TypeLen:32/integer, Type:TypeLen/binary, CRDTBin/binary>>) ->
 crdt_from_binary(_) ->
     {error, {invalid_crdt_binary}}.
 
-to_record(?V1_COUNTER_TYPE, Val) ->
-    ?V1_COUNTER_TYPE(Val);
 to_record(?COUNTER_TYPE, Val) ->
     ?COUNTER_TYPE(Val);
 to_record(?MAP_TYPE, Val) ->
     ?MAP_TYPE(Val);
 to_record(?SET_TYPE, Val) ->
     ?SET_TYPE(Val);
-to_record(?HLL_TYPE, Val) ->
-    ?HLL_TYPE(Val);
 to_record(?GSET_TYPE, Val) ->
     ?GSET_TYPE(Val).
 
@@ -546,8 +500,6 @@ crdt_version(Mod) ->
 %% CRDT type
 to_mod("sets") ->
     ?SET_TYPE;
-to_mod("hlls") ->
-    ?HLL_TYPE;
 to_mod("gsets") ->
     ?GSET_TYPE;
 to_mod("counters") ->
@@ -597,9 +549,6 @@ operation(Mod, Op, Ctx) ->
 %% @doc Wrapper function for Mod:new/0 || Mod:new/1 to apply bucket properties;
 %%      or, eventually, other properties when creating new datatypes.
 -spec new_datatype(DT_MOD::module(), riak_object:bucket()) -> crdt().
-new_datatype(?HLL_TYPE=Mod, Bucket) ->
-    BProps = riak_core_bucket:get_bucket(Bucket),
-    Mod:new(BProps);
 new_datatype(Mod, _Bucket) ->
     Mod:new().
 
@@ -617,7 +566,7 @@ is_crdt_test_() ->
              meck:expect(riak_core_capability, get,
                          fun({riak_kv, crdt}, []) ->
                                  [pncounter,riak_dt_pncounter,riak_dt_orswot,
-                                  riak_kv_hll, riak_dt_map];
+                                  riak_dt_map];
                             (X, Y) -> meck:passthrough([X, Y]) end),
              ok
      end,
@@ -644,33 +593,29 @@ is_crdt_test_() ->
                                 ({<<"sets">>, _Name}) -> [{datatype, set}];
                                 ({<<"counters">>, _Name}) ->
                                      [{datatype, counter}];
-                                ({<<"hlls">>, _Name}) -> [{datatype, hll}];
                                 ({<<"mappyz">>, _Name}) -> [];
                                 ({X, Y}) -> meck:passthrough([X, Y]) end),
                  Bucket1 = {<<"maps">>, <<"crdt">>},
                  Bucket2 = {<<"sets">>, <<"crdt">>},
                  Bucket3 = {<<"counters">>, <<"crdt">>},
-                 Bucket4 = {<<"hlls">>, <<"crdt">>},
                  Bucket5 = {<<"mappyz">>, <<"crdt">>},
                  BTPropsMap = riak_core_bucket:get_bucket(Bucket1),
                  BTPropsSet = riak_core_bucket:get_bucket(Bucket2),
                  BTPropsCounter = riak_core_bucket:get_bucket(Bucket3),
-                 BTPropsHll = riak_core_bucket:get_bucket(Bucket4),
                  ?assertEqual(map, proplists:get_value(datatype, BTPropsMap)),
                  ?assertEqual(set, proplists:get_value(datatype, BTPropsSet)),
                  ?assertEqual(counter,
                               proplists:get_value(datatype, BTPropsCounter)),
-                 ?assertEqual(hll, proplists:get_value(datatype, BTPropsHll)),
                  [?assert(is_crdt(riak_kv_crdt:new(B, K, Mod)))
                   || {B, K, Mod} <- [{Bucket1, <<"k1">>, riak_dt_map},
                                    {Bucket2, <<"k2">>, riak_dt_orswot},
-                                   {Bucket3, <<"k3">>, riak_dt_pncounter},
-                                   {Bucket4, <<"k4">>, riak_kv_hll}]],
+                                   {Bucket3, <<"k3">>, riak_dt_pncounter}]],
                  ?assertNot(is_crdt(riak_kv_crdt:new(Bucket5, <<"k5">>,
                                                      riak_dt_map))),
                  ?assertNot(is_crdt(riak_object:new(Bucket1, <<"k6">>,
                                                     <<"classic">>)))
-             end)]}.
+             end)
+            ]}.
 
 -ifdef(EQC).
 prop_binary_roundtrip() ->

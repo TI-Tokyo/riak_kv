@@ -668,7 +668,7 @@ multi_backend_test_() ->
     BPath = riak_kv_test_util:get_test_dir("bitcask-backend"),
     {foreach,
      fun() ->
-             crypto:start(),
+             application:ensure_all_started(crypto),
 
              %% start the ring manager
              {ok, P1} = riak_core_ring_events:start_link(),
@@ -684,7 +684,7 @@ multi_backend_test_() ->
              [P1, P2]
      end,
      fun([P1, P2]) ->
-             crypto:stop(),
+             application:stop(crypto),
              ?assertCmd("rm -rf " ++ BPath ++ "/*"),
              unlink(P1),
              unlink(P2),

@@ -325,18 +325,15 @@ process(
             %% Don't return the key since we're not generating one
             ReturnKey = undefined
     end,
-    IsConsistent = riak_kv_util:consistent_object(B),
     CondPutMode =
         application:get_env(riak_kv, conditional_put_mode, api_only),
     MakeTokenRequest = CondPutMode =/= api_only,
 
     {CheckResult, CondPutOpts, SessionToken} =    
-        case {IfNotModified, IfNoneMatch, IsConsistent, MakeTokenRequest} of
-            {_, true, true, _} ->
-                {ok, [{if_none_match, true}], none};
-            {undefined, undefined, _, _} ->
+        case {IfNotModified, IfNoneMatch, MakeTokenRequest} of
+            {undefined, undefined, _} ->
                 {ok, [], none};
-            {NotMod, NoneMatch, false, true} ->
+            {NotMod, NoneMatch, true} ->
                 GetOpts =
                     make_options(
                         [
@@ -371,7 +368,7 @@ process(
                             ),
                         {CheckR, PutOpts, none}
                 end;
-            {NotMod, NoneMatch, false, false} ->
+            {NotMod, NoneMatch, false} ->
                 GetOpts =
                     make_option(n_val, N_val) ++
                     make_option(sloppy_quorum, SloppyQuorum) ++
@@ -669,8 +666,10 @@ request(Msg) when is_tuple(Msg) andalso is_atom(element(1, Msg)) ->
 
 request(Code, Payload) when is_binary(Payload), is_integer(Code) ->
     Connection = new_connection(),
+    io:format(user, "Connection made ~0p~n", [Connection]),
     ?assertMatch({ok, _}, Connection),
     {ok, Socket} = Connection,
+    io:format(user, "Socket open ~0p~n", [Socket]),
     request(Code, Payload, Socket).
 
 request(Code, Payload, Socket) when is_binary(Payload), is_integer(Code) ->

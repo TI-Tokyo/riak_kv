@@ -22,14 +22,23 @@
 -module(riak_kv_2i_aae).
 -behaviour(gen_fsm).
 
--compile({nowarn_deprecated_function, 
-            [{gen_fsm, start, 4},
+-compile(
+    [
+        {
+            nowarn_deprecated_function, 
+            [
+                {gen_fsm, start, 4},
                 {gen_fsm, sync_send_all_state_event, 3},
                 {gen_fsm, send_event_after, 2},
                 {gen_fsm, reply, 2},
                 {gen_fsm, send_event, 2},
                 {gen_fsm, sync_send_event, 3},
-                {gen_fsm, cancel_timer, 1}]}).
+                {gen_fsm, cancel_timer, 1}
+            ]
+        },
+        nowarn_deprecated_callback
+    ]
+).
 
 -include("riak_kv_wm_raw.hrl").
 

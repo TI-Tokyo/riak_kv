@@ -80,24 +80,6 @@ postcondition(_S,{call, ?MODULE, crdt_equals, _},Res) ->
 postcondition(_S,{call,_,_,_},_Res) ->
     true.
 
-prop_converge(InitialValue, ?HLL_TYPE=Mod) ->
-    ?FORALL(Cmds,commands(?MODULE, #state{mod=Mod, mod_state=InitialValue}),
-            begin
-                {H, S, Res} = run_commands(?MODULE, Cmds),
-                HllSet = merge_crdts(Mod, S#state.vnodes),
-                HllValue = Mod:value(HllSet),
-                Card = Mod:eqc_state_value(S#state.mod_state),
-                ?WHENFAIL(
-                   %% History: ~p\nState: ~p\ H,S,
-                   io:format("\nState: ~p"
-                             "\nHistory: ~p"
-                             "\nMergedHllVal: ~p"
-                             "\nCard: ~p", [H, S, HllValue, Card]),
-                   conjunction([{res, equals(Res, ok)},
-                                {within_error,
-                                 Mod:within_error_check(Card, HllSet, HllValue)}
-                               ]))
-            end);
 prop_converge(InitialValue, Mod) ->
     ?FORALL(Cmds,commands(?MODULE, #state{mod=Mod, mod_state=InitialValue}),
             begin

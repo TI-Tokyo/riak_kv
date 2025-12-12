@@ -34,7 +34,7 @@
         handle_info/2,
         terminate/2,
         code_change/3,
-        format_status/2]).
+        format_status/1]).
 
 -export(
     [
@@ -113,15 +113,19 @@
 
 -spec start_link(atom(), string()) -> {ok, pid()}.
 start_link(Module, RootPath) ->
-    gen_server:start_link(
-        {local, Module}, ?MODULE, [0, Module, RootPath], []).
+    {ok, Pid} =
+        gen_server:start_link(
+            {local, Module}, ?MODULE, [0, Module, RootPath], []),
+    {ok, Pid}.
 
 %% @doc
 %% To be used when starting a reaper for a specific workload
 -spec start_job(pos_integer(), atom(), string()) -> {ok, pid()}.
 start_job(JobID, Module, RootPath) ->
-    gen_server:start_link(
-        ?MODULE, [JobID, Module, RootPath], []).
+    {ok, Pid} =
+        gen_server:start_link(
+            ?MODULE, [JobID, Module, RootPath], []),
+    {ok, Pid}.
 
 -spec request(pid()|module(), term()) -> ok.
 request(Pid, Reference) ->
@@ -257,10 +261,13 @@ handle_info(log_queue, State) ->
     erlang:send_after(?LOG_TICK, self(), log_queue),
     {noreply, State#state{attempts = 0, aborts = 0, queue = UpdQueue}, 0}.
 
-format_status(normal, [_PDict, S]) ->
-    S;
-format_status(terminate, [_PDict, S]) ->
-    S#state{queue = riak_kv_overflow_queue:format_state(S#state.queue)}.
+format_status(Status) ->
+    State = maps:get(state, Status),
+    UpdState =
+        State#state{
+            queue = riak_kv_overflow_queue:format_state(State#state.queue)
+        },
+    maps:put(state, UpdState, Status).
 
 terminate(_Reason, State) ->
     riak_kv_overflow_queue:close(State#state.file_path, State#state.queue),
@@ -294,12 +301,17 @@ format_status_test() ->
     RootPath = riak_kv_test_util:get_test_dir("reaper_format_status/"),
     {ok, P} = start_job(1, riak_kv_reaper, RootPath),
     {status, P, {module, gen_server}, SItemL} = sys:get_status(P),
-    S = lists:keyfind(state, 1, lists:nth(5, SItemL)),
-    MQ = riak_kv_overflow_queue:get_mqueue(S#state.queue),
-    ?assertNotMatch(not_logged, MQ),
-    ST = format_status(terminate, [dict:new(), S]),
-    MQT = riak_kv_overflow_queue:get_mqueue(ST#state.queue),
+    S = get_state_fromstatus(SItemL),
+    MQT = riak_kv_overflow_queue:get_mqueue(S#state.queue),
     ?assertMatch(not_logged, MQT),
     ok = stop_job(P).
+
+get_state_fromstatus(SItemL) ->
+    match_state(lists:nth(5, SItemL)).
+
+match_state([{data,[{"State", S}]}|_T]) when is_record(S, state) ->
+    S;
+match_state([_H|T]) ->
+    match_state(T).
 
 -endif.

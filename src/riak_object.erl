@@ -40,7 +40,9 @@
         binary_version/0,
         index_value/0,
         index_spec/0,
-        riak_object_meta/0
+        riak_object_meta/0,
+        old_object/0,
+        hook_old_object/0
     ]
 ).
 
@@ -51,6 +53,22 @@
 %% -type bkey() :: {bucket(), key()}.
 -type value() :: term().
 -type riak_object_meta() :: dict:dict()|map().
+-type old_object() ::
+        riak_object:riak_object()|
+        confirmed_no_old_object|
+        assumed_no_old_object|
+        unchanged_no_old_object|
+        unknown_no_old_object.
+    % Hooks use no_old_object, but no_old_object can mean four things.
+    % 1 - A GET was done before the PUT, and no old object was found
+    % 2 - The path used assumes there is no old object
+    % 3 - The old object hasn't changed - so the new object is the old object
+    % 4 - The path doesn't consider an old object to be relevant 
+    % This creates a type to represent these three cases separately, as 
+    % well as the scenario where the is an old object.
+    % The function maybe_old-object/1 can be called to normalise the three
+    % cases back to the single case of no_old_object for hooks.
+-type hook_old_object() :: riak_object:riak_object()|no_old_object.
 
 -record(r_content, {
           metadata :: riak_object_meta(),
@@ -133,6 +151,7 @@
         metadata_tolist/1,
         metadata_iskey/2
     ]).
+-export([maybe_old_object/1, maybe_get_clock/1]).
 
 -ifdef(TEST).
 -export([convert_object_to_headonly/3]). % Used in unit testing of get_core
@@ -327,6 +346,31 @@ obj_not_deleted(Obj) ->
         _ -> Obj
     end.
 
+-spec maybe_get_clock(old_object()) -> aae_controller:version_vector().
+%% @doc
+%% Get the vector clock from the object to pass to the aae_controller
+maybe_get_clock(confirmed_no_old_object) ->
+    none;
+maybe_get_clock(assumed_no_old_object) ->
+    none;
+maybe_get_clock(unknown_no_old_object) ->
+    undefined;
+maybe_get_clock(Object) ->
+    vclock(Object).
+
+-spec maybe_old_object(old_object()) -> hook_old_object().
+%% @doc
+%% Normalize different no_old_object cases back to no_old_object
+maybe_old_object(confirmed_no_old_object) ->
+    no_old_object;
+maybe_old_object(assumed_no_old_object) ->
+    no_old_object;
+maybe_old_object(unchanged_no_old_object) ->
+    no_old_object;
+maybe_old_object(unknown_no_old_object) ->
+    no_old_object;
+maybe_old_object(OldObject) ->
+    OldObject.
 
 %% @doc  Given a list of riak_object()s, return the objects that are pure
 %%       ancestors of other objects in the list, if any.  The changes in the
@@ -577,34 +621,17 @@ compare_content_dates(C1,C2) ->
 merge(OldObject=#r_object{}, NewObject=#r_object{}) ->
     NewObj1 = apply_updates(NewObject),
     Bucket = bucket(OldObject),
-    case riak_kv_util:get_write_once(Bucket) of
-        true ->
-            merge_write_once(OldObject, NewObj1);
-        _ ->
-            DVV = dvv_enabled(Bucket),
-            {Time,  {CRDT, Contents}} = timer:tc(fun merge_contents/3,
-                                                 [NewObject, OldObject, DVV]),
-            ok = riak_kv_stat:update({riak_object_merge, CRDT, Time}),
-            OldObject#r_object{contents=Contents,
-                vclock=vclock:merge([OldObject#r_object.vclock,
-                    NewObj1#r_object.vclock]),
-                updatemetadata=metadata_store(clean, true, metadata_new()),
-                updatevalue=undefined}
-    end.
-
-%% @doc Special case write_once merge, in the case where the write_once property is
-%%      set on the bucket (type).  In this case, take the lesser (in lexical order)
-%%      of the SHA1 hash of each object.
-%%
--spec merge_write_once(riak_object(), riak_object()) -> riak_object().
-merge_write_once(OldObject, NewObject) ->
-    ok = riak_kv_stat:update(write_once_merge),
-    case crypto:hash(sha, term_to_binary(OldObject)) =< crypto:hash(sha, term_to_binary(NewObject)) of
-        true ->
-            OldObject;
-        _ ->
-            NewObject
-    end.
+    DVV = dvv_enabled(Bucket),
+    {Time,  {CRDT, Contents}} =
+        timer:tc(fun merge_contents/3, [NewObject, OldObject, DVV]),
+    ok = riak_kv_stat:update({riak_object_merge, CRDT, Time}),
+    OldObject#r_object{
+        contents=Contents,
+        vclock=vclock:merge([OldObject#r_object.vclock,
+            NewObj1#r_object.vclock]),
+        updatemetadata=metadata_store(clean, true, metadata_new()),
+        updatevalue=undefined
+    }.
 
 
 %% @doc Merge the r_objects contents by converting the inner dict to

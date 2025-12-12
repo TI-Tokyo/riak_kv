@@ -205,12 +205,7 @@ prompt_readrepair(VnodeList, IndexN, MaxResults,
     {ok, C} = riak:local_client(),
     FetchFun = 
         fun({{B, K}, {_BlueClock, _PinkClock}}) ->
-            case riak_kv_util:consistent_object(B) of
-                true ->
-                    riak_kv_exchange_fsm:repair_consistent({B, K});
-                false ->
-                    riak_client:get(B, K, C)
-            end
+            riak_client:get(B, K, C)
         end,
     LogFun = 
         fun({{B, K}, {BlueClock, PinkClock}}) ->

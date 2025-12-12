@@ -92,8 +92,6 @@
          encode_handoff_item/2,
          handle_exit/3,
          handle_info/2,
-         handle_overload_info/2,
-         ready_to_exit/0,%% Note: optional function of the behaviour
          add_vnode_pool/2]). %% Note: optional function of the behaviour
 
 -export([handoff_data_encoding_method/0]).
@@ -103,7 +101,6 @@
 
 -include_lib("riak_kv_vnode.hrl").
 -include_lib("riak_kv_index.hrl").
--include_lib("riak_kv_map_phase.hrl").
 -include_lib("riak_core_pb.hrl").
 -include("riak_kv_types.hrl").
 -include("riak_kv_capability.hrl").
@@ -187,22 +184,8 @@
 -type state() :: #state{}.
 -type vnodeid() :: binary().
 -type counter_lease_error() :: {error, counter_lease_max_errors | counter_lease_timeout}.
--type old_object() :: riak_object:riak_object()|
-                        confirmed_no_old_object|
-                        assumed_no_old_object|
-                        unchanged_no_old_object|
-                        unknown_no_old_object.
-    % Hooks use no_old_object, but no_old_object can mean four things.
-    % 1 - A GET was done before the PUT, and no old object was found
-    % 2 - The path used assumes there is no old object
-    % 3 - The old object hasn't changed - so the new object is the old object
-    % 4 - The path doesn't consider an old object to be relevant 
-    % This creates a type to represent these three cases separately, as 
-    % well as the scenario where the is an old object.
-    % The function maybe_old-object/1 can be called to normalise the three
-    % cases back to the single case of no_old_object for hooks.
--type hook_old_object() :: riak_object:riak_object()|no_old_object.
-    % Type for old objects to be passed into hooks
+-type old_object() :: riak_object:old_object().
+-type hook_old_object() :: riak_object:hook_old_object().
 
 -define(MD_CACHE_BASE, "riak_kv_vnode_md_cache").
 -define(DEFAULT_HASHTREE_TOKENS, 90).
@@ -1077,29 +1060,10 @@ handle_overload_request(kv_get_request, Req, Sender, Idx) ->
 handle_overload_request(kv_head_request, Req, Sender, Idx) ->
     ReqId = riak_kv_requests:get_request_id(Req),
     riak_core_vnode:reply(Sender, {r, {error, overload}, Idx, ReqId});
-handle_overload_request(kv_w1c_put_request, Req, Sender, _Idx) ->
-    Type = riak_kv_requests:get_replica_type(Req),
-    riak_core_vnode:reply(Sender, ?KV_W1C_PUT_REPLY{reply={error, overload}, type=Type});
 handle_overload_request(kv_vnode_status_request, _Req, Sender, Idx) ->
     riak_core_vnode:reply(Sender, {vnode_status, Idx, [{error, overload}]});
 handle_overload_request(_, _Req, Sender, _Idx) ->
     riak_core_vnode:reply(Sender, {error, mailbox_overload}).
-
-
-%% Handle all SC overload messages here
-handle_overload_info({ensemble_ping, _From}, _Idx) ->
-    %% Don't respond to pings in overload
-    ok;
-handle_overload_info({ensemble_get, _, From}, _Idx) ->
-    riak_kv_ensemble_backend:reply(From, {error, vnode_overload});
-handle_overload_info({ensemble_put, _, _, From}, _Idx) ->
-    riak_kv_ensemble_backend:reply(From, {error, vnode_overload});
-handle_overload_info({raw_forward_put, _, _, From}, _Idx) ->
-    riak_kv_ensemble_backend:reply(From, {error, vnode_overload});
-handle_overload_info({raw_forward_get, _, From}, _Idx) ->
-    riak_kv_ensemble_backend:reply(From, {error, vnode_overload});
-handle_overload_info(_, _) ->
-    ok.
 
 
 handle_command({aae, AAERequest, IndexNs, Colour}, Sender, State) ->
@@ -1827,40 +1791,6 @@ handle_request(kv_head_request, Req, Sender, State) ->
             do_head(Sender, BKey, ReqId, State);
         _ ->
             do_get(Sender, BKey, ReqId, State)
-    end;
-%% NB. The following two function clauses discriminate on the async_put State field
-handle_request(kv_w1c_put_request, Req, Sender, State=#state{async_put=true}) ->
-    {Bucket, Key} = riak_kv_requests:get_bucket_key(Req),
-    EncodedVal = riak_kv_requests:get_encoded_obj(Req),
-    ReplicaType = riak_kv_requests:get_replica_type(Req),
-    Mod = State#state.mod,
-    ModState = State#state.modstate,
-    StartTS = os:timestamp(),
-    Context = {w1c_async_put, Sender, ReplicaType, Bucket, Key, EncodedVal, StartTS},
-    case Mod:async_put(Context, Bucket, Key, EncodedVal, ModState) of
-        {ok, UpModState} ->
-            {noreply, State#state{modstate=UpModState}};
-        {error, Reason, UpModState} ->
-            {reply, ?KV_W1C_PUT_REPLY{reply={error, Reason}, type=ReplicaType}, State#state{modstate=UpModState}}
-    end;
-handle_request(kv_w1c_put_request, Req, _Sender, State=#state{async_put=false, update_hook=UpdateHook}) ->
-    {Bucket, Key} = riak_kv_requests:get_bucket_key(Req),
-    EncodedVal = riak_kv_requests:get_encoded_obj(Req),
-    ReplicaType = riak_kv_requests:get_replica_type(Req),
-    Mod = State#state.mod,
-    ModState = State#state.modstate,
-    Idx = State#state.idx,
-    StartTS = os:timestamp(),
-    case Mod:put(Bucket, Key, [], EncodedVal, ModState) of
-        {ok, UpModState} ->
-            aae_update(Bucket, Key, use_binary, assumed_no_old_object, EncodedVal, State),
-                % Write once path - and so should be a new object.  If not this
-                % is an application fault
-            maybe_update_binary(UpdateHook, Bucket, Key, EncodedVal, put, Idx),
-            update_vnode_stats(vnode_put, Idx, StartTS),
-            {reply, ?KV_W1C_PUT_REPLY{reply=ok, type=ReplicaType}, State#state{modstate=UpModState}};
-        {error, Reason, UpModState} ->
-            {reply, ?KV_W1C_PUT_REPLY{reply={error, Reason}, type=ReplicaType}, State#state{modstate=UpModState}}
     end;
 handle_request(kv_vnode_status_request, _Req, _Sender, State=#state{idx=Index,
                                                                    mod=Mod,
@@ -2691,17 +2621,6 @@ handle_handoff_request(kv_put_request, Req, Sender, State) ->
                     {noreply, UpdState}
             end
     end;
-handle_handoff_request(kv_w1c_put_request, Request, Sender, State) ->
-    NewState0 = case handle_command(Request, Sender, State) of
-        {noreply, NewState} ->
-            NewState;
-        {reply, Reply, NewState} ->
-            %% reply directly to the sender, as we will be forwarding the
-            %% the request on to the handoff node.
-            riak_core_vnode:reply(Sender, Reply),
-            NewState
-    end,
-    {forward, NewState0};
 handle_handoff_request(kv_delete_request, Request, Sender, State) ->
     HandoffDeletes = app_helper:get_env(riak_kv, handoff_deletes),
     case {HandoffDeletes, handle_command(Request, Sender, State)} of
@@ -2875,88 +2794,9 @@ terminate(_Reason, #state{idx=Idx,
     riak_kv_stat:unregister_vnode_stats(Idx),
     ok.
 
-handle_info({{w1c_async_put, From, Type, Bucket, Key, EncodedVal, StartTS} = _Context, Reply},
-            State=#state{idx=Idx, update_hook=UpdateHook}) ->
-    aae_update(Bucket, Key, use_binary, assumed_no_old_object, EncodedVal, State),
-        % Write once path - and so should be a new object.  If not this
-        % is an application fault
-    maybe_update_binary(UpdateHook, Bucket, Key, EncodedVal, put, Idx),
-    riak_core_vnode:reply(From, ?KV_W1C_PUT_REPLY{reply=Reply, type=Type}),
-    update_vnode_stats(vnode_put, Idx, StartTS),
-    {ok, State};
-
 handle_info({set_concurrency_limit, Lock, Limit}, State) ->
     try_set_concurrency_limit(Lock, Limit),
     {ok, State};
-
-handle_info({ensemble_ping, From}, State) ->
-    riak_ensemble_backend:pong(From),
-    {ok, State};
-
-handle_info({ensemble_get, Key, From}, State=#state{idx=Idx, forward=Fwd}) ->
-    case Fwd of
-        undefined ->
-            {reply, {r, Retval, _, _}, State2} = do_get(undefined, Key, undefined, State),
-            Reply = case Retval of
-                        {ok, Obj} ->
-                            Obj;
-                        _ ->
-                            notfound
-                    end,
-            riak_kv_ensemble_backend:reply(From, Reply),
-            {ok, State2};
-        Fwd when is_atom(Fwd) ->
-            forward_get({Idx, Fwd}, Key, From),
-            {ok, State}
-    end;
-
-handle_info({ensemble_put, Key, Obj, From}, State=#state{handoff_target=HOTarget,
-                                                         idx=Idx,
-                                                         forward=Fwd}) ->
-    case Fwd of
-        undefined ->
-            {Result, State2} = actual_put_tracked(Key, Obj, [], false, undefined, State),
-            Reply = case Result of
-                        {dw, _Idx, _Obj, _ReqID} ->
-                            Obj;
-                        {dw, _Idx, _ReqID} ->
-                            Obj;
-                        {fail, _Idx, _ReqID} ->
-                            failed
-                    end,
-            ((Reply =/= failed) and (HOTarget =/= undefined)) andalso raw_put({Idx, HOTarget}, Key, Obj),
-            riak_kv_ensemble_backend:reply(From, Reply),
-            {ok, State2};
-        Fwd when is_atom(Fwd) ->
-            forward_put({Idx, Fwd}, Key, Obj, From),
-            {ok, State}
-    end;
-
-handle_info({raw_forward_put, Key, Obj, From}, State) ->
-    {Result, State2} = actual_put_tracked(Key, Obj, [], false, undefined, State),
-    Reply = case Result of
-                {dw, _Idx, _Obj, _ReqID} ->
-                    Obj;
-                {dw, _Idx, _ReqID} ->
-                    Obj;
-                {fail, _Idx, _ReqID} ->
-                    failed
-            end,
-    riak_kv_ensemble_backend:reply(From, Reply),
-    {ok, State2};
-handle_info({raw_forward_get, Key, From}, State) ->
-    {reply, {r, Retval, _, _}, State2} = do_get(undefined, Key, undefined, State),
-    Reply = case Retval of
-                {ok, Obj} ->
-                    Obj;
-                _ ->
-                    notfound
-            end,
-    riak_kv_ensemble_backend:reply(From, Reply),
-    {ok, State2};
-handle_info({raw_put, Key, Obj}, State) ->
-    {_, State2} = actual_put_tracked(Key, Obj, [], false, undefined, State),
-    {ok, State2};
 
 handle_info(retry_create_hashtree, State=#state{hashtrees=undefined}) ->
     State2 = maybe_create_hashtrees(State),
@@ -3056,36 +2896,12 @@ handle_exit(_Pid, Reason, State) ->
     ?LOG_ERROR("Linked process exited. Reason: ~p", [Reason]),
     {stop, linked_process_crash, State}.
 
-%% Optional Callback. A node is about to exit. Ensure that this node doesn't
-%% have any current ensemble members.
-ready_to_exit() ->
-    [] =:= riak_kv_ensembles:local_ensembles().
-
 -spec add_vnode_pool(pid(), state()) -> state().
 %% @doc
 %% Optional Callback. If want to call queue_work, need to know about the
 %% vnode_worker_pool - so should be on state
 add_vnode_pool(PoolPid, State) ->
     State#state{vnode_pool_pid = PoolPid}.
-
-%% @private
-forward_put({Idx, Node}, Key, Obj, From) ->
-    Proxy = riak_core_vnode_proxy:reg_name(riak_kv_vnode, Idx, Node),
-    riak_core_send_msg:bang_unreliable(Proxy, {raw_forward_put, Key, Obj, From}),
-    ok.
-
-%% @private
-forward_get({Idx, Node}, Key, From) ->
-    Proxy = riak_core_vnode_proxy:reg_name(riak_kv_vnode, Idx, Node),
-    riak_core_send_msg:bang_unreliable(Proxy, {raw_forward_get, Key, From}),
-    ok.
-
-%% @private
-raw_put({Idx, Node}, Key, Obj) ->
-    Proxy = riak_core_vnode_proxy:reg_name(riak_kv_vnode, Idx, Node),
-    %% Note: This cannot be bang_unreliable. Don't change.
-    Proxy ! {raw_put, Key, Obj},
-    ok.
 
 %% @private
 do_put(Sender, Request, State) ->
@@ -3279,7 +3095,7 @@ prepare_put_existing_object(#state{idx =Idx} = State,
                             OldObj, IndexBackend, CacheData, RequiresGet) ->
     {IsNewEpoch, ActorId, State2} = maybe_new_key_epoch(Coord, State, OldObj, RObj),
     case put_merge(Coord, LWW, OldObj, RObj, {IsNewEpoch, ActorId}, StartTime) of
-        {oldobj, OldObj} ->
+        {oldobj, _OldObj} ->
             {{false, {OldObj, unchanged_no_old_object}}, PutArgs, State2};
         {newobj, NewObj} ->
             case enforce_allow_mult(NewObj, OldObj, BProps) of
@@ -3454,11 +3270,6 @@ perform_put({true, {_Obj, _OldObj}=Objects},
             {Coord, Sync}, HookReason, State),
     {Reply, State2}.
 
-actual_put(BKey, {Obj, OldObj}, IndexSpecs, RB, ReqID, State) ->
-    actual_put(
-        BKey, {Obj, OldObj}, IndexSpecs, RB, ReqID, do_max_check,
-        {false, false}, put, State).
-
 actual_put(BKey={Bucket, Key},
             {Obj, OldObj},
             IndexSpecs,
@@ -3491,14 +3302,6 @@ actual_put(BKey={Bucket, Key},
             Reply = {fail, Idx, Reason}
     end,
     {Reply, State#state{modstate=UpdModState}}.
-
-actual_put_tracked(BKey, {_NewObj, _OldObj} = Objs, IndexSpecs, RB, ReqId, State) ->
-    StartTS = os:timestamp(),
-    Result = actual_put(BKey, Objs, IndexSpecs, RB, ReqId, State),
-    update_vnode_stats(vnode_put, State#state.idx, StartTS),
-    Result;
-actual_put_tracked(BKey, Obj, IndexSpecs, RB, ReqId, State) ->
-    actual_put_tracked(BKey, {Obj, no_old_object}, IndexSpecs, RB, ReqId, State).
 
 do_reformat({Bucket, Key}=BKey, State=#state{mod=Mod, modstate=ModState}) ->
     case do_get_object(Bucket, Key, Mod, ModState) of
@@ -4217,33 +4020,17 @@ async_aae(true) ->
             false
     end.
 
-
 -spec get_clock(old_object()) -> aae_controller:version_vector().
 %% @doc
 %% Get the vector clock from the object to pass to the aae_controller
-get_clock(confirmed_no_old_object) ->
-    none;
-get_clock(assumed_no_old_object) ->
-    none;
-get_clock(unknown_no_old_object) ->
-    undefined;
-get_clock(Object) ->
-    riak_object:vclock(Object).
+get_clock(OldObject) ->
+    riak_object:maybe_get_clock(OldObject).
 
 -spec maybe_old_object(old_object()) -> hook_old_object().
 %% @doc
 %% Normalize different no_old_object cases back to no_old_object
-maybe_old_object(confirmed_no_old_object) ->
-    no_old_object;
-maybe_old_object(assumed_no_old_object) ->
-    no_old_object;
-maybe_old_object(unchanged_no_old_object) ->
-    no_old_object;
-maybe_old_object(unknown_no_old_object) ->
-    no_old_object;
 maybe_old_object(OldObject) ->
-    OldObject.
-
+    riak_object:maybe_old_object(OldObject).
 
 -spec update_hashtree(binary(), binary(), riak_object:riak_object(), pid(),
                         boolean()) -> ok.
@@ -4965,17 +4752,6 @@ maybe_update(undefined, _RObjPair, _Reason, _Idx) ->
     ok;
 maybe_update(UpdateHook, RObjPair, Reason, Idx) ->
     UpdateHook:update(RObjPair, Reason, Idx).
-
--spec maybe_update_binary(update_hook(),
-                            riak_core_bucket:bucket(),
-                            riak_object:key(),
-                            binary(),
-                            riak_kv_update_hook:update_reason(),
-                            riak_kv_update_hook:partition()) -> ok.
-maybe_update_binary(undefined, _Bucket, _Key, _Binary, _Reason, _Idx) ->
-    ok;
-maybe_update_binary(UpdateHook, Bucket, Key, Binary, Reason, Idx) ->
-    UpdateHook:update_binary(Bucket, Key, Binary, Reason, Idx).
 
 -spec maybe_requires_existing_object(update_hook(),
                                         riak_kv_bucket:props()) -> boolean().

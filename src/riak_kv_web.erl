@@ -35,16 +35,17 @@
 -include("riak_kv_types.hrl").
 
 dispatch_table() ->
-    MapredProps = mapred_props(),
     StatsProps = stats_props(),
-
     lists:append(
       raw_dispatch(),
-      [{[proplists:get_value(prefix, MapredProps)],
-        riak_kv_wm_mapred, MapredProps},
-       {[proplists:get_value(prefix, StatsProps)],
-        riak_kv_wm_stats, StatsProps},
-       {["ping"], riak_kv_wm_ping, []}]).
+      [
+       {
+            [proplists:get_value(prefix, StatsProps)],
+            riak_kv_wm_stats, StatsProps
+        },
+       {["ping"], riak_kv_wm_ping, []}
+    ]
+).
 
 raw_dispatch() ->
     case app_helper:get_env(riak_kv, raw_name) of
@@ -87,14 +88,9 @@ raw_dispatch(Name) ->
      {["types", bucket_type, "buckets", bucket, "datatypes"], fun is_post/1,
       riak_kv_wm_crdt, [{api_version, 3}]},
      {["types", bucket_type, "buckets", bucket, "datatypes", key],
-      riak_kv_wm_crdt, [{api_version, 3}]}] ++
+      riak_kv_wm_crdt, [{api_version, 3}]}]
 
-        [ %% v1.4 counters @TODO REMOVE at v2.2
-          %% NOTE: no (default) bucket prefix only
-          {["buckets", bucket, "counters", key],
-           riak_kv_wm_counter,
-           APIv2Props}
-        ] ++
+    ++
 
    lists:flatten([
     [
@@ -189,9 +185,6 @@ is_keylist(Req) ->
 
 raw_props(Prefix) ->
     [{prefix, Prefix}, {riak, local}].
-
-mapred_props() ->
-    [{prefix, app_helper:get_env(riak_kv, mapred_name, "mapred")}].
 
 stats_props() ->
     [{prefix, app_helper:get_env(riak_kv, stats_urlpath, "stats")}].

@@ -82,20 +82,9 @@ decode(Code, Bin) ->
 encode(Message) ->
     {ok, riak_pb_codec:encode(Message)}.
 
-%% @doc process/2 callback. Handles an incoming request message.
-process(#dtfetchreq{type=?DEFAULT_BUCKET}=Req0, State) ->
-    %% Handle a typeless message
-    %% See downgrade_request/1 etc below for details
-    Req = downgrade_request(Req0),
-    process_legacy_counter(Req, State);
 process(#dtfetchreq{bucket=B, type=BType}=Req, State) ->
     %% V2 fetch operation
     fetch_type(bucket_type_to_type(B, BType), Req, State);
-process(#dtupdatereq{type=?DEFAULT_BUCKET}=Req0, State) ->
-    %% Handle a typeless update message
-    %% See downgrade_request/1 etc below for details
-    Req = downgrade_request(Req0),
-    process_legacy_counter(Req, State);
 process(#dtupdatereq{bucket=B, type=BType}=Req, State) ->
     %% V2 update operation
     update_type(bucket_type_to_type(B, BType), Req, State).
@@ -281,80 +270,6 @@ get_context(Ctx, true) ->
 mods_match(BucketMod, OpType) ->
     OpMod = riak_kv_crdt:to_mod(OpType),
     OpMod == BucketMod.
-
-%% ===================================================================
-%% V1.4 adapter
-%%
-%% Riak 1.4 included CRDT based counters for the first time. There was
-%% no such thing as "bucket types" back then, lad. A user could store
-%% a 1.4 counter in any bucket that had the property
-%% `allow_mult=true`. With 2.0 Riak has bucket types. We decided that
-%% only storing CRDTs of the same type in a bucket made most sense. In
-%% Riak 2.0 Data Types may only be stored in buckets with property of
-%% `datatype` set to a supported data type atom. Someone decided it
-%% woud be "neat" if clients could still access v1.4 counters from the
-%% new API. This code enables that, (although there is also a v1.4 API
-%% supported for the time being.) Since _this_ feature / API comes out
-%% with 2.0 it actually extends the life of typless buckets for
-%% counters by another version.
-%%
-%% If the user supplies a bucket type of <<"default">> we _assume_
-%% they mean to perform an v1.4 counter operation (since this is the
-%% only possible CRDT operation without a bucket type).
-%%
-%% For the record I (Russell) don't agree with this feature, and we'll
-%% have to remove it one version after we EOL the v1.4 counter
-%% interface
-
-%% Downgrade a crdt request to a v1 counter request
-downgrade_request(#dtfetchreq{bucket=B, key=K, r=R, pr=PR, notfound_ok=NOFOK,
-                              basic_quorum=BQ}) ->
-    #rpbcountergetreq{bucket=B, key=K, r=R, pr=PR, notfound_ok=NOFOK, basic_quorum=BQ};
-downgrade_request(#dtupdatereq{bucket=B, key=K, w=W, pw=PW, dw=DW, return_body=RB, op=Op}) ->
-    case operation_to_amt(Op) of
-        Amt when is_integer(Amt) ->
-            #rpbcounterupdatereq{bucket=B, key=K, w=W, pw=PW, dw=DW,
-                                 returnvalue=RB, amount=Amt};
-        Err -> Err
-    end.
-
-%% Transform a counter operation to a v1.4 operation.
-operation_to_amt(Op0) ->
-    Op = riak_pb_dt_codec:decode_operation(Op0, ?MOD_MAP),
-    OpType = riak_pb_dt_codec:operation_type(Op0),
-    case {mods_match(?COUNTER_TYPE, OpType), Op} of
-        {false, _} ->
-            {error, "non-counter operation on default bucket"};
-        {true, increment} ->
-            1;
-        {true, {increment, Amt}} ->
-            Amt
-    end.
-
-%% delegate the legacy counter requests to the legacy pb service
-%% module
-process_legacy_counter({error, Reason}, State) ->
-    {error, {format, Reason}, State};
-process_legacy_counter(Req, State) ->
-    LegacyState = riak_kv_pb_counter:init(),
-    %% Discard the riak_kv_pb_counter state.
-    {E1, E2, _LegacyState2} = riak_kv_pb_counter:process(Req, LegacyState),
-    upgrade_response(Req, {E1, E2, State}).
-
-%% Transform a v1.4 counter response to a v2.0 dt response
-upgrade_response(_, {reply, #rpbcountergetresp{value=Val}, State}) ->
-    Resp = riak_pb_dt_codec:encode_fetch_response(riak_kv_crdt:from_mod(?COUNTER_TYPE),
-                                                  Val, undefined, ?MOD_MAP),
-    {reply, Resp, State};
-upgrade_response(#rpbcounterupdatereq{}, {reply, #rpbcounterupdateresp{}, State}) ->
-    {reply, #dtupdateresp{}, State};
-upgrade_response(_, {reply, #rpbcounterupdateresp{value=Value}, State}) ->
-    {reply, #dtupdateresp{counter_value=Value}, State};
-upgrade_response(_, {error, Err, State}) ->
-    {error, Err, State}.
-
-%% End of v1.4 adapter
-%% ===================================================================
 
 permission_for(#dtupdatereq{bucket=B, type=T}) ->
     {"riak_kv.put", {T,B}};

@@ -46,12 +46,9 @@
         puts_active/0,
         exact_puts_active/0,
         gets_active/0,
-        consistent_object/1,
-        get_write_once/1,
         tree_include/1,
         overload_reply/1,
         get_backend_config/3,
-        is_modfun_allowed/2,
         shuffle_list/1,
         kv_ready/0,
         ngr_initial_timeout/0,
@@ -215,24 +212,6 @@ normalize_rw_value(one, _N) -> 1;
 normalize_rw_value(quorum, N) -> erlang:trunc((N/2)+1);
 normalize_rw_value(all, N) -> N;
 normalize_rw_value(_, _) -> error.
-
--spec consistent_object(binary() | {binary(),binary()}) -> true | false | {error,_}.
-consistent_object(Bucket) ->
-    case riak_core_bucket:get_bucket(Bucket) of
-        Props when is_list(Props) ->
-            lists:member({consistent, true}, Props);
-        {error, _}=Err ->
-            Err
-    end.
-
--spec get_write_once(binary() | {binary(),binary()}) -> true | false | {error,_}.
-get_write_once(Bucket) ->
-    case riak_core_bucket:get_bucket(Bucket) of
-        Props when is_list(Props) ->
-            lists:member({write_once, true}, Props);
-        {error, _}=Err ->
-            Err
-    end.
 
 %% @doc
 %% It is expected that long-lived processes will frequently check for the
@@ -525,13 +504,8 @@ mark_indexes_reformatted(Idx, 0, ForUpgrade) ->
 mark_indexes_reformatted(_Idx, _ErrorCount, _ForUpgrade) ->
     undefined.
 
--ifndef(old_hash).
 md5(Bin) ->
     crypto:hash(md5, Bin).
--else.
-md5(Bin) ->
-    crypto:md5(Bin).
--endif.
 
 %% @doc vtag creation function
 -spec make_vtag(erlang:timestamp()) -> list().
@@ -568,38 +542,6 @@ get_backend_config(Key, Config, Category) ->
             Val
     end.
 
-%% @doc Is the Module/Function from a mapreduce {modfun, ...} tuple allowed by
-%% the security rules? This is to help prevent against attacks like the one
-%% described in
-%% http://aphyr.com/posts/224-do-not-expose-riak-directly-to-the-internet
-%% by whitelisting the code path for 'allowed' mapreduce modules, which we
-%% assume the user has written securely.
-is_modfun_allowed(riak_kv_mapreduce, _) ->
-    %% these are common mapreduce helpers, provided by riak KV, we trust them
-    true;
-is_modfun_allowed(Mod, _Fun) ->
-    case riak_core_security:is_enabled() of
-        true ->
-            Paths = [filename:absname(N)
-                     || N <- app_helper:get_env(riak_kv, add_paths, [])],
-            case code:which(Mod) of
-                non_existing ->
-                    {error, {non_existing, Mod}};
-                Path when is_list(Path) ->
-                    %% ensure that the module is in one of the paths
-                    %% explicitly configured for third party code
-                    case lists:member(filename:dirname(Path), Paths) of
-                        true ->
-                            true;
-                        _ ->
-                            {error, {insecure_module_path, Path}}
-                    end;
-                Reason ->
-                    {error, {illegal_module, Mod, Reason}}
-            end;
-        _ ->
-            true
-    end.
 
 
 -spec shuffle_list(list()) -> list().
@@ -838,7 +780,7 @@ deleted_test() ->
     true = is_x_deleted(O1).
 
 make_vtag_test() ->
-    crypto:start(),
+    application:ensure_all_started(crypto),
     ?assertNot(make_vtag(os:timestamp()) =:=
                make_vtag(os:timestamp())).
 

@@ -24,8 +24,6 @@
 
 -module(riak_index).
 -export([
-         mapred_index/2,
-         mapred_index/3,
          parse_object_hook/1,
          parse_object/1,
          parse_fields/1,
@@ -83,15 +81,6 @@
 -type continuation() :: binary() | undefined. %% encoded last_result().
 
 -type query_version() :: v1 | v2 | v3.
-
-mapred_index(Dest, Args) ->
-    mapred_index(Dest, Args, ?TIMEOUT).
-
-mapred_index(_Pipe, [Bucket, Query], Timeout) ->
-    {ok, C} = riak:local_client(),
-    {ok, ReqId, _} =
-        riak_client:stream_get_index(Bucket, Query, [{timeout, Timeout}], C),
-    {ok, Bucket, ReqId}.
 
 %% @spec parse_object_hook(riak_object:riak_object()) ->
 %%         riak_object:riak_object() | {fail, [failure_reason()]}

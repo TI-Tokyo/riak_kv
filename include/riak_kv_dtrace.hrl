@@ -1,17 +1,3 @@
--include_lib("riak_core/include/riak_core_dtrace.hrl").
-
-%% Main wrapper macro for DTrace/SystemTap probe annotations
-%% NOTE: We assume there will be per-module dtrace_int() and dtrace() funcs!
-
--define(DTRACE(Category, Ints, Strings),
-        dtrace_int(Category, Ints, Strings)).
-
--define(DTRACE(Cond, Category, Ints, Strings),
-        case Cond of
-            true ->
-                dtrace_int(Category, Ints, Strings);
-            _ -> ok
-        end).
 
 %% Probe categories
 -define(C_GET_FSM_INIT,               500).

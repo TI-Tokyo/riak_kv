@@ -357,8 +357,6 @@ do_update(postcommit_fail) ->
     exometer:update([?PFX, ?APP, postcommit_fail], 1);
 do_update({controller_queue, QueueTime}) ->
     ok = create_or_update([?PFX, ?APP, tictacaae_controller_queue], QueueTime, histogram);
-do_update(write_once_merge) ->
-    exometer:update([?PFX, ?APP, write_once_merge], 1);
 do_update({fsm_spawned, Type}) when Type =:= gets; Type =:= puts ->
     exometer:update([?PFX, ?APP, node, Type, fsm, active], 1);
 do_update({fsm_exit, Type}) when Type =:= gets; Type =:= puts  ->
@@ -406,29 +404,6 @@ do_update({Type, bytes, Bytes}) ->
     exometer:update([?PFX, ?APP, Type, bytes, total], Bytes);
 do_update(late_put_fsm_coordinator_ack) ->
     exometer:update([?PFX, ?APP, late_put_fsm_coordinator_ack], 1);
-do_update({consistent_get, _Bucket, Microsecs, undefined}) ->
-    P = ?PFX,
-    ok = exometer:update([P, ?APP, consistent, gets], 1),
-    ok = exometer:update([P, ?APP, consistent, gets, time], Microsecs);
-do_update({consistent_get, _Bucket, Microsecs, ObjSize}) ->
-    P = ?PFX,
-    ok = exometer:update([P, ?APP, consistent, gets], 1),
-    ok = exometer:update([P, ?APP, consistent, gets, time], Microsecs),
-    create_or_update([P, ?APP, consistent, gets, objsize], ObjSize, histogram);
-do_update({consistent_put, _Bucket, Microsecs, undefined}) ->
-    P = ?PFX,
-    ok = exometer:update([P, ?APP, consistent, puts], 1),
-    ok = exometer:update([P, ?APP, consistent, puts, time], Microsecs);
-do_update({consistent_put, _Bucket, Microsecs, ObjSize}) ->
-    P = ?PFX,
-    ok = exometer:update([P, ?APP, consistent, puts], 1),
-    ok = exometer:update([P, ?APP, consistent, puts, time], Microsecs),
-    create_or_update([P, ?APP, consistent, puts, objsize], ObjSize, histogram);
-do_update({write_once_put, Microsecs, ObjSize}) ->
-    P = ?PFX,
-    ok = exometer:update([P, ?APP, write_once, puts], 1),
-    ok = exometer:update([P, ?APP, write_once, puts, time], Microsecs),
-    create_or_update([P, ?APP, write_once, puts, objsize], ObjSize, histogram);
 do_update(coord_local_unloaded) ->
     exometer:update([?PFX, ?APP, node, puts, coord_local_unloaded], 1);
 do_update(coord_redir_loaded_local) ->
@@ -618,13 +593,6 @@ stats() ->
                                                   {95    , vnode_set_update_time_95},
                                                   {99    , vnode_set_update_time_99},
                                                   {max   , vnode_set_update_time_100}]},
-     {[vnode, hll, update], spiral, [], [{one  , vnode_hll_update},
-                                         {count, vnode_hll_update_total}]},
-     {[vnode, hll, update, time], histogram, [], [{mean  , vnode_hll_update_time_mean},
-                                                  {median, vnode_hll_update_time_median},
-                                                  {95    , vnode_hll_update_time_95},
-                                                  {99    , vnode_hll_update_time_99},
-                                                  {max   , vnode_hll_update_time_100}]},
      {[vnode, map, update], spiral, [], [{one  , vnode_map_update},
                                          {count, vnode_map_update_total}]},
      {[vnode, map, update, time], histogram, [], [{mean  , vnode_map_update_time_mean},
@@ -720,25 +688,6 @@ stats() ->
                                                {95    , node_get_fsm_set_time_95},
                                                {99    , node_get_fsm_set_time_99},
                                                {max   , node_get_fsm_set_time_100}]},
-     {[node, gets, hll], spiral, [], [{one  , node_gets_hll},
-                                      {count, node_gets_hll_total}]},
-     {[node, gets, hll, objsize], histogram, [], [{mean  , node_get_fsm_hll_objsize_mean},
-                                                  {median, node_get_fsm_hll_objsize_median},
-                                                  {95    , node_get_fsm_hll_objsize_95},
-                                                  {99    , node_get_fsm_hll_objsize_99},
-                                                  {max   , node_get_fsm_hll_objsize_100}]},
-     {[node, gets, hll, read_repairs], spiral, [], [{one  , read_repairs_hll},
-                                                    {count, read_repairs_hll_total}]},
-     {[node, gets, hll, siblings], histogram, [], [{mean  , node_get_fsm_hll_siblings_mean},
-                                                   {median, node_get_fsm_hll_siblings_median},
-                                                   {95    , node_get_fsm_hll_siblings_95},
-                                                   {99    , node_get_fsm_hll_siblings_99},
-                                                   {max   , node_get_fsm_hll_siblings_100}]},
-     {[node, gets, hll, time], histogram, [], [{mean  , node_get_fsm_hll_time_mean},
-                                               {median, node_get_fsm_hll_time_median},
-                                               {95    , node_get_fsm_hll_time_95},
-                                               {99    , node_get_fsm_hll_time_99},
-                                               {max   , node_get_fsm_hll_time_100}]},
      {[node, gets, map], spiral, [], [{one  , node_gets_map},
                                       {count, node_gets_map_total}]},
      {[node, gets, map, objsize], histogram, [], [{mean  , node_get_fsm_map_objsize_mean},
@@ -793,13 +742,6 @@ stats() ->
                                                {95    , node_put_fsm_set_time_95},
                                                {99    , node_put_fsm_set_time_99},
                                                {max   , node_put_fsm_set_time_100}]},
-     {[node, puts, hll], spiral, [], [{one  , node_puts_hll},
-                                      {count, node_puts_hll_total}]},
-     {[node, puts, hll, time], histogram, [], [{mean  , node_put_fsm_hll_time_mean},
-                                               {median, node_put_fsm_hll_time_median},
-                                               {95    , node_put_fsm_hll_time_95},
-                                               {99    , node_put_fsm_hll_time_99},
-                                               {max   , node_put_fsm_hll_time_100}]},
      {[node, puts, map], spiral, [], [{one  , node_puts_map},
                                       {count, node_puts_map_total}]},
      {[node, puts, map, time], histogram, [], [{mean  , node_put_fsm_map_time_mean},
@@ -892,7 +834,6 @@ stats() ->
      {mapper_count, counter, [], [{value, executing_mappers}]},
      {precommit_fail, counter, [], [{value, precommit_fail}]},
      {postcommit_fail, counter, [], [{value, postcommit_fail}]},
-     {write_once_merge, counter, [], [{value, write_once_merge}]},
      {[vnode, backend, leveldb, read_block_error],
       {function, ?MODULE, leveldb_read_block_errors, [], match, value}, [],
       [{value, leveldb_read_block_error}]},
@@ -929,13 +870,6 @@ stats() ->
                                           {95    , map_actor_counts_95},
                                           {99    , map_actor_counts_99},
                                           {max   , map_actor_counts_100}]},
-     {[hll, bytes], spiral, [], [{one  , hll_bytes},
-                                 {count, hll_bytes_total}]},
-     {[hll, bytes, total], histogram, [], [{mean  , hll_bytes_mean},
-                                           {median, hll_bytes_median},
-                                           {95    , hll_bytes_95},
-                                           {99    , hll_bytes_99},
-                                           {max   , hll_bytes_100}]},
      {[object, merge], spiral, [], [{one  , object_merge},
                                     {count, object_merge_total}]},
      {[object, merge, time], histogram, [], [{mean  , object_merge_time_mean},
@@ -957,13 +891,6 @@ stats() ->
                                                   {95    , object_set_merge_time_95},
                                                   {99    , object_set_merge_time_99},
                                                   {max   , object_set_merge_time_100}]},
-     {[object, hll, merge], spiral, [], [{one  , object_hll_merge},
-                                         {count, object_hll_merge_total}]},
-     {[object, hll, merge, time], histogram, [], [{mean  , object_hll_merge_time_mean},
-                                                  {median, object_hll_merge_time_median},
-                                                  {95    , object_hll_merge_time_95},
-                                                  {99    , object_hll_merge_time_99},
-                                                  {max   , object_hll_merge_time_100}]},
      {[object, map, merge], spiral, [], [{one  , object_map_merge},
                                          {count, object_map_merge_total}]},
      {[object, map, merge, time], histogram, [], [{mean  , object_map_merge_time_mean},
@@ -972,46 +899,6 @@ stats() ->
 						  {99    , object_map_merge_time_99},
 						  {max   , object_map_merge_time_100}]},
      {late_put_fsm_coordinator_ack, counter, [], [{value, late_put_fsm_coordinator_ack}]},
-
-     %% strong-consistency stats
-     {[consistent, gets], spiral, [], [{one, consistent_gets},
-                                       {count, consistent_gets_total}]},
-     {[consistent, gets, time], histogram, [], [{mean  , consistent_get_time_mean},
-                                                {median, consistent_get_time_median},
-                                                {95    , consistent_get_time_95},
-                                                {99    , consistent_get_time_99},
-                                                {max   , consistent_get_time_100}]},
-     {[consistent, gets, objsize], histogram, [], [{mean  , consistent_get_objsize_mean},
-                                                   {median, consistent_get_objsize_median},
-                                                   {95    , consistent_get_objsize_95},
-                                                   {99    , consistent_get_objsize_99},
-                                                   {max   , consistent_get_objsize_100}]},
-     {[consistent, puts], spiral, [], [{one, consistent_puts},
-                                       {count, consistent_puts_total}]},
-     {[consistent, puts, time], histogram, [], [{mean  , consistent_put_time_mean},
-                                                {median, consistent_put_time_median},
-                                                {95    , consistent_put_time_95},
-                                                {99    , consistent_put_time_99},
-                                                {max   , consistent_put_time_100}]},
-     {[consistent, puts, objsize], histogram, [], [{mean  , consistent_put_objsize_mean},
-                                                   {median, consistent_put_objsize_median},
-                                                   {95    , consistent_put_objsize_95},
-                                                   {99    , consistent_put_objsize_99},
-                                                   {max   , consistent_put_objsize_100}]},
-
-     %% write-once stats
-     {[write_once, puts], spiral, [], [{one, write_once_puts},
-                                       {count, write_once_puts_total}]},
-     {[write_once, puts, time], histogram, [], [{mean  , write_once_put_time_mean},
-                                                {median, write_once_put_time_median},
-                                                {95    , write_once_put_time_95},
-                                                {99    , write_once_put_time_99},
-                                                {max   , write_once_put_time_100}]},
-     {[write_once, puts, objsize], histogram, [], [{mean  , write_once_put_objsize_mean},
-                                                   {median, write_once_put_objsize_median},
-                                                   {95    , write_once_put_objsize_95},
-                                                   {99    , write_once_put_objsize_99},
-                                                   {max   , write_once_put_objsize_100}]},
 
      {[storage_backend], {function, app_helper, get_env, [riak_kv, storage_backend], match, value},
       [], [{value, storage_backend}]},

@@ -52,8 +52,6 @@
 
 -record(state, {from :: from()}).
 
--include("riak_kv_dtrace.hrl").
-
 %% @doc Returns `true' if the new ack-based backpressure listkeys
 %% protocol should be used.  This decision is based on the
 %% `listkeys_backpressure' setting in `riak_kv''s application
@@ -71,38 +69,35 @@ req(Bucket, ItemFilter) ->
 %% the number of primary preflist vnodes the operation
 %% should cover, the service to use to check for available nodes,
 %% and the registered name to use to access the vnode master process.
-init(From={_, _, ClientPid}, [Bucket, ItemFilter, Timeout]) ->
-    riak_core_dtrace:put_tag(io_lib:format("~p", [Bucket])),
-    ClientNode = atom_to_list(node(ClientPid)),
-    PidStr = pid_to_list(ClientPid),
-    FilterX = if ItemFilter == none -> 0;
-                 true               -> 1
-              end,
+init(From, [Bucket, ItemFilter, Timeout]) ->
     %% "other" is a legacy term from when MapReduce used this FSM (in
     %% which case, the string "mapred" would appear
-    ?DTRACE(?C_KEYS_INIT, [2, FilterX],
-            [<<"other">>, ClientNode, PidStr]),
     %% Get the bucket n_val for use in creating a coverage plan
     BucketProps = riak_core_bucket:get_bucket(Bucket),
     NVal = proplists:get_value(n_val, BucketProps),
     %% Construct the key listing request
     Req = req(Bucket, ItemFilter),
-    {Req, all, NVal, 1, riak_kv, riak_kv_vnode_master, Timeout,
-     #state{from=From}}.
+    {
+        Req,
+        all,
+        NVal,
+        1,
+        riak_kv,
+        riak_kv_vnode_master,
+        Timeout,
+        #state{from=From}
+    }.
 
 process_results({From, Bucket, Keys},
                 StateData=#state{from={raw, ReqId, ClientPid}}) ->
     %% TODO: have caller give us the Idx number.
-    ?DTRACE(?C_KEYS_PROCESS_RESULTS, [length(Keys)], []),
     process_keys(Bucket, Keys, ReqId, ClientPid),
     _ = riak_kv_vnode:ack_keys(From), % tell that vnode we're ready for more
     {ok, StateData};
 process_results({error, Reason}, _State) ->
-    ?DTRACE(?C_KEYS_PROCESS_RESULTS, [-1], []),
     {error, Reason};
 process_results({Bucket, Keys},
                 StateData=#state{from={raw, ReqId, ClientPid}}) ->
-    ?DTRACE(?C_KEYS_PROCESS_RESULTS, [length(Keys)], []),
     process_keys(Bucket, Keys, ReqId, ClientPid),
     {ok, StateData};
 process_results(done, StateData) ->
@@ -110,7 +105,6 @@ process_results(done, StateData) ->
 
 finish({error, _}=Error,
        StateData=#state{from={raw, ReqId, ClientPid}}) ->
-    ?DTRACE(?C_KEYS_FINISH, [-1], []),
     %% Notify the requesting client that an error
     %% occurred or the timeout has elapsed.
     ClientPid ! {ReqId, Error},
@@ -118,7 +112,6 @@ finish({error, _}=Error,
 finish(clean,
        StateData=#state{from={raw, ReqId, ClientPid}}) ->
     ClientPid ! {ReqId, done},
-    ?DTRACE(?C_KEYS_FINISH, [0], []),
     {stop, normal, StateData}.
 
 %% ===================================================================

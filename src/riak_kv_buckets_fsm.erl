@@ -35,19 +35,13 @@
 -type from() :: {atom(), req_id(), pid()}.
 -type req_id() :: non_neg_integer().
 
--ifdef(namespaced_types).
 -type riak_kv_buckets_fsm_set() :: sets:set().
--else.
--type riak_kv_buckets_fsm_set() :: set().
--endif.
 
 -record(state, {buckets=sets:new() :: riak_kv_buckets_fsm_set(),
                 from :: from(),
                 stream=false :: boolean(),
                 type :: binary()
                }).
-
--include("riak_kv_dtrace.hrl").
 
 %% @doc Return a tuple containing the ModFun to call per vnode,
 %% the number of primary preflist vnodes the operation
@@ -57,16 +51,9 @@ init(From, [_, _]=Args) ->
     init(From, Args ++ [false, <<"default">>]);
 init(From, [ItemFilter, Timeout, Stream]) ->
     init(From, [ItemFilter, Timeout, Stream, <<"default">>]);
-init(From={_, _, ClientPid}, [ItemFilter, Timeout, Stream, BucketType]) ->
-    ClientNode = atom_to_list(node(ClientPid)),
-    PidStr = pid_to_list(ClientPid),
-    FilterX = if ItemFilter == none -> 0;
-                 true               -> 1
-              end,
+init(From, [ItemFilter, Timeout, Stream, BucketType]) ->
     %% "other" is a legacy term from when MapReduce used this FSM (in
     %% which case, the string "mapred" would appear
-    ?DTRACE(?C_BUCKETS_INIT, [2, FilterX],
-            [<<"other">>, ClientNode, PidStr]),
     %% Construct the bucket listing request
     Req = riak_kv_requests:new_listbuckets_request(ItemFilter),
     {Req, allup, 1, 1, riak_kv, riak_kv_vnode_master, Timeout,
@@ -75,12 +62,10 @@ init(From={_, _, ClientPid}, [ItemFilter, Timeout, Stream, BucketType]) ->
 process_results(done, StateData) ->
     {done, StateData};
 process_results({error, Reason}, _State) ->
-    ?DTRACE(?C_BUCKETS_PROCESS_RESULTS, [-1], []),
     {error, Reason};
 process_results(Buckets0,
                 StateData=#state{buckets=BucketAcc, from=From, stream=true}) ->
     Buckets = filter_buckets(Buckets0, StateData#state.type),
-    ?DTRACE(?C_BUCKETS_PROCESS_RESULTS, [length(Buckets)], []),
     BucketsToSend = [ B  || B <- Buckets,
                              not sets:is_element(B, BucketAcc) ],
     case BucketsToSend =/= [] of
@@ -93,18 +78,15 @@ process_results(Buckets0,
 process_results(Buckets0,
                 StateData=#state{buckets=BucketAcc, stream=false}) ->
     Buckets = filter_buckets(Buckets0, StateData#state.type),
-    ?DTRACE(?C_BUCKETS_PROCESS_RESULTS, [length(Buckets)], []),
     {ok, StateData#state{buckets=accumulate(Buckets, BucketAcc)}}.
 
 finish({error, _}=Error,
        StateData=#state{from=From}) ->
-    ?DTRACE(?C_BUCKETS_FINISH, [-1], []),
     %% Notify the requesting client that an error
     %% occurred or the timeout has elapsed.
     reply(Error, From),
     {stop, normal, StateData};
 finish(clean, StateData=#state{from=From, stream=true}) ->
-    ?DTRACE(?C_BUCKETS_FINISH, [0], []),
     reply(done, From),
     {stop, normal, StateData};
 finish(clean,
@@ -112,7 +94,6 @@ finish(clean,
                         from=From,
                         stream=false}) ->
     reply({buckets, sets:to_list(Buckets)}, From),
-    ?DTRACE(?C_BUCKETS_FINISH, [0], []),
     {stop, normal, StateData}.
 
 reply(Msg, {raw, ReqId, ClientPid}) ->

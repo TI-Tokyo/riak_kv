@@ -24,7 +24,7 @@
 -compile([{inline, [bad_op/2, bad_field/1]}]).
 
 
--define(FIELD_PATTERN, "^(.*)_(counter|gset|set|register|flag|map|hll)$").
+-define(FIELD_PATTERN, "^(.*)_(counter|gset|set|register|flag|map)$").
 
 -ifdef(TEST).
 -compile([export_all, nowarn_export_all]).
@@ -39,7 +39,7 @@
 -type context() :: binary().
 -type map_field() :: {binary(), embedded_type()}.
 -type embedded_type() :: counter | set | register | flag | map.
--type toplevel_type() :: counter | gset | set | map | hll.
+-type toplevel_type() :: counter | gset | set | map .
 -type type_mappings() :: [{embedded_type(), module()}].
 -type all_type() :: toplevel_type() | register | flag.
 
@@ -48,7 +48,6 @@
 -type simple_set_op() :: {add, binary()} | {remove, binary()} |
                          {add_all, [binary()]} | {remove_all, [binary()]}.
 -type set_op() :: simple_set_op() | {update, [simple_set_op()]}.
--type hll_op() :: {add, binary()} | {add_all, [binary()]}.
 -type simple_gset_op() :: {add, binary()} | {add_all, [binary()]} .
 -type gset_op() :: simple_gset_op() | {update, [simple_gset_op()]}.
 -type flag_op() :: enable | disable.
@@ -58,7 +57,7 @@
 -type map_op() :: simple_map_op() | {update, [simple_map_op()]}.
 -type embedded_type_op() :: counter_op() | set_op() | register_op() | flag_op()
                           | map_op().
--type toplevel_op() :: counter_op() | gset_op() | set_op() | map_op() | hll_op().
+-type toplevel_op() :: counter_op() | gset_op() | set_op() | map_op().
 -type update() :: {toplevel_type(), toplevel_op(), context()}.
 -type all_type_op() :: toplevel_op() | register_op() | flag_op().
 
@@ -95,7 +94,6 @@ value_to_json(gset, List, _) -> List;
 value_to_json(set, List, _) -> List;
 value_to_json(flag, Bool, _) -> Bool;
 value_to_json(register, Bin, _) -> Bin;
-value_to_json(hll, Card, _) -> Card;
 value_to_json(map, Pairs, Mods) ->
     {struct,
      [ begin
@@ -163,7 +161,6 @@ op_from_json(flag, Op, _Mods) -> flag_op_from_json(Op);
 op_from_json(register, Op, _Mods) -> register_op_from_json(Op);
 op_from_json(counter, Op, _Mods) -> counter_op_from_json(Op);
 op_from_json(set, Op, _Mods) -> set_op_from_json(Op);
-op_from_json(hll, Op, _Mods) -> hll_op_from_json(Op);
 op_from_json(gset, Op, _Mods) -> gset_op_from_json(Op);
 op_from_json(map, Op, Mods) -> map_op_from_json(Op, Mods).
 
@@ -258,29 +255,6 @@ set_op_from_json({<<"update">>, Ops}) when is_list(Ops) ->
     {update, [ set_op_from_json(Op) || Op <- Ops]};
 set_op_from_json(Op) -> bad_op(set, Op).
 
--spec hll_op_from_json(json_term() | {json_string(), json_term()}) -> hll_op().
-hll_op_from_json({struct, Ops}) when is_list(Ops) ->
-    try
-        {update, [hll_op_from_json(Op) || Op <- Ops]}
-    catch
-        throw:{invalid_operation, {hll, _}} ->
-            bad_op(hll, {struct, Ops})
-    end;
-hll_op_from_json({<<"add">>, Bin}) when is_binary(Bin) -> {add, Bin};
-hll_op_from_json({Verb, BinList}=Op) when is_list(BinList),
-                                          (Verb == <<"add_all">>) ->
-    case check_set_members(BinList) of
-        true ->
-            {binary_to_atom(Verb, utf8), BinList};
-        false ->
-            bad_op(hll, Op)
-    end;
-hll_op_from_json({<<"update">>, {struct, Ops}}) when is_list(Ops) ->
-    {update, [hll_op_from_json(Op) || Op <- Ops]};
-hll_op_from_json({<<"update">>, Ops}) when is_list(Ops) ->
-    {update, [hll_op_from_json(Op) || Op <- Ops]};
-hll_op_from_json(Op) -> bad_op(hll, Op).
-
 -spec check_set_members([term()]) -> boolean().
 check_set_members(BinList) ->
     lists:all(fun erlang:is_binary/1, BinList).
@@ -318,29 +292,7 @@ encode_fetch_response_test_() ->
                                                   riak_dt_vclock:to_binary(?SET_TYPE:precondition_context(Set)),
                                                   ?MOD_MAP))
       end},
-     {"encode hll(set)",
-      fun() ->
-              {ok, HllSet0} = ?HLL_TYPE:update(
-                                 {add, <<"a">>},
-                                 a,
-                                 ?HLL_TYPE:new()),
-              {ok, HllSet1} = ?HLL_TYPE:update(
-                                 {add, <<"b">>},
-                                 c,
-                                 HllSet0),
-              {ok, HllSetA} = ?HLL_TYPE:update(
-                                 {add_all, [<<"a">>, <<"b">>, <<"c">>]},
-                                 a,
-                                 ?HLL_TYPE:new()),
-              ?assertEqual({struct, [{<<"type">>, <<"hll">>},
-                                     {<<"value">>, 2}]},
-                           fetch_response_to_json(hll, ?HLL_TYPE:value(HllSet1),
-                                                  undefined, ?MOD_MAP)),
-              ?assertEqual({struct, [{<<"type">>, <<"hll">>},
-                                     {<<"value">>, 3}]},
-                           fetch_response_to_json(hll, ?HLL_TYPE:value(HllSetA),
-                                                  undefined, ?MOD_MAP))
-      end},
+     
      {"encode map",
       fun() ->
               {ok, Map} = ?MAP_TYPE:update({update,
@@ -428,43 +380,6 @@ decode_update_request_test_() ->
                                                                                        ?MOD_MAP),
               ?assertMatch({set, {update, [{remove, <<"a">>}]}, BinContext},
                            update_request_from_json(set, {struct, [{<<"remove">>, <<"a">>}, {<<"context">>, JSONCtx}]}, ?MOD_MAP))
-      end},
-     {"decode hll(set) ops",
-      fun() ->
-              %% All single mutations
-              ?assertEqual({hll, {update, [{add, <<"foo">>}]}, undefined},
-                           update_request_from_json(
-                             hll, {struct, [{<<"add">>, <<"foo">>}]},
-                             ?MOD_MAP)),
-              ?assertEqual({hll, {update,
-                                  [{add_all, [<<"foo">>, <<"bar">>]}]},
-                            undefined},
-                           update_request_from_json(
-                             hll, {struct, [{<<"add_all">>,
-                                             [<<"foo">>, <<"bar">>]}]},
-                             ?MOD_MAP)),
-              %% Multiple ops may be passed at once
-              ?assertEqual({hll, {update,
-                                  [{add, <<"foo">>},
-                                   {add_all, [<<"baz">>, <<"quux">>]}]},
-                            undefined},
-                           update_request_from_json(
-                             hll, {struct, [{<<"add">>, <<"foo">>},
-                                            {<<"add_all">>,
-                                             [<<"baz">>, <<"quux">>]}]},
-                             ?MOD_MAP)),
-              %% All members of add_all must be binaries
-              ?assertThrow({invalid_operation, {hll, _}},
-                           update_request_from_json(
-                             hll, {struct, [{<<"add">>, <<"foo">>},
-                                            {<<"add_all">>,
-                                             [<<"bar">>, true]}]},
-                             ?MOD_MAP)),
-              %% Only valid operations are add/add_all
-              ?assertThrow({invalid_operation, {hll, _}},
-                           update_request_from_json(
-                             hll, {struct, [{<<"increment">>, 5}]},
-                             ?MOD_MAP))
       end},
 
      {"decode map ops",

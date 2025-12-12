@@ -123,12 +123,7 @@ get_limits() ->
 -spec action(read_reference(), boolean()) -> boolean().
 action({B, K}, _Redo) ->
     {ok, C} = riak:local_client(),
-    case riak_kv_util:consistent_object(B) of
-        true ->
-            _ = riak_kv_exchange_fsm:repair_consistent({B, K});
-        false ->
-            _ = riak_client:get(B, K, C)
-    end,
+    riak_client:get(B, K, C),
     true.
 
 -spec redo() -> boolean().

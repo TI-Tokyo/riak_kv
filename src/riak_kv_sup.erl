@@ -49,9 +49,6 @@ init([]) ->
     HTTPCache = {riak_kv_http_cache,
 		 {riak_kv_http_cache, start_link, []},
 		 permanent, 5000, worker, [riak_kv_http_cache]},
-    FastPutSup = {riak_kv_w1c_sup,
-                 {riak_kv_w1c_sup, start_link, []},
-                 permanent, infinity, supervisor, [riak_kv_w1c_sup]},
     DeleteSup = {riak_kv_delete_sup,
                  {riak_kv_delete_sup, start_link, []},
                  permanent, infinity, supervisor, [riak_kv_delete_sup]},
@@ -76,9 +73,6 @@ init([]) ->
     HotBackupAAEFsmSup = {riak_kv_hotbackup_fsm_sup,
                    {riak_kv_hotbackup_fsm_sup, start_link, []},
                    permanent, infinity, supervisor, [riak_kv_hotbackup_fsm_sup]},
-    SinkFsmSup = {riak_kv_mrc_sink_sup,
-                  {riak_kv_mrc_sink_sup, start_link, []},
-                  permanent, infinity, supervisor, [riak_kv_mrc_sink_sup]},
     EntropyManager = {riak_kv_entropy_manager,
                       {riak_kv_entropy_manager, start_link, []},
                       permanent, 30000, worker, [riak_kv_entropy_manager]},
@@ -108,10 +102,6 @@ init([]) ->
                     {riak_kv_token_manager, start_link, []},
                     permanent, 3000, worker, [riak_kv_token_manager]},
 
-    EnsemblesKV =  {riak_kv_ensembles,
-                    {riak_kv_ensembles, start_link, []},
-                    permanent, 30000, worker, [riak_kv_ensembles]},
-    
     % Figure out which processes we should run...
     HasStorageBackend = (app_helper:get_env(riak_kv, storage_backend) /= undefined),
 
@@ -127,16 +117,13 @@ init([]) ->
         Reader,
         TokenManager,
         ?IF(HasStorageBackend, VMaster, []),
-        FastPutSup,
         DeleteSup,
-        SinkFsmSup,
         BucketsFsmSup,
         KeysFsmSup,
         IndexFsmSup,
         QuerySup,
         ClusterAAEFsmSup,
         HotBackupAAEFsmSup,
-        [EnsemblesKV || riak_core_sup:ensembles_enabled()],
         HTTPCache
     ]),
 

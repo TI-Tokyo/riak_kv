@@ -25,6 +25,9 @@
 -include_lib("riak_kv_vnode.hrl").
 -include_lib("kernel/include/logger.hrl").
 -include("riak_kv_capability.hrl").
+
+-compile([nowarn_deprecated_callback]).
+
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -export([test_link/7, test_link/5]).
@@ -76,7 +79,6 @@
                 bucket_props,
                 startnow :: {non_neg_integer(), non_neg_integer(), non_neg_integer()},
                 get_usecs :: non_neg_integer() | undefined,
-                trace = false :: boolean(),
                 tracked_bucket=false :: boolean(), %% is per bucket stats enabled for this bucket
                 timing = [] :: [{atom(), erlang:timestamp()}],
                 calculated_timings :: {ResponseUSecs::non_neg_integer(),
@@ -87,8 +89,6 @@
                 return_tombstone = false :: boolean(),
                 expected_fetchclock = false :: false | vclock:vclock()
                }).
-
--include("riak_kv_dtrace.hrl").
 
 -define(DEFAULT_TIMEOUT, 60000).
 -define(DEFAULT_R, default).
@@ -182,14 +182,6 @@ init([From, Bucket, Key, Options0]) ->
                        bkey = {Bucket, Key},
                        timing = riak_kv_fsm_timing:add_timing(prepare, []),
                        startnow = StartNow},
-    Trace = app_helper:get_env(riak_kv, fsm_trace_enabled),
-    case Trace of
-        true ->
-            riak_core_dtrace:put_tag([Bucket, $,, Key]),
-            ?DTRACE(?C_GET_FSM_INIT, [], ["init"]);
-        _ ->
-            ok
-    end,
     {ok, prepare, StateData, 0};
 init({test, Args, StateProps}) ->
     %% Call normal init
@@ -251,9 +243,7 @@ queue_fetch(timeout, StateData) ->
 
 %% @private
 prepare(timeout, StateData=#state{bkey=BKey={Bucket,_Key},
-                                  options=Options,
-                                  trace=Trace}) ->
-    ?DTRACE(Trace, ?C_GET_FSM_PREPARE, [], ["prepare"]),
+                                  options=Options}) ->
     {ok, DefaultProps} = application:get_env(riak_core,
                                              default_bucket_props),
     BucketProps = riak_core_bucket:get_bucket(Bucket),
@@ -308,9 +298,7 @@ prepare(timeout, StateData=#state{bkey=BKey={Bucket,_Key},
 %% @private
 validate(timeout, StateData=#state{from = {raw, ReqId, _Pid}, options = Options,
                                    n = N, bucket_props = BucketProps, preflist2 = PL2,
-                                   trace=Trace,
                                    expected_fetchclock = ExpClock}) ->
-    ?DTRACE(Trace, ?C_GET_FSM_VALIDATE, [], ["validate"]),
     AppEnvTimeout = app_helper:get_env(riak_kv, timeout),
     Timeout = case AppEnvTimeout of
                   undefined -> get_option(timeout, Options, ?DEFAULT_TIMEOUT);
@@ -366,21 +354,13 @@ validate(timeout, StateData=#state{from = {raw, ReqId, _Pid}, options = Options,
 
 %% @private
 execute(timeout, StateData0=#state{timeout=Timeout,req_id=ReqId,
-                                   bkey=BKey, trace=Trace,
+                                   bkey=BKey,
                                    preflist2 = Preflist2,
                                    get_core = GetCore,
                                    request_type = RequestType,
                                    override_vnodes = OverVnodes}) ->
     Preflist = [IndexNode || {IndexNode, _Type} <- Preflist2],
     TRef = schedule_timeout(Timeout),
-    case Trace of
-        true ->
-            ?DTRACE(?C_GET_FSM_EXECUTE, [], ["execute"]),
-            Ps = preflist_for_tracing(Preflist),
-            ?DTRACE(?C_GET_FSM_PREFLIST, [], Ps);
-        _ ->
-            ok
-    end,
     StateData =
         case RequestType of
             head ->
@@ -413,17 +393,7 @@ execute(timeout, StateData0=#state{timeout=Timeout,req_id=ReqId,
 
 %% @private
 waiting_vnode_r({r, VnodeResult, Idx, _ReqId},
-                    StateData = #state{get_core = GetCore, trace = Trace}) ->
-    case Trace of
-        true ->
-            ShortCode = riak_kv_get_core:result_shortcode(VnodeResult),
-            IdxStr = integer_to_list(Idx),
-            ?DTRACE(?C_GET_FSM_WAITING_R,
-                        [ShortCode],
-                        ["waiting_vnode_r", IdxStr]);
-        _ ->
-            ok
-    end,
+                    StateData = #state{get_core = GetCore}) ->
     % If the query has been to override_nodes will want to replace the result
     % in the result list, not just append to the result list.  The r counter
     % needs updating, regardless if primary, as in override_nodes loop we're
@@ -475,32 +445,19 @@ waiting_vnode_r({r, VnodeResult, Idx, _ReqId},
                 waiting_vnode_r,
                 StateData#state{get_core = UpdGetCore}}
     end;
-waiting_vnode_r(request_timeout, StateData = #state{trace=Trace}) ->
-    ?DTRACE(Trace, ?C_GET_FSM_WAITING_R_TIMEOUT, [-2],
-            ["waiting_vnode_r", "timeout"]),
+waiting_vnode_r(request_timeout, StateData) ->
     S2 = client_reply({error,timeout}, StateData),
     update_stats(timeout, S2),
     finalize(S2).
 
 %% @private
 waiting_read_repair({r, VnodeResult, Idx, _ReqId},
-                    StateData = #state{get_core = GetCore, trace=Trace}) ->
-    case Trace of
-        true ->
-            ShortCode = riak_kv_get_core:result_shortcode(VnodeResult),
-            IdxStr = integer_to_list(Idx),
-            ?DTRACE(?C_GET_FSM_WAITING_RR, [ShortCode],
-                    ["waiting_read_repair", IdxStr]);
-        _ ->
-            ok
-    end,
+                    StateData = #state{get_core = GetCore}) ->
     ResNode = find_node(Idx, StateData#state.preflist2),
     UpdGetCore =
         riak_kv_get_core:add_result(Idx, VnodeResult, ResNode, GetCore),
     maybe_finalize(StateData#state{get_core = UpdGetCore});
-waiting_read_repair(request_timeout, StateData = #state{trace=Trace}) ->
-    ?DTRACE(Trace, ?C_GET_FSM_WAITING_RR_TIMEOUT, [-2],
-            ["waiting_read_repair", "timeout"]),
+waiting_read_repair(request_timeout, StateData) ->
     finalize(StateData).
 
 %% @private
@@ -576,27 +533,13 @@ find_node(Idx, Preflist) ->
                         lists:map(fun(T) -> element(1, T) end, Preflist)),
     Node.
 
-%% @private calculate a concatenated preflist for tracing macro
-preflist_for_tracing(Preflist) ->
-    %% TODO: We can see entire preflist (more than 4 nodes) if we concatenate
-    %%       all info into a single string.
-    [if is_atom(Nd) ->
-             [atom_to_list(Nd), $,, integer_to_list(Idx)];
-        true ->
-             <<>>                          % eunit test
-     end || {Idx, Nd} <- lists:sublist(Preflist, 4)].
-
 
 %% Move to the new state, marking the time it started
-new_state(StateName, StateData=#state{trace = true}) ->
-    {next_state, StateName, add_timing(StateName, StateData)};
 new_state(StateName, StateData) ->
     {next_state, StateName, StateData}.
 
 %% Move to the new state, marking the time it started and trigger an immediate
 %% timeout.
-new_state_timeout(StateName, StateData=#state{trace = true}) ->
-    {next_state, StateName, add_timing(StateName, StateData), 0};
 new_state_timeout(StateName, StateData) ->
     {next_state, StateName, StateData, 0}.
 
@@ -606,7 +549,7 @@ maybe_finalize(StateData=#state{get_core = GetCore}) ->
         false -> {next_state,waiting_read_repair,StateData}
     end.
 
-finalize(StateData=#state{get_core = GetCore, trace = Trace}) ->
+finalize(StateData=#state{get_core = GetCore}) ->
     {Action, UpdGetCore} = riak_kv_get_core:final_action(GetCore),
     UpdStateData = StateData#state{get_core = UpdGetCore},
 
@@ -619,7 +562,6 @@ finalize(StateData=#state{get_core = GetCore, trace = Trace}) ->
             maybe_read_repair(Indices, RepairObj, UpdStateData),
             maybe_delete(UpdStateData);
         _Nop ->
-            ?DTRACE(Trace, ?C_GET_FSM_FINALIZE, [], ["finalize"]),
             ok
     end,
     {stop,normal,StateData}.
@@ -628,19 +570,14 @@ finalize(StateData=#state{get_core = GetCore, trace = Trace}) ->
 %% Maybe issue deletes if all primary nodes are available.
 %% Get core will only requestion deletion if all vnodes
 %% replies with the same value.
-maybe_delete(StateData=#state{n = N, preflist2=Sent, trace=Trace,
-                              req_id=ReqId, bkey=BKey}) ->
+maybe_delete(StateData=#state{n = N, preflist2=Sent, req_id=ReqId, bkey=BKey}) ->
     %% Check sent to a perfect preflist and we can delete
     IdealNodes = [{I, Node} || {{I, Node}, primary} <- Sent],
     NotCustomN = not using_custom_n_val(StateData),
     case NotCustomN andalso (length(IdealNodes) == N) of
         true ->
-            ?DTRACE(Trace, ?C_GET_FSM_MAYBE_DELETE, [1],
-                    ["maybe_delete", "triggered"]),
             riak_kv_vnode:del(IdealNodes, BKey, ReqId);
         _ ->
-            ?DTRACE(Trace, ?C_GET_FSM_MAYBE_DELETE, [0],
-                    ["maybe_delete", "nop"]),
             nop
     end.
 
@@ -705,7 +642,7 @@ roll_d100() ->
 read_repair(GetCoreIndices, RepairObj,
             #state{req_id = ReqId, starttime = StartTime,
                    preflist2 = Sent, bkey = BKey, crdt_op = CrdtOp,
-                   bucket_props = BucketProps, trace = Trace}) ->
+                   bucket_props = BucketProps}) ->
     RepairPreflist =
         lists:filtermap(
             fun({{Idx, Node}, Type}) ->
@@ -726,13 +663,6 @@ read_repair(GetCoreIndices, RepairObj,
                 {Idx, Node}
             end,
             RepairPreflist),
-    case Trace of
-        true ->
-            Ps = preflist_for_tracing(RepairPreflist),
-            ?DTRACE(?C_GET_FSM_RR, [], Ps);
-        _ ->
-            ok
-    end,
     riak_kv_vnode:readrepair(DocIdxList, BKey, RepairObj, ReqId,
                              StartTime, [{returnbody, false},
                                          {bucket_props, BucketProps},
@@ -779,8 +709,7 @@ schedule_timeout(Timeout) ->
 
 client_reply(Reply0, StateData = #state{from = {raw, ReqId, Pid},
                                        options = Options,
-                                       timing = Timing,
-                                       trace = Trace}) ->
+                                       timing = Timing}) ->
     NewTiming = riak_kv_fsm_timing:add_timing(reply, Timing),
 
     % For the fetch style get, the underlying tombstone object needs to be
@@ -818,14 +747,6 @@ client_reply(Reply0, StateData = #state{from = {raw, ReqId, Pid},
     %% need to calculate it again
     {ResponseUSecs, Stages} =
         riak_kv_fsm_timing:calc_timing(NewTiming),
-    case Trace of
-        true ->
-            ShortCode = riak_kv_get_core:result_shortcode(Reply),
-            ?DTRACE(?C_GET_FSM_CLIENT_REPLY,
-                    [ShortCode, ResponseUSecs], ["client_reply"]);
-        _ ->
-            ok
-    end,
     StateData#state{calculated_timings={ResponseUSecs, Stages},
                     timing = NewTiming}.
 
@@ -862,13 +783,8 @@ client_info([vnodes | Rest], StateData = #state{get_core = GetCore}, Acc) ->
 client_info([Unknown | Rest], StateData, Acc) ->
     client_info(Rest, StateData, [{Unknown, unknown_detail} | Acc]).
 
-%% Add timing information to the state
-add_timing(Stage, State = #state{timing = Timing}) ->
-    State#state{timing = riak_kv_fsm_timing:add_timing(Stage, Timing)}.
-
 details() ->
-    [timing,
-     vnodes].
+    [timing, vnodes].
 
 -ifdef(TEST).
 -define(expect_msg(Exp,Timeout),
@@ -1030,8 +946,7 @@ bucket_props(Bucket, Nval) -> % riak_core_bucket:get_bucket(Bucket).
      {big_vclock,50},
      {chash_keyfun,{riak_core_util,chash_std_keyfun}},
      {dw,quorum},
-     {last_write_wins,false},
-     {linkfun,{modfun,riak_kv_wm_link_walker,mapreduce_linkfun}},
+     {last_write_wins,false}
      {n_val,Nval},
      {old_vclock,86400},
      {postcommit,[]},

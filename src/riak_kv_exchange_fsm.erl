@@ -21,11 +21,20 @@
 -module(riak_kv_exchange_fsm).
 -behaviour(gen_fsm).
 
--compile({nowarn_deprecated_function, 
-            [{gen_fsm, start, 3},
+-compile(
+    [
+        {
+            nowarn_deprecated_function, 
+            [
+                {gen_fsm, start, 3},
                 {gen_fsm, send_event, 2},
                 {gen_fsm, send_event_after, 2},
-                {gen_fsm, cancel_timer, 1}]}).
+                {gen_fsm, cancel_timer, 1}
+            ]
+        },
+    nowarn_deprecated_callback
+    ]
+).
 
 %% API
 -export([start/5]).
@@ -33,8 +42,7 @@
 %% FSM states
 -export([prepare_exchange/2,
          update_trees/2,
-         key_exchange/2,
-         repair_consistent/1]).
+         key_exchange/2]).
 
 %% gen_fsm callbacks
 -export([init/1, handle_event/3, handle_sync_event/4, handle_info/3,
@@ -297,22 +305,10 @@ read_repair_keydiff(RC, LocalVN, RemoteVN, {Bucket, Key, _Reason}) ->
     %%       redbug to trace read_repair_keydiff when needed. Of course,
     %%       users can't do that.
     ?LOG_DEBUG("Anti-entropy forced read repair: ~p/~p", [Bucket, Key]),
-    case riak_kv_util:consistent_object(Bucket) of
-        true ->
-            BKey = {Bucket, Key},
-            repair_consistent(BKey);
-        false ->
-            riak_client:get(Bucket, Key, RC)
-    end,
+    riak_client:get(Bucket, Key, RC),
     %% Force vnodes to update AAE tree in case read repair wasn't triggered
     riak_kv_vnode:rehash([LocalVN, RemoteVN], Bucket, Key),
     riak_kv_entropy_manager:throttle(),
-    ok.
-
-repair_consistent(BKey) ->
-    Ensemble = riak_client:ensemble(BKey),
-    Timeout = 60000,
-    _ = riak_ensemble_client:kget(node(), Ensemble, BKey, Timeout, [read_repair]),
     ok.
 
 %% @private

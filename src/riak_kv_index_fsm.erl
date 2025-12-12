@@ -56,11 +56,7 @@
 -type from() :: {atom(), req_id(), pid()}.
 -type req_id() :: non_neg_integer().
 
--ifdef(namespaced_types).
 -type riak_kv_index_fsm_dict() :: dict:dict().
--else.
--type riak_kv_index_fsm_dict() :: dict().
--endif.
 
 -record(timings, 
             {start_time = os:timestamp() :: erlang:timestamp(),

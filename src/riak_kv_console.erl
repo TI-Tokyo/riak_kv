@@ -50,8 +50,6 @@
 
 -export([command/1]).  %% new callbacks go here, and are to be implemented using clique
 
--export([ensemble_status/1]).
-
 %% Reused by Yokozuna for printing AAE status.
 -export([aae_exchange_status/1,
          aae_repair_status/1,
@@ -741,19 +739,6 @@ repair_2i(Args) ->
             io:format("If no partitions are given, all partitions in the\n"
                       "node are repaired\n", []),
             error
-    end.
-
-ensemble_status([]) ->
-    riak_kv_ensemble_console:ensemble_overview();
-ensemble_status(["root"]) ->
-    riak_kv_ensemble_console:ensemble_detail(root);
-ensemble_status([Str]) ->
-    N = parse_int(Str),
-    case N of
-        undefined ->
-            io:format("No such ensemble: ~s~n", [Str]);
-        _ ->
-            riak_kv_ensemble_console:ensemble_detail(N)
     end.
 
 

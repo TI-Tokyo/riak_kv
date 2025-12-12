@@ -1,11 +1,5 @@
 -include_lib("riak_core/include/riak_core_vnode.hrl").
 
-
--record(riak_kv_w1c_put_reply_v1, {
-    reply :: ok | {error, term()},
-    type :: primary | fallback
-}).
-
 %% this is a legacy request *potentially* handled via riak_core_vnode_master
 %% we are not refactoring it because we think it likely should be deleted.
 %% TODO: investigate whether it *can* be deleted
@@ -13,8 +7,6 @@
           bucket :: binary()|'_'|tuple(),
           req_id :: non_neg_integer(),
           caller :: pid()}).
-
--define(KV_W1C_PUT_REPLY, #riak_kv_w1c_put_reply_v1).
 
 %% @doc vnode_lock(PartitionIndex) is a kv per-vnode lock, used possibly,
 %% by AAE tree rebuilds, fullsync, and handoff.

@@ -265,9 +265,6 @@ dep_apps(Test, Extra) ->
                 %% Set some missing env vars that are normally part of
                 %% release packaging. These can be overridden by the
                 %% Extra fun.
-                application:set_env(riak_ensemble,
-                                    data_root,
-                                    get_test_dir(Test) ++ "ensemble"),
                 application:set_env(riak_core, ring_creation_size, 64),
                 application:set_env(riak_core,
                                     ring_state_dir,
@@ -296,7 +293,7 @@ dep_apps(Test, Extra) ->
 
     [sasl, Silencer, exometer_core, runtime_tools,
      mochiweb, webmachine, sidejob, poolboy, basho_stats, bitcask,
-     eleveldb, riak_core, riak_pipe, riak_api, riak_dt, riak_pb, riak_kv,
+     eleveldb, riak_core, riak_api, riak_dt, riak_pb, riak_kv,
      DefaultSetupFun, Extra].
 
 

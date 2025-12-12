@@ -31,8 +31,6 @@
 
 -export([start_link/6, start_link/7, start_link/8, delete/8, generate_tombstone/2]).
 
--include("riak_kv_dtrace.hrl").
-
 -define(TOMB_PAUSE, 2).
     % The pause has a dual-purpose, for both flow control and for improving
     % the probability that tombstone PUTs are propogated before a reap attempt
@@ -58,11 +56,8 @@ start_link(ReqId, Bucket, Key, Options, Timeout, Client, ClientId, VClock) ->
 %% @doc Delete the object at Bucket/Key.  Direct return value is uninteresting,
 %%      see riak_client:delete/3 for expected gen_server replies to Client.
 delete(ReqId,Bucket,Key,Options,Timeout,Client,ClientId,undefined) ->
-    riak_core_dtrace:put_tag(io_lib:format("~p,~p", [Bucket, Key])),
-    ?DTRACE(?C_DELETE_INIT1, [0], []),
     case get_r_options(Bucket, Options) of
         {error, Reason} ->
-            ?DTRACE(?C_DELETE_INIT1, [-1], []),
             Client ! {ReqId, {error, Reason}};
         {R, PR, PassThruOpts} ->
             RealStartTime = riak_core_util:moment(),
@@ -73,20 +68,15 @@ delete(ReqId,Bucket,Key,Options,Timeout,Client,ClientId,undefined) ->
                     RemainingTime = Timeout - (riak_core_util:moment() - RealStartTime),
                     delete(ReqId,Bucket,Key,Options,RemainingTime,Client,ClientId,riak_object:vclock(OrigObj));
                 {error, notfound} ->
-                    ?DTRACE(?C_DELETE_INIT1, [-2], []),
                     Client ! {ReqId, {error, notfound}};
                 X ->
-                    ?DTRACE(?C_DELETE_INIT1, [-3], []),
                     Client ! {ReqId, X}
             end
     end;
 delete(ReqId,Bucket,Key,Options,Timeout,Client,ClientId,VClock) ->
-    riak_core_dtrace:put_tag(io_lib:format("~p,~p", [Bucket, Key])),
     TombPause = app_helper:get_env(riak_kv, tombstone_pause, ?TOMB_PAUSE),
-    ?DTRACE(?C_DELETE_INIT2, [0], []),
     case get_w_options(Bucket, Options) of
         {error, Reason} ->
-            ?DTRACE(?C_DELETE_INIT2, [-1], []),
             send_reply(Client, ReqId, {error, Reason});
         {W, PW, DW, PassThruOptions} ->
             Obj0 = generate_tombstone(Bucket, Key),
@@ -98,15 +88,12 @@ delete(ReqId,Bucket,Key,Options,Timeout,Client,ClientId,VClock) ->
             HasCustomN_val = proplists:get_value(n_val, Options) /= undefined,
             case Reply of
                 ok when HasCustomN_val == false ->
-                    ?DTRACE(?C_DELETE_INIT2, [1], [<<"reap">>]),
                     {ok, C2} = riak:local_client(),
                     AsyncTimeout = 60*1000,     % Avoid client-specified value
                     timer:sleep(TombPause),
                     Res = riak_client:get(Bucket, Key, all, AsyncTimeout, C2),
-                    ?DTRACE(?C_DELETE_REAPER_GET_DONE, [1], [<<"reap">>]),
                     Res;
                 _ ->
-                    ?DTRACE(?C_DELETE_INIT2, [2], [<<"nop">>]),
                     nop
             end
     end.

@@ -1112,18 +1112,15 @@ accept_doc_body(
         end,
     Options = make_options(Options0, Ctx),
     IfNoneMatch = maps:is_key(?BINHEAD_NONE_MATCH, Ctx#ctx.header_map),
-    IsConsistent = riak_kv_util:consistent_object(B),
     CondPutMode =
         application:get_env(riak_kv, conditional_put_mode, api_only),
     MakeTokenRequest = CondPutMode =/= api_only,
 
     {CondPutOptions, SessionToken} =
-        case {IfNotModified, IfNoneMatch, IsConsistent, MakeTokenRequest} of
-            {_, true, true, _} ->
-                {[{if_none_match, true}], none};
-            {undefined, false, false, _} ->
+        case {IfNotModified, IfNoneMatch, MakeTokenRequest} of
+            {undefined, false, _} ->
                 {[], none};
-            {NotMod, NoneMatch, _, true} ->
+            {NotMod, NoneMatch, true} ->
                 TokenResult =
                     riak_kv_token_session:session_request_retry({B, K}),
                 case TokenResult of
@@ -1152,7 +1149,7 @@ accept_doc_body(
                                 {[{if_not_modified, InClock}], none}
                         end
                 end;
-            {NotMod, NoneMatch, _, false} ->
+            {NotMod, NoneMatch, false} ->
                 %% Pass the condition downstream, but currently that
                 %% condition is ignored
                 case {NotMod, NoneMatch} of
@@ -1456,13 +1453,8 @@ delete_resource(RD, Ctx=#ctx{bucket_type=T, bucket=B, key=K, client=C}) ->
             handle_common_error(Reason, RD, Ctx)
     end.
 
--ifndef(old_hash).
 md5(Bin) ->
     crypto:hash(md5, Bin).
--else.
-md5(Bin) ->
-    crypto:md5(Bin).
--endif.
 
 -spec generate_etag(request_data(), context()) ->
     {undefined|string(), request_data(), context()}.

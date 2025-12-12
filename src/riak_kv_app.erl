@@ -33,11 +33,9 @@
 -define(SERVICES, [{riak_kv_pb_object, 3, 6}, %% ClientID stuff
                    {riak_kv_pb_object, 9, 14}, %% Object requests
                    {riak_kv_pb_bucket, 15, 18}, %% Bucket requests
-                   {riak_kv_pb_mapred, 23, 24}, %% MapReduce requests
                    {riak_kv_pb_index, 25, 26},   %% Secondary index requests
                    {riak_kv_pb_bucket_key_apl, 33, 34}, %% (Active) Preflist requests
                    {riak_kv_pb_csbucket, 40, 41}, %%  CS bucket folding support
-                   {riak_kv_pb_counter, 50, 53}, %% counter requests
                    {riak_kv_pb_crdt, 80, 83}, %% CRDT requests
                    {riak_kv_pb_aaefold, 210, 231}, %% AAE Fold requests
                    {riak_kv_pb_object, 202, 207} %% NextGen Repl RTQ
@@ -121,8 +119,7 @@ start(_Type, _StartArgs) ->
        {dw, quorum},
        {rw, quorum},
        {basic_quorum, false},
-       {notfound_ok, true},
-       {write_once, false}
+       {notfound_ok, true}
    ]),
 
     %% Check the storage backend
@@ -171,22 +168,6 @@ start(_Type, _StartArgs) ->
             riak_core_capability:register({riak_kv, index_backpressure},
                                           [true, false],
                                           false),
-
-            %% mapred_system should remain until no nodes still exist
-            %% that would propose 'legacy' as the default choice
-            riak_core_capability:register({riak_kv, mapred_system},
-                                          [pipe],
-                                          pipe,
-                                          {riak_kv,
-                                           mapred_system,
-                                           [{pipe, pipe}]}),
-
-            riak_core_capability:register({riak_kv, mapred_2i_pipe},
-                                          [true, false],
-                                          false,
-                                          {riak_kv,
-                                           mapred_2i_pipe,
-                                           [{true, true}, {false, false}]}),
 
             riak_core_capability:register({riak_kv, handoff_data_encoding},
                                           [encode_raw, encode_zlib],
@@ -249,7 +230,7 @@ start(_Type, _StartArgs) ->
                 {bucket_validator, riak_kv_bucket},
                 {stat_mod, riak_kv_stat},
                 {permissions, [get, put, delete, list_keys, list_buckets,
-                               mapreduce, index, get_preflist]}
+                               index, get_preflist]}
             ]
             ++ [{health_check, {?MODULE, check_kv_health, []}} || HealthCheckOn]
 
