@@ -34,6 +34,13 @@
         close/2,
         fetch_batch/3]).
 
+-export(
+    [
+        generate_ordered_guid/0,
+        disklog_filename/2
+    ]
+).
+
 -ifdef(TEST).
 -export([get_mqueue/1]).
 -include_lib("eunit/include/eunit.hrl").
@@ -43,8 +50,6 @@
 
 -include_lib("kernel/include/logger.hrl").
 
--define(QUEUE_LIMIT, 1000).
--define(OVERFLOW_LIMIT, 1000000).
 -define(OVERFLOW_BATCH, 256).
 -define(DISKLOG_EXT, ".dlg").
 
@@ -398,7 +403,7 @@ generate_ordered_guid() ->
         [Year, Month, Day, H, M, C band 16#0fff, D band 16#3fff bor 16#8000, E]).
 
 
--spec disklog_filename(string(), string()) -> file:filename_all().
+-spec disklog_filename(string(), iolist()) -> file:filename_all().
 disklog_filename(RootPath, GUID) ->
     filename:join(RootPath, GUID ++ ?DISKLOG_EXT).
 
