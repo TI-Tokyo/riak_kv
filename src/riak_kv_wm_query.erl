@@ -320,30 +320,23 @@ malformed_request(RD, Ctx) when Ctx#ctx.method =:= 'GET' ->
     BT = riak_kv_wm_utils:maybe_bucket_type(Ctx#ctx.bucket_type, Bucket),
     case wrq:get_qs_value("result_queue", RD) of
         QueueString when is_list(QueueString) ->
+            QueueBin = list_to_binary(QueueString),
             case wrq:get_qs_value("max_results", RD) of
                 undefined ->
-                    application:get_env(
-                        riak_kv,
-                        queue_raw_max_results,
-                        ?MAX_RESULTS_FROM_QUEUE
-                    );
+                    DefaultMR =
+                        application:get_env(
+                            riak_kv,
+                            queue_raw_max_results,
+                            ?MAX_RESULTS_FROM_QUEUE
+                        ),
+                    QR = make_queue_request(BT, QueueBin, DefaultMR),
+                    {false, RD, Ctx#ctx{queue_request = QR}};
                 MaxResultsString ->
                     try
                         case list_to_integer(MaxResultsString) of
                             MR when is_integer(MR), MR >= 0 ->
-                                {
-                                    false,
-                                    RD,
-                                    Ctx#ctx{
-                                        queue_request =
-                                            make_queue_request(
-                                                BT,
-                                                list_to_binary(QueueString),
-                                                MR
-                                            )
-                                    }
-                                }
-                                
+                                QR = make_queue_request(BT, QueueBin, MR),
+                                {false, RD, Ctx#ctx{queue_request = QR}}
                         end
                     catch
                         _CP:_EP ->
